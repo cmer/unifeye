@@ -4,5 +4,5 @@ export default defineConfig({
   dialect: "sqlite",
   schema: "./src/server/db/schema.ts",
   out: "./drizzle",
-  dbCredentials: { url: process.env.DATABASE_PATH ?? "./data/vantage.sqlite" },
+  dbCredentials: { url: process.env.DATABASE_PATH ?? "./data/unifeye.sqlite" },
 });

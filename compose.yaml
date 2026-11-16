@@ -1,4 +1,4 @@
-# Vantage: one application instance plus MediaMTX. Start with:  docker compose up -d
+# Unifeye: one application instance plus MediaMTX. Start with:  docker compose up -d
 # Put an HTTPS reverse proxy in front of 127.0.0.1:3000. Only two things face the network:
 # that proxy, and the WebRTC media port 8189 (UDP and TCP).
 services:
@@ -15,15 +15,15 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
-      - vantage-data:/data          # SQLite database and backups. Local disk only, never a network share.
-      - vantage-cache:/cache        # Disposable, size-bounded playback and clip cache.
+      - unifeye-data:/data          # SQLite database and backups. Local disk only, never a network share.
+      - unifeye-cache:/cache        # Disposable, size-bounded playback and clip cache.
       - ./certs:/certs:ro
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     stop_grace_period: 20s
-    networks: [vantage]
+    networks: [unifeye]
 
   mediamtx:
     # The -ffmpeg variant is required: it re-encodes camera sound (Protect's audio timestamps are unusable
@@ -44,7 +44,7 @@ services:
     tmpfs: [/tmp]
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    networks: [vantage]
+    networks: [unifeye]
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8889/"]
       interval: 30s
@@ -52,8 +52,8 @@ services:
       retries: 3
 
 volumes:
-  vantage-data:
-  vantage-cache:
+  unifeye-data:
+  unifeye-cache:
 
 networks:
-  vantage:
+  unifeye:

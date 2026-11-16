@@ -34,7 +34,7 @@ describe("alignSpans", () => {
 
 describe.skipIf(!hasFfmpeg)("adaptive playback windows", () => {
   let f: Fixture, cam: string, ws: number;
-  const dir = mkdtempSync(join(tmpdir(), "vantage-pb-"));
+  const dir = mkdtempSync(join(tmpdir(), "unifeye-pb-"));
   beforeAll(async () => {
     f = makeFixture();
     setConfigForTests(loadConfig({ ...TEST_ENV, MEDIA_CACHE_DIR: dir } as NodeJS.ProcessEnv));

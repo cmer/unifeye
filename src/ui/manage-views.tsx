@@ -56,7 +56,7 @@ export function ManageViews() {
   const create = () => act(async () => { const r = await api<{ id: string }>("/views", { method: "POST", body: { name: "Untitled view", type: "dynamic", tagIds: [], visibility: me.isAdmin ? "curated" : "private" } }); setSel(r.id); });
   const convert = (type: "dynamic" | "static") => {
     if (!d || d.type === type) return;
-    // Switching kinds is always an explicit, confirmed choice. Vantage never converts a view on its own.
+    // Switching kinds is always an explicit, confirmed choice. Unifeye never converts a view on its own.
     if (type === "static") { if (confirm("Switch to a fixed list? The current cameras stay, but tag changes will no longer update this view.")) void save({ type, cameraIds: d.cameras.map((c) => c.id), tagIds: [] }); }
     else if (confirm("Switch to tags? The cameras you picked will be cleared.")) void save({ type, cameraIds: [], tagIds: [] });
   };
@@ -120,7 +120,7 @@ function StartingView({ ov, act }: { ov: Overview | null; act: (fn: () => Promis
   const opts = (list: { id: string; name: string }[]) => <><option value="">None</option>{list.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}</>;
   return (
     <>
-      <Card title="Your starting view" hint={me.landing.reason === "none" ? "You don't have any cameras yet." : `Vantage opens to ${mine ?? "all your cameras"}. ${landingReason(me.landing, true)}`.trim()}>
+      <Card title="Your starting view" hint={me.landing.reason === "none" ? "You don't have any cameras yet." : `Unifeye opens to ${mine ?? "all your cameras"}. ${landingReason(me.landing, true)}`.trim()}>
         {me.subject.canCreateViews && !me.preview && <Row label="My choice"><Select aria-label="My starting view" defaultValue="" onChange={(e) => set({ scope: "personal", viewId: e.target.value || null })}>{opts(me.views)}</Select><span className="text-sm text-muted-foreground">Used unless an administrator sets one for you.</span></Row>}
       </Card>
       {me.isAdmin && ov && (

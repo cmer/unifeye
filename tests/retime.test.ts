@@ -6,7 +6,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { ffmpeg, joinParts, retimeVideoToAudio } from "../src/server/protect/ffmpeg";
 
 const hasFfmpeg = spawnSync("ffprobe", ["-version"]).status === 0;
-const dir = mkdtempSync(join(tmpdir(), "vantage-retime-"));
+const dir = mkdtempSync(join(tmpdir(), "unifeye-retime-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 const durations = (path: string) => {

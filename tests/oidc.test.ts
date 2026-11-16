@@ -15,7 +15,7 @@ import { Oidc } from "@/server/auth/oidc";
 type KP = Awaited<ReturnType<typeof generateKeyPair>>;
 let server: Server, issuer = "", good: KP, evil: KP, jwk: JWK;
 const idp = { claims: {} as Record<string, unknown>, signWith: undefined as KP | undefined, refreshIdClaims: undefined as Record<string, unknown> | undefined, refreshOk: true, down: false, refreshCalls: 0, pkce: "" };
-const CLIENT = "vantage-test";
+const CLIENT = "unifeye-test";
 
 async function idToken(extra: Record<string, unknown>, key: KP = good) {
   return new SignJWT({ ...extra }).setProtectedHeader({ alg: "RS256", kid: "k1" }).sign(key.privateKey);
@@ -68,7 +68,7 @@ async function begin() {
 const cb = (state: string, code = "c1") => new URL(`http://localhost:3000/api/auth/callback?code=${code}&state=${state}`);
 async function login(claims: Record<string, unknown>) {
   const b = await begin();
-  idp.claims = { nonce: b.nonce, groups: ["vantage"], ...claims };
+  idp.claims = { nonce: b.nonce, groups: ["unifeye"], ...claims };
   return oidc.complete(cb(b.state), b.cookie, { ip: "198.51.100.7" });
 }
 const reason = async (p: Promise<unknown>) => p.then(() => "ok", (e) => (e as { reason?: string }).reason ?? String(e));
@@ -114,7 +114,7 @@ describe("OIDC login", () => {
   });
   it("rejects a replayed callback, an unknown transaction and a wrong state", async () => {
     const b = await begin();
-    idp.claims = { nonce: b.nonce, sub: "s", groups: ["vantage"] };
+    idp.claims = { nonce: b.nonce, sub: "s", groups: ["unifeye"] };
     await oidc.complete(cb(b.state), b.cookie, {});
     expect(await reason(oidc.complete(cb(b.state), b.cookie, {}))).toBe("transaction_replayed_or_unknown");
     expect(await reason(oidc.complete(cb(b.state), "not-a-cookie", {}))).toBe("transaction_replayed_or_unknown");
@@ -123,7 +123,7 @@ describe("OIDC login", () => {
     expect(await reason(oidc.complete(cb("attacker-state"), c.cookie, {}))).toBe("token_validation_failed");
   });
   it("rejects a nonce mismatch, wrong issuer, wrong audience, bad signature and an expired token", async () => {
-    const now = Math.floor(Date.now() / 1000), base = { sub: "s", groups: ["vantage"] };
+    const now = Math.floor(Date.now() / 1000), base = { sub: "s", groups: ["unifeye"] };
     const attempt = async (claims: (nonce: string) => Record<string, unknown>, key?: KP) => { const b = await begin(); idp.claims = claims(b.nonce); idp.signWith = key; const r = await reason(oidc.complete(cb(b.state), b.cookie, {})); idp.signWith = undefined; return r; };
     expect(await attempt(() => ({ ...base, nonce: "someone-elses" }))).toBe("token_validation_failed");
     expect(await attempt((n) => ({ ...base, nonce: n, iss: "https://evil.example" }))).toBe("token_validation_failed");
@@ -136,18 +136,18 @@ describe("OIDC login", () => {
   it("admits only users whose admission claim carries an accepted value", async () => {
     expect(await reason(login({ sub: "x", groups: ["other"] }))).toBe("not_admitted");
     expect(await reason(login({ sub: "x", groups: undefined }))).toBe("not_admitted");
-    expect(await reason(login({ sub: "x", groups: "vantage-ish" }))).toBe("not_admitted");
+    expect(await reason(login({ sub: "x", groups: "unifeye-ish" }))).toBe("not_admitted");
     expect(f.db.select().from(schema.users).all().some((u) => u.subject === "x")).toBe(false); // nothing provisioned
-    expect(await reason(login({ sub: "y", groups: "vantage" }))).toBe("ok"); // a single string value
-    expect(await reason(login({ sub: "y", groups: ["a", "vantage"] }))).toBe("ok");
+    expect(await reason(login({ sub: "y", groups: "unifeye" }))).toBe("ok"); // a single string value
+    expect(await reason(login({ sub: "y", groups: ["a", "unifeye"] }))).toBe("ok");
   });
   it("reads object-shaped and nested claims, and can require presence only", async () => {
     const use = (over: Record<string, string>) => { setConfigForTests(env(over)); oidc = new Oidc(f.db, f.policy, f.sessions); };
     use({ OIDC_ADMIT_CLAIM: "roles", OIDC_ADMIT_VALUES: "viewer" });
     expect(await reason(login({ sub: "o", roles: { viewer: { "org-1": "x" } } }))).toBe("ok"); // keys are the values
     expect(await reason(login({ sub: "o", roles: { editor: {} } }))).toBe("not_admitted");
-    use({ OIDC_ADMIT_CLAIM: "realm_access.roles", OIDC_ADMIT_VALUES: "vantage" });
-    expect(await reason(login({ sub: "n", realm_access: { roles: ["vantage"] } }))).toBe("ok");
+    use({ OIDC_ADMIT_CLAIM: "realm_access.roles", OIDC_ADMIT_VALUES: "unifeye" });
+    expect(await reason(login({ sub: "n", realm_access: { roles: ["unifeye"] } }))).toBe("ok");
     expect(await reason(login({ sub: "n", realm_access: { roles: ["other"] } }))).toBe("not_admitted");
     use({ OIDC_ADMIT_CLAIM: "https://example.test/roles", OIDC_ADMIT_VALUES: "" });
     expect(await reason(login({ sub: "p", "https://example.test/roles": ["anything"] }))).toBe("ok"); // exact name with dots
@@ -171,7 +171,7 @@ describe("OIDC login", () => {
   it("refuses a disabled account and rotates the session on every sign-in", async () => {
     const first = await login({ sub: "rot" });
     const b = await begin();
-    idp.claims = { nonce: b.nonce, sub: "rot", groups: ["vantage"] };
+    idp.claims = { nonce: b.nonce, sub: "rot", groups: ["unifeye"] };
     const second = await oidc.complete(cb(b.state), b.cookie, { previousSessionToken: first.token });
     expect(second.token).not.toBe(first.token);
     expect(f.sessions.load(first.token)).toBeUndefined();
@@ -182,7 +182,7 @@ describe("OIDC login", () => {
   it("only redirects to same-site paths after login", async () => {
     for (const bad of ["https://evil.example", "//evil.example", "/\\evil", "/api/auth/logout"]) {
       const b = await oidc.begin(bad);
-      const st = new URL(b.url); idp.claims = { nonce: st.searchParams.get("nonce"), sub: "r", groups: ["vantage"] };
+      const st = new URL(b.url); idp.claims = { nonce: st.searchParams.get("nonce"), sub: "r", groups: ["unifeye"] };
       expect((await oidc.complete(cb(st.searchParams.get("state")!), b.cookie, {})).returnTo).toBe("/");
     }
   });
@@ -268,12 +268,12 @@ describe("group sync from the provider's group claim", () => {
 
   it("adds and removes synced memberships at sign-in, and never touches manual ones", async () => {
     map("Front Desk Team", ["front-desk"]); map("Security", ["security", "guards"]);
-    const r = await login({ sub: "gs", groups: ["vantage", "front-desk", "guards"] });
+    const r = await login({ sub: "gs", groups: ["unifeye", "front-desk", "guards"] });
     expect(row(f.g["Front Desk Team"], r.user.id)?.source).toBe("provider");
     expect(row(f.g["Security"], r.user.id)?.source).toBe("provider");
     expect(f.policy.groupIds(r.user.id)).toContain(f.g["Front Desk Team"]); // policy cache was invalidated
     f.admin.setMember(f.actor(f.u.admin), f.g["Upper Level Team"], r.user.id, true); // unmapped, manual
-    await login({ sub: "gs", groups: ["vantage", "guards"] });
+    await login({ sub: "gs", groups: ["unifeye", "guards"] });
     expect(row(f.g["Front Desk Team"], r.user.id)).toBeUndefined();
     expect(row(f.g["Security"], r.user.id)?.source).toBe("provider");
     expect(row(f.g["Upper Level Team"], r.user.id)?.source).toBe("manual");
@@ -284,22 +284,22 @@ describe("group sync from the provider's group claim", () => {
   });
   it("keeps a manual membership when the value goes away, and an admin add turns a synced one manual", async () => {
     map("Front Desk Team", ["front-desk"]);
-    const r = await login({ sub: "mix", groups: ["vantage"] });
+    const r = await login({ sub: "mix", groups: ["unifeye"] });
     f.admin.setMember(f.actor(f.u.admin), f.g["Front Desk Team"], r.user.id, true);
-    await login({ sub: "mix", groups: ["vantage", "front-desk"] });
+    await login({ sub: "mix", groups: ["unifeye", "front-desk"] });
     expect(row(f.g["Front Desk Team"], r.user.id)?.source).toBe("manual"); // no second row, stays manual
-    await login({ sub: "mix", groups: ["vantage"] });
+    await login({ sub: "mix", groups: ["unifeye"] });
     expect(row(f.g["Front Desk Team"], r.user.id)?.source).toBe("manual");
     map("Security", ["security"]);
-    await login({ sub: "mix", groups: ["vantage", "security"] });
+    await login({ sub: "mix", groups: ["unifeye", "security"] });
     expect(() => f.admin.setMember(f.actor(f.u.admin), f.g["Security"], r.user.id, false)).toThrowError(/sign-in provider/);
     f.admin.setMember(f.actor(f.u.admin), f.g["Security"], r.user.id, true);
-    await login({ sub: "mix", groups: ["vantage"] });
+    await login({ sub: "mix", groups: ["unifeye"] });
     expect(row(f.g["Security"], r.user.id)?.source).toBe("manual");
   });
   it("applies a mapping change at once from each person's last reported values", async () => {
-    const r = await login({ sub: "late", groups: ["vantage", "night-shift"] });
-    expect(f.db.select().from(schema.users).all().find((u) => u.id === r.user.id)!.providerGroups).toEqual(["night-shift", "vantage"]);
+    const r = await login({ sub: "late", groups: ["unifeye", "night-shift"] });
+    expect(f.db.select().from(schema.users).all().find((u) => u.id === r.user.id)!.providerGroups).toEqual(["night-shift", "unifeye"]);
     map("Security", ["night-shift"]);
     expect(row(f.g["Security"], r.user.id)?.source).toBe("provider");
     expect(f.policy.groupIds(r.user.id)).toContain(f.g["Security"]);
@@ -308,16 +308,16 @@ describe("group sync from the provider's group claim", () => {
   });
   it("re-syncs during the session re-check from a verified refreshed ID token only", async () => {
     map("Security", ["security"]);
-    const r = await login({ sub: "rc", groups: ["vantage", "security"] });
-    idp.refreshIdClaims = { sub: "rc", groups: ["vantage", "security"] }; idp.signWith = evil; due();
+    const r = await login({ sub: "rc", groups: ["unifeye", "security"] });
+    idp.refreshIdClaims = { sub: "rc", groups: ["unifeye", "security"] }; idp.signWith = evil; due();
     expect(await oidc.reconcile()).toMatchObject({ checked: 1, revoked: 0 });
-    idp.refreshIdClaims = { sub: "someone-else", groups: ["vantage"] }; idp.signWith = undefined; due();
+    idp.refreshIdClaims = { sub: "someone-else", groups: ["unifeye"] }; idp.signWith = undefined; due();
     await oidc.reconcile();
     expect(row(f.g["Security"], r.user.id)?.source).toBe("provider"); // neither token was used
     idp.refreshIdClaims = undefined; due();
     await oidc.reconcile();
     expect(row(f.g["Security"], r.user.id)?.source).toBe("provider"); // no ID token: unchanged
-    idp.refreshIdClaims = { sub: "rc", groups: ["vantage"] }; due();
+    idp.refreshIdClaims = { sub: "rc", groups: ["unifeye"] }; due();
     await oidc.reconcile();
     expect(row(f.g["Security"], r.user.id)).toBeUndefined(); // value removed at the provider
     expect(f.policy.groupIds(r.user.id)).not.toContain(f.g["Security"]);
@@ -342,7 +342,7 @@ describe("group sync from the provider's group claim", () => {
 
 describe("configuration guards", () => {
   it("refuses insecure or incomplete production settings", () => {
-    const prod = { ...TEST_ENV, NODE_ENV: "production", APP_URL: "https://vantage.example", OIDC_ISSUER: "https://id.example" } as unknown as NodeJS.ProcessEnv;
+    const prod = { ...TEST_ENV, NODE_ENV: "production", APP_URL: "https://unifeye.example", OIDC_ISSUER: "https://id.example" } as unknown as NodeJS.ProcessEnv;
     expect(() => loadConfig(prod)).not.toThrow();
     expect(() => loadConfig({ ...prod, OIDC_ALLOW_INSECURE_ISSUER: "1" })).toThrowError(/not allowed in production/);
     expect(() => loadConfig({ ...prod, OIDC_ISSUER: "http://id.example" })).toThrowError(/https/);
@@ -351,8 +351,8 @@ describe("configuration guards", () => {
     expect(() => loadConfig({ ...prod, OIDC_ADMIT_ANY: "1" })).toThrowError(/cannot both be set/);
     expect(() => loadConfig({ ...prod, OIDC_ADMIT_CLAIM: "", OIDC_ADMIT_ANY: "1" })).toThrowError(/needs OIDC_ADMIT_CLAIM/);
     expect(() => loadConfig({ ...prod, PROTECT_TLS_INSECURE: "1" })).toThrowError(/PROTECT_TLS_INSECURE/);
-    expect(() => loadConfig({ ...prod, VANTAGE_MODE: "mock" })).not.toThrow(); // mock cameras still require SSO
-    expect(() => loadConfig({ ...prod, VANTAGE_MODE: "mock", OIDC_CLIENT_ID: "" })).toThrowError(/OIDC_CLIENT_ID/);
+    expect(() => loadConfig({ ...prod, UNIFEYE_MODE: "mock" })).not.toThrow(); // mock cameras still require SSO
+    expect(() => loadConfig({ ...prod, UNIFEYE_MODE: "mock", OIDC_CLIENT_ID: "" })).toThrowError(/OIDC_CLIENT_ID/);
     expect(() => loadConfig({ ...prod, BOOTSTRAP_ADMIN_SUBJECT: "only-subject" })).toThrowError(/set together/);
   });
 });

@@ -1,5 +1,5 @@
 {
-  "name": "vantage",
+  "name": "unifeye",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
-    "vantage": "tsx scripts/cli.ts"
+    "unifeye": "tsx scripts/cli.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

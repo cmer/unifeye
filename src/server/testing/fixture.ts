@@ -12,7 +12,7 @@ import { seedDemo } from "../seed";
 import { MemoryRelay } from "./relay";
 
 export const ISS = "https://id.test.example";
-export const TEST_ENV = { NODE_ENV: "test", VANTAGE_MODE: "mock", TOKEN_ENC_KEY: Buffer.alloc(32, 7).toString("base64"), OIDC_ISSUER: ISS, OIDC_CLIENT_ID: "vantage-test", OIDC_ADMIT_CLAIM: "groups", OIDC_ADMIT_VALUES: "vantage", MEDIAMTX_HOOK_SECRET: "hook", MEDIAMTX_API_SECRET: "api" } as unknown as NodeJS.ProcessEnv;
+export const TEST_ENV = { NODE_ENV: "test", UNIFEYE_MODE: "mock", TOKEN_ENC_KEY: Buffer.alloc(32, 7).toString("base64"), OIDC_ISSUER: ISS, OIDC_CLIENT_ID: "unifeye-test", OIDC_ADMIT_CLAIM: "groups", OIDC_ADMIT_VALUES: "unifeye", MEDIAMTX_HOOK_SECRET: "hook", MEDIAMTX_API_SECRET: "api" } as unknown as NodeJS.ProcessEnv;
 
 /**
  * The permission fixture required by the specification:

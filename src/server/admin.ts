@@ -24,7 +24,7 @@ const viewInput = z.object({
 export type ViewInput = z.input<typeof viewInput>;
 
 /**
- * Every change to Vantage-owned data goes through this class. Each method:
+ * Every change to Unifeye-owned data goes through this class. Each method:
  *  refuses to run during a staff preview, checks the caller's role on the server,
  *  validates input, writes inside a transaction, records an audit entry, and
  *  invalidates the permission cache so the change reaches open sessions and streams.

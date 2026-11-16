@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certi
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0 \
-    DATABASE_PATH=/data/vantage.sqlite BACKUP_DIR=/data/backups MEDIA_CACHE_DIR=/cache MIGRATIONS_DIR=/app/drizzle
+    DATABASE_PATH=/data/unifeye.sqlite BACKUP_DIR=/data/backups MEDIA_CACHE_DIR=/cache MIGRATIONS_DIR=/app/drizzle
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
 COPY --from=build /app/public ./public

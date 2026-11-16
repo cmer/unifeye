@@ -5,7 +5,7 @@
 ```mermaid
 flowchart LR
   B[Browser] -- HTTPS: pages, API, WHEP signalling, HLS, playback --> P[HTTPS reverse proxy]
-  P --> A[Vantage app<br/>Next.js on Node]
+  P --> A[Unifeye app<br/>Next.js on Node]
   B -. WebRTC media, UDP/TCP 8189 .-> M[MediaMTX]
   A -- control API, WHEP, HLS (internal) --> M
   M -- auth hook for every reader --> A
@@ -20,11 +20,11 @@ flowchart LR
 Only the reverse proxy and MediaMTX's WebRTC media port face the network. MediaMTX's API, WHEP,
 HLS and RTSP listeners are internal. Protect credentials and RTSPS URLs never leave the server.
 
-| Data | Owner | What Vantage does |
+| Data | Owner | What Unifeye does |
 | --- | --- | --- |
 | Cameras, names, capabilities, live video, recordings, events | UniFi Protect | Reads and relays. Stores only a stable reference `(nvr id, Protect camera id)` and a disposable metadata cache. |
 | Identity, credentials, MFA, recovery | OIDC provider | Authenticates through OIDC. |
-| Profiles, roles, groups, tags, grants, views, sharing, defaults, sessions, preferences, audit | Vantage (SQLite) | Authoritative. |
+| Profiles, roles, groups, tags, grants, views, sharing, defaults, sessions, preferences, audit | Unifeye (SQLite) | Authoritative. |
 
 No video, snapshot or recording is stored in SQLite. Playback windows and clips live in a
 size- and age-bounded directory.
@@ -37,7 +37,7 @@ size- and age-bounded directory.
 | `src/server/authz/access.ts` | Standing access: whether access already handed out still holds, and the signal to re-check it. |
 | `src/server/authz/views.ts` | Saved views, sanitized resolution, landing precedence. |
 | `src/server/authz/preview.ts` | "See as staff". |
-| `src/server/admin.ts` | Every change to Vantage data: validation, transaction, audit, cache invalidation. |
+| `src/server/admin.ts` | Every change to Unifeye data: validation, transaction, audit, cache invalidation. |
 | `src/server/auth/` | OIDC sign-in, sessions, back-channel logout, lifecycle re-validation. |
 | `src/server/protect/` | Adapter contract, the real `unifi-protect` adapter, the mock adapter. |
 | `src/server/media/` | Media gateway and revocation sweep (`gateway.ts`), the relay interface (`relay.ts`) and its MediaMTX adapter (`mediamtx.ts`), playback windows, clip export. |
@@ -173,19 +173,19 @@ empty with a way to other views; nothing is borrowed to fill it.
 - Provider tokens are encrypted with `TOKEN_ENC_KEY` (AES-256-GCM). Only the ID token (for logout)
   and a refresh token (for re-validation) are kept.
 
-### How revocation reaches Vantage
+### How revocation reaches Unifeye
 
-| Event | Mechanism | Delay until Vantage knows |
+| Event | Mechanism | Delay until Unifeye knows |
 | --- | --- | --- |
-| Sign out in Vantage | Session revoked directly | Immediate |
+| Sign out in Unifeye | Session revoked directly | Immediate |
 | Provider session ended or user signed out | Back-channel logout, if the provider sends it | The provider's delivery time |
 | User disabled or deleted at the provider | Refresh-token check on a schedule; providers usually send no back-channel logout for these | Up to `OIDC_RECHECK_SECONDS` (default 5 minutes) |
-| Disabled in Vantage, grant or group change | Policy invalidation | Immediate |
+| Disabled in Unifeye, grant or group change | Policy invalidation | Immediate |
 | "See as staff" exited or no longer allowed | Preview ended directly | Immediate |
 | Session or preview time limit passes | Noticed by the next request, or by the timer | Up to `REVOCATION_SWEEP_SECONDS` |
 
 Every row ends in the access signal described under [Standing access](#standing-access). Once
-Vantage knows, pages and API calls fail at once and playing media stops within
+Unifeye knows, pages and API calls fail at once and playing media stops within
 `REVOCATION_SWEEP_SECONDS` (default 10, maximum 30). Clip downloads and the event feed stop on the
 same signal. If the provider is unreachable, no one can sign in,
 existing sessions are not extended, and a session that could not be re-validated for
@@ -193,19 +193,19 @@ existing sessions are not extended, and a session that could not be re-validated
 
 ## Media enforcement
 
-1. The browser asks a Vantage route for live video. The route authenticates the session, resolves
+1. The browser asks a Unifeye route for live video. The route authenticates the session, resolves
    the effective subject and checks the camera with the policy.
-2. Vantage calls MediaMTX itself with a random ticket bound to session, subject, camera, path and
+2. Unifeye calls MediaMTX itself with a random ticket bound to session, subject, camera, path and
    transport, valid for 30 seconds and single-use for WebRTC.
-3. MediaMTX runs with `authMethod: http` and asks Vantage's hook before serving any reader. A
+3. MediaMTX runs with `authMethod: http` and asks Unifeye's hook before serving any reader. A
    request without a valid ticket is refused even if it reaches MediaMTX directly. The only RTSP
    reader admitted is the relay's own FFmpeg (publisher credentials, internal address), and only on
    the internal `_src` paths described under Sound; no ticket ever names one of those.
 4. Each admitted MediaMTX session is recorded with its grant. A sweep re-checks all of them with
    `Access` and kicks failures through the control API. It runs on every access signal and on a
-   timer; a signal that arrives during a sweep triggers another one straight after. Readers Vantage
+   timer; a signal that arrives during a sweep triggers another one straight after. Readers Unifeye
    does not know about are kicked.
-5. HLS is proxied entirely by Vantage, so every playlist and segment request is authorized again.
+5. HLS is proxied entirely by Unifeye, so every playlist and segment request is authorized again.
 
 WebRTC signalling is proxied; media flows from MediaMTX to the browser over ICE on port 8189. If no
 media arrives within 4 seconds, the player tears the WebRTC session down and switches to HLS, and the
@@ -252,7 +252,7 @@ without a microphone are pulled directly, as before.
 
 ### The relay seam
 
-Everything Vantage says to MediaMTX goes through one interface, `Relay` (`src/server/media/relay.ts`):
+Everything Unifeye says to MediaMTX goes through one interface, `Relay` (`src/server/media/relay.ts`):
 set up a stream, create, trickle and close a WHEP session, fetch an HLS file for a reader, list and
 kick readers, report health. The gateway (`Media`) receives a relay through its constructor and
 keeps the decisions:
@@ -277,7 +277,7 @@ The other direction, MediaMTX asking the hook, is not part of the interface: it 
 
 Tests use an in-memory relay (`src/server/testing/relay.ts`). It admits no reader without asking
 the same hook, tracks readers so listing and kicking work, and can be switched to unreachable. It
-is a model of what Vantage can observe, not of MediaMTX itself.
+is a model of what Unifeye can observe, not of MediaMTX itself.
 
 ## "See as staff"
 
@@ -349,7 +349,7 @@ zone, so a day is 23, 24 or 25 hours long around daylight-saving changes.
 - No endpoint for recording gaps is known. On a real UNVR the timeline shows the overall recorded
   period, and a gap shows up as "Nothing recorded" when you seek into it.
 - Live video needs an RTSP stream already enabled on the camera in Protect. Enabling one would be a
-  write, so Vantage does not do it.
+  write, so Unifeye does not do it.
 - Live sound depends on rebuilding Protect's audio timestamps (see Sound). If a Protect release
   fixes them, the rebuild is still correct but no longer needed. Audio timing counts samples from
   the start of each stream, so sound and video may drift apart slightly over a long session. H.265

@@ -5,7 +5,7 @@ import type { ProtectCamera } from "./protect/types";
 import { log, newId } from "./util";
 
 /**
- * Reconciles the recorder's inventory into Vantage's camera references.
+ * Reconciles the recorder's inventory into Unifeye's camera references.
  * Identity is (nvr id, Protect camera id): a rename keeps tags, grants and view slots.
  * A camera that discovery no longer reports is marked missing, not deleted.
  * A newly discovered camera gets no grants: nobody but administrators sees it until one is added.

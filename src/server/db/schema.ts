@@ -2,7 +2,7 @@ import { sql } from "drizzle-orm";
 import { check, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 /**
- * Vantage owns everything in this file. Protect stays authoritative for cameras, video and events;
+ * Unifeye owns everything in this file. Protect stays authoritative for cameras, video and events;
  * the `cameras` table holds only stable references plus a disposable metadata cache.
  * There are deliberately no credential or password tables: OIDC is the only way to sign in.
  */
@@ -113,7 +113,7 @@ export const groupMembers = sqliteTable(
 export const cameras = sqliteTable(
   "cameras",
   {
-    id: id(), // Vantage id; safe to expose to authorized clients
+    id: id(), // Unifeye id; safe to expose to authorized clients
     nvrId: text("nvr_id").notNull(),
     protectId: text("protect_id").notNull(), // stable Protect camera id, scoped to the NVR
     name: text("name").notNull(), // cached native name

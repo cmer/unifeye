@@ -8,10 +8,10 @@ import "./globals.css";
 const geist = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Vantage",
+  title: "Unifeye",
   description: "Camera viewing for your team",
   icons: { icon: "/icon.svg", apple: "/apple-touch-icon.png" },
-  appleWebApp: { capable: true, title: "Vantage", statusBarStyle: "black-translucent" },
+  appleWebApp: { capable: true, title: "Unifeye", statusBarStyle: "black-translucent" },
 };
 export const viewport: Viewport = { width: "device-width", initialScale: 1, viewportFit: "cover", themeColor: [{ media: "(prefers-color-scheme: dark)", color: "#09090b" }, { media: "(prefers-color-scheme: light)", color: "#ffffff" }] };
 

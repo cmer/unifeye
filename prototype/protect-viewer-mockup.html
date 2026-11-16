@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Vantage prototype (simulated)</title>
+<title>Unifeye prototype (simulated)</title>
 <style>
 :root{--r:8px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
 :root[data-theme=light]{--bg:#fff;--fg:#09090b;--mut:#f4f4f5;--mfg:#71717a;--bd:#e4e4e7;--pri:#18181b;--prifg:#fafafa;--side:#fafafa;--acc:#f4f4f5;--ring:#a1a1aa;--bad:#dc2626;--warn:#a16207;color-scheme:light}
@@ -181,7 +181,7 @@ td small,th small{display:block;color:var(--mfg);font-weight:400}
 <div id="toasts" aria-live="polite"></div>
 <script>
 "use strict";
-/* Vantage prototype. Everything here is simulated in the browser: footage, activity, identities,
+/* Unifeye prototype. Everything here is simulated in the browser: footage, activity, identities,
    permissions and playback. The demo identity selector is not an authentication mechanism. */
 const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -233,7 +233,7 @@ DB.cams.forEach((c,i)=>c.n=i+1);
 const cam=id=>DB.cams.find(c=>c.id===id), user=id=>DB.users.find(u=>u.id===id), view=id=>DB.views.find(v=>v.id===id), group=id=>DB.groups.find(g=>g.id===id);
 
 /* ---------- state ---------- */
-const LS={get(k,d){try{const v=localStorage.getItem('vantage.'+k);return v==null?d:JSON.parse(v)}catch{return d}},set(k,v){try{localStorage.setItem('vantage.'+k,JSON.stringify(v))}catch{}}};
+const LS={get(k,d){try{const v=localStorage.getItem('unifeye.'+k);return v==null?d:JSON.parse(v)}catch{return d}},set(k,v){try{localStorage.setItem('unifeye.'+k,JSON.stringify(v))}catch{}}};
 const S={actor:'u_admin',preview:null,pvExp:0,route:'wall',viewId:null,tags:[],q:'',landWhy:'',v:null,ev:{cam:'',range:24,type:'',n:24},vtab:'views',editId:null,atab:'users',pvPick:'u_upper',nvr:false,expired:false,side:false,modal:null,tz:LS.get('tz','local')};
 const eff=()=>S.preview||S.actor;
 const isAdmin=()=>!S.preview&&user(S.actor).role==='admin';
@@ -340,7 +340,7 @@ function render(){
  else if(!e.active)pane=`<div class="scroll">${empty('lock','Account turned off','An administrator has turned off access for this account.')}</div>`;
  else pane={wall,viewer,events,views,admin}[S.route]();
  $('#app').innerHTML=`${sidebar()}<div class="pane">
-  ${S.preview?`<div class="alert">${ic('eye')}<span>Seeing Vantage as <b>${esc(e.name)}</b>. You are still signed in as ${esc(u.name)}. Nothing can be changed here. Ends in <span id="pvLeft"></span>.</span><span class="sp"></span><button class="btn sm" data-a="pvExit">Exit</button></div>`:''}
+  ${S.preview?`<div class="alert">${ic('eye')}<span>Seeing Unifeye as <b>${esc(e.name)}</b>. You are still signed in as ${esc(u.name)}. Nothing can be changed here. Ends in <span id="pvLeft"></span>.</span><span class="sp"></span><button class="btn sm" data-a="pvExit">Exit</button></div>`:''}
   ${S.nvr?`<div class="alert bad">${ic('off')}<span><b>Can't reach the recorder.</b> Live video, recordings and activity are unavailable. Your views and settings are safe. Retrying.</span></div>`:''}
   ${pane}</div>
   ${S.side||S.route==='viewer'?'':`<div class="demo" title="Footage, activity, sign-in, permissions and playback are all simulated">Simulated demo<select data-c="ident" aria-label="Demo identity (simulated, not a real sign-in)">${identOpts()}</select></div>`}${S.modal?modal():''}`;
@@ -350,7 +350,7 @@ function render(){
 const identOpts=()=>DB.users.map(x=>`<option value="${x.id}" ${x.id===S.actor?'selected':''}>${esc(x.label)}: ${esc(x.name)}</option>`).join('');
 function sidebar(){const uid=eff(),e=user(uid),live=e.active&&!S.expired,l=landing(uid),vs=live?accViews(uid):[],ac=live?authCams(uid):[],on=S.route==='viewer'?'wall':S.route;
  const nav=(r,i,t)=>`<button class="si ${on===r?'on':''}" data-a="nav" data-r="${r}">${ic(i)}<span>${t}</span></button>`;
- return`<aside class="sb ${S.side?'':'shut'}"><div class="sbh"><span class="lg">V</span><b>Vantage</b><span class="sp"></span><button class="ib ghost" data-a="side" aria-label="Hide sidebar">${ic('panel')}</button></div>
+ return`<aside class="sb ${S.side?'':'shut'}"><div class="sbh"><span class="lg">V</span><b>Unifeye</b><span class="sp"></span><button class="ib ghost" data-a="side" aria-label="Hide sidebar">${ic('panel')}</button></div>
  <div class="sbs"><div class="gl">Cameras</div>
  <button class="si ${on==='wall'&&!S.viewId?'on':''}" data-a="view" data-id="">${ic('cam')}<span>All cameras</span><small>${ac.length}</small></button>
  ${vs.map(v=>`<button class="si ${on==='wall'&&S.viewId===v.id?'on':''}" data-a="view" data-id="${v.id}" title="${v.type==='dynamic'?'Follows tags':'Fixed list'}${v.priv?', private':''}${l.id===v.id?'. '+esc(l.why):''}">${ic('grid')}<span>${esc(v.name)}</span>${l.id===v.id?`<i class="star" aria-label="Opens when you sign in">${ic('star')}</i>`:''}<small>${resolve(v,uid).filter(c=>!c.missing).length}</small></button>`).join('')}
@@ -487,11 +487,11 @@ function admin(){const T=[['users','People'],['groups','Groups'],['access','Came
  access:()=>{const st=DB.users.filter(u=>u.role!=='admin'),subs=[...DB.groups.map(g=>['g:'+g.id,g.name,'Group']),...st.map(u=>['u:'+u.id,u.name,'Person'])];
   return`<p class="note" style="margin-bottom:12px">Nobody sees a camera until it is ticked here, for them or for one of their groups. Tags and shared views never give access.</p><div class="tw"><table><tr><th>Camera</th>${subs.map(([k,n,t])=>`<th class="c">${esc(n)}<small>${t}</small></th>`).join('')}</tr>
   ${DB.cams.map(c=>`<tr><td style="white-space:nowrap"><i class="dot ${c.online?'':'off'}" style="margin-right:8px"></i>${esc(c.name)}</td>${subs.map(([k,n])=>`<td class="c"><input type="checkbox" data-c="grant" data-k="${k}" data-id="${c.id}" ${(DB.grants[k]||[]).includes(c.id)?'checked':''} aria-label="${esc(n)}: ${esc(c.name)}"></td>`).join('')}</tr>`).join('')}</table></div>`},
- tags:()=>`<div class="row" style="margin-top:0"><input type="text" id="tname" placeholder="New tag" aria-label="New tag"><button class="btn" data-a="tadd">${ic('plus')}Add tag</button><span class="sub">Tags live in Vantage. The recorder is never changed.</span></div>
+ tags:()=>`<div class="row" style="margin-top:0"><input type="text" id="tname" placeholder="New tag" aria-label="New tag"><button class="btn" data-a="tadd">${ic('plus')}Add tag</button><span class="sub">Tags live in Unifeye. The recorder is never changed.</span></div>
   <div class="tw"><table><tr><th>Camera</th><th>Tags</th></tr>${DB.cams.map(c=>`<tr><td style="white-space:nowrap">${esc(c.name)}</td><td>${DB.tags.map(t=>`<label class="tog ${c.tags.includes(t)?'on':''}"><input type="checkbox" class="vh" data-c="ctag" data-id="${c.id}" data-t="${esc(t)}" ${c.tags.includes(t)?'checked':''}>${esc(t)}</label>`).join('')}</td></tr>`).join('')}</table></div>
   <div class="card" style="margin-top:14px"><h3>Rename or remove</h3>${DB.tags.map(t=>`<div class="row"><input type="text" data-c="tren" data-t="${esc(t)}" value="${esc(t)}" style="width:180px" aria-label="Tag name"><span class="sub">${DB.cams.filter(c=>c.tags.includes(t)).length} cameras</span><span class="sp"></span><button class="btn sm bad" data-a="tdel" data-t="${esc(t)}">Remove</button></div>`).join('')}</div>`,
  preview:()=>{const st=DB.users.filter(u=>u.role==='staff'&&u.active),s=st.find(u=>u.id===S.pvPick)||st[0];if(!s)return'<p class="note">There are no active staff to look at.</p>';const l=landing(s.id);
-  return`<div class="card"><h3>See Vantage as a staff member</h3><p class="note">Check exactly what someone sees. You stay signed in as yourself, nothing can be changed while looking, it ends after 15 minutes, and it is recorded in History. Their account is not touched.</p>
+  return`<div class="card"><h3>See Unifeye as a staff member</h3><p class="note">Check exactly what someone sees. You stay signed in as yourself, nothing can be changed while looking, it ends after 15 minutes, and it is recorded in History. Their account is not touched.</p>
   <div class="row"><span class="k">Staff member</span><select data-c="pvPick">${st.map(u=>`<option value="${u.id}" ${u.id===s.id?'selected':''}>${esc(u.name)}</option>`).join('')}</select><button class="btn pri" data-a="pvStart" data-id="${s.id}">${ic('eye')}Start</button></div>
   <div class="row"><span class="k">Starts on</span><span>${esc(l.id?view(l.id).name:'Camera wall')}</span><span class="sub">${esc(l.why)}</span></div>
   <div class="row" style="align-items:flex-start"><span class="k">Cameras</span><div style="flex:1">${authCams(s.id).map(c=>`<span class="badge">${esc(c.name)}</span>`).join(' ')||'<span class="sub">None</span>'}</div></div>

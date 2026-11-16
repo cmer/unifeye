@@ -5,11 +5,11 @@ not available where they were written). Treat the first deployment as a test.
 
 ## Where to run it
 
-Run Vantage on the same site network as the recorder: a small machine or VM on the recorder's LAN.
+Run Unifeye on the same site network as the recorder: a small machine or VM on the recorder's LAN.
 Give remote viewers access through a reverse proxy or [Cloudflare Tunnel](cloudflare-tunnel.md)
-rather than moving Vantage off site.
+rather than moving Unifeye off site.
 
-- **The recorder stays private.** Vantage holds Protect credentials that can read every camera, and
+- **The recorder stays private.** Unifeye holds Protect credentials that can read every camera, and
   it pulls the camera streams from the recorder. On a hosted server (a VPS, for example), the
   recorder would have to be reachable from there, through a site-to-site VPN or by exposing it.
   On-site, nothing about the recorder leaves the LAN.
@@ -25,33 +25,33 @@ rather than moving Vantage off site.
 
 A hosted server can make sense in one case: most viewers are off site, many of them watch at the
 same time, and the site's upload speed is the bottleneck. MediaMTX pulls each camera from the
-recorder once and sends a copy to every viewer. If Vantage runs on-site, the site uploads one copy
+recorder once and sends a copy to every viewer. If Unifeye runs on-site, the site uploads one copy
 per remote viewer. If it runs off site, the site uploads each camera once. For example, ten remote
 people each watching four cameras at about 2 Mbps per stream need around 80 Mbps of upload from an
-on-site host, but only about 8 Mbps if Vantage runs off site. Before moving it, check the site's
+on-site host, but only about 8 Mbps if Unifeye runs off site. Before moving it, check the site's
 upload speed and make sure each camera has a low-quality stream for the wall (see
 [Prepare Protect](#2-prepare-protect)). That often stretches an on-site host far enough.
 
-## 1. Register Vantage with your identity provider
+## 1. Register Unifeye with your identity provider
 
-Vantage signs in through any OpenID Connect provider that supports the Authorization Code flow with
+Unifeye signs in through any OpenID Connect provider that supports the Authorization Code flow with
 PKCE (Keycloak, Authentik, Zitadel, Authelia, Entra ID, Okta and so on). It does not embed one.
 
 Step-by-step setup for Zitadel, Keycloak, Microsoft Entra ID and Google Workspace is in
 [identity-providers.md](identity-providers.md). For any other provider, create a client (often
-called an application) for Vantage:
+called an application) for Unifeye:
 
 1. Type: web application, Authorization Code flow with PKCE (S256). A public client is enough; for a
    confidential client, also set `OIDC_CLIENT_SECRET`.
-2. Redirect URI: `https://<vantage host>/api/auth/callback`
-3. Post-logout redirect URI: `https://<vantage host>/signed-out`
-4. Back-channel logout URI, if the provider supports it: `https://<vantage host>/api/auth/backchannel-logout`
-5. Allow refresh tokens. Vantage requests `offline_access` and uses the refresh token only to
+2. Redirect URI: `https://<unifeye host>/api/auth/callback`
+3. Post-logout redirect URI: `https://<unifeye host>/signed-out`
+4. Back-channel logout URI, if the provider supports it: `https://<unifeye host>/api/auth/backchannel-logout`
+5. Allow refresh tokens. Unifeye requests `offline_access` and uses the refresh token only to
    re-check sessions (see [Session re-checks](#session-re-checks)).
 6. Put the claim you want to admit on (a group or role list, for example) into the **ID token**.
    Many providers only add group or role claims to the access token or userinfo by default.
 7. If the provider can restrict which users may use a client, do that too, so unrelated users are
-   refused before they reach Vantage.
+   refused before they reach Unifeye.
 
 Then collect:
 
@@ -65,7 +65,7 @@ Then collect:
 
 ### Admission rule
 
-Authenticating at the provider is not enough to get in. At each sign-in Vantage reads one claim from
+Authenticating at the provider is not enough to get in. At each sign-in Unifeye reads one claim from
 the ID token and refuses the user unless it matches:
 
 - `OIDC_ADMIT_CLAIM` names the claim. If no claim has that exact name, a dotted path is followed,
@@ -76,35 +76,35 @@ the ID token and refuses the user unless it matches:
 - `OIDC_ADMIT_ANY=1` turns the rule off. Use it only when the provider already limits who can use
   this client. Production refuses to start with neither a claim nor `OIDC_ADMIT_ANY`.
 
-A refused user lands on the signed-out page with "not set up for Vantage", and no profile is created.
+A refused user lands on the signed-out page with "not set up for Unifeye", and no profile is created.
 
 Examples:
 
 | Provider puts... | Settings |
 | --- | --- |
-| Group names in `groups` | `OIDC_ADMIT_CLAIM=groups`, `OIDC_ADMIT_VALUES=vantage-users` |
-| Role names under `realm_access.roles` | `OIDC_ADMIT_CLAIM=realm_access.roles`, `OIDC_ADMIT_VALUES=vantage` |
+| Group names in `groups` | `OIDC_ADMIT_CLAIM=groups`, `OIDC_ADMIT_VALUES=unifeye-users` |
+| Role names under `realm_access.roles` | `OIDC_ADMIT_CLAIM=realm_access.roles`, `OIDC_ADMIT_VALUES=unifeye` |
 | An organization ID in a custom claim | `OIDC_ADMIT_CLAIM=<claim name>`, `OIDC_ADMIT_VALUES=<org id>,<org id>` |
 
 Check the exact claim names against an ID token from your provider before going live.
 
 ### Session re-checks
 
-Back-channel logout tells Vantage when a provider session ends, but most providers do not send it
-when a user is disabled or deleted. Vantage therefore exercises each session's refresh token every
+Back-channel logout tells Unifeye when a provider session ends, but most providers do not send it
+when a user is disabled or deleted. Unifeye therefore exercises each session's refresh token every
 `OIDC_RECHECK_SECONDS`: a rejected token revokes the session. If the provider issues no refresh
 token (some need extra request parameters, set with `OIDC_AUTH_PARAMS`), that check cannot run and a disabled user keeps access until back-channel logout or the
 session's own limits end it.
 
 ## 2. Prepare Protect
 
-Create a dedicated **local** Protect user for Vantage with a view-only role. Whether view-only is
+Create a dedicated **local** Protect user for Unifeye with a view-only role. Whether view-only is
 enough for snapshots, events and video export on your Protect version is unverified; if something
-returns "not allowed", widen the role in Protect and note it. Vantage's adapter only issues GET
+returns "not allowed", widen the role in Protect and note it. Unifeye's adapter only issues GET
 requests regardless of the role.
 
 Enable an RTSP stream in Protect on each camera you want live video from (at least one low and one
-high quality stream is ideal). Vantage will not enable streams itself.
+high quality stream is ideal). Unifeye will not enable streams itself.
 
 TLS: export the UNVR's certificate to `./certs/unvr.pem`, set `PROTECT_TLS_CA_FILE=/certs/unvr.pem`
 and use a `PROTECT_HOST` that matches the certificate. For the RTSPS relay, set
@@ -152,7 +152,7 @@ relay, last backup). Neither exposes configuration or secrets.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `VANTAGE_MODE` | `mock` in code, `real` in `.env.example` | `mock` serves simulated cameras; sign-in is still OIDC |
+| `UNIFEYE_MODE` | `mock` in code, `real` in `.env.example` | `mock` serves simulated cameras; sign-in is still OIDC |
 | `SESSION_IDLE_MINUTES` / `SESSION_ABSOLUTE_HOURS` | 720 / 168 | Session lifetimes |
 | `OIDC_RECHECK_SECONDS` | 300 | How quickly a user disabled at the provider is noticed |
 | `OIDC_MAX_STALE_SECONDS` | 1800 | How long a session survives without a successful re-check |
@@ -174,7 +174,7 @@ relay, last backup). Neither exposes configuration or secrets.
 - Manual: `docker compose exec app node cli.mjs backup`
 - `docker compose exec app node cli.mjs users` lists everyone who has signed in, with their issuer
   and subject.
-- Do not copy `vantage.sqlite` on its own while the app runs; recent changes live in the `-wal`
+- Do not copy `unifeye.sqlite` on its own while the app runs; recent changes live in the `-wal`
   file and the copy can be incomplete.
 - Backups contain user, session and permission data. Copy them off the host and protect them.
 - `/api/ready` reports whether the last backup succeeded.
@@ -189,7 +189,7 @@ docker compose up -d app
 ```
 
 `restore` checks the backup, moves the current database aside (it is kept as
-`vantage.sqlite.replaced-<time>`), restores, and invalidates every session, preview and pending
+`unifeye.sqlite.replaced-<time>`), restores, and invalidates every session, preview and pending
 download so that everyone signs in again. It prints counts of users, cameras, tags, views and
 grants for a quick sanity check. `.env`, certificates and your identity provider are not in the backup; restore
 them separately. To restore into a clean volume, omit `--force`.

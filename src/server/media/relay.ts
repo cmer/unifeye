@@ -1,7 +1,7 @@
 import type { LiveSource } from "../protect/types";
 
 /**
- * Everything Vantage says to the media relay. `Media` (gateway.ts) decides who may watch what and
+ * Everything Unifeye says to the media relay. `Media` (gateway.ts) decides who may watch what and
  * owns tickets, grants and the sweep; a relay only carries those decisions out. The production
  * adapter is MediaMTX (mediamtx.ts); tests use the in-memory one (testing/relay.ts).
  *
