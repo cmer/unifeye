@@ -149,7 +149,10 @@ export class UnifiProtectAdapter implements ProtectAdapter {
 
   async listCameras(): Promise<ProtectCamera[]> {
     const c = await this.c();
-    return c.cameras.map((cam) => {
+    // Only cameras adopted by this recorder. One that is merely visible on the network, or adopted by
+    // another NVR, is not a camera anyone can watch here; leaving it out of the inventory hides it.
+    const adopted = (cam: (typeof c.cameras)[number]) => { const cfg = cam.config as unknown as { isAdopted?: boolean; isAdoptedByOther?: boolean }; return cfg.isAdopted === true && cfg.isAdoptedByOther !== true; };
+    return c.cameras.filter(adopted).map((cam) => {
       const cfg = cam.config as unknown as { id: string; name?: string; type?: string; marketName?: string; channels?: { id: number; width: number; height: number; isRtspEnabled?: boolean; rtspAlias?: string }[]; featureFlags?: { smartDetectTypes?: string[]; isDoorbell?: boolean }; stats?: { video?: { recordingStart?: number | null; recordingEnd?: number | null } }; videoCodec?: string };
       const q = ["high", "medium", "low"] as const;
       const types: EventType[] = ["motion", ...((cfg.featureFlags?.smartDetectTypes ?? []).map((t) => SMART[t]).filter(Boolean) as EventType[])];
