@@ -1,0 +1,41 @@
+# MediaMTX for Vantage. Nothing here is reachable from browsers except the WebRTC media port (8189).
+# Every reader, publisher and API call is authorized by Vantage through the HTTP auth hook.
+# The hook address (with its shared secret) and the public host are supplied as environment
+# variables in compose: MTX_AUTHHTTPADDRESS and MTX_WEBRTCADDITIONALHOSTS.
+logLevel: info
+
+authMethod: http
+# No exclusions: the control API is authorized by the hook as well.
+authHTTPExclude: []
+
+api: yes
+apiAddress: :9997
+metrics: no
+pprof: no
+playback: no
+
+# RTSP listens on loopback only. It exists for the on-demand test publisher used in mock mode.
+rtsp: yes
+rtspAddress: 127.0.0.1:8554
+rtspTransports: [tcp]
+rtmp: no
+srt: no
+moq: no
+
+# HLS fallback. Reached only through the Vantage gateway, which re-authorizes every request.
+hls: yes
+hlsAddress: :8888
+hlsVariant: fmp4
+hlsSegmentDuration: 1s
+hlsAlwaysRemux: no
+hlsTrustedProxies: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]
+
+# WebRTC. Signalling (8889) is proxied by Vantage; media flows to 8189 over UDP, or TCP when UDP is blocked.
+webrtc: yes
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+webrtcIPsFromInterfaces: no
+
+# Paths are created at runtime by Vantage, one per camera and quality, pulled on demand.
+paths: {}

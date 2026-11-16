@@ -1,0 +1,140 @@
+# Verification
+
+This file separates what was actually checked from what was not. Nothing below marked "not verified"
+should be assumed to work.
+
+## Versions
+
+| Component | Version | How it was used |
+| --- | --- | --- |
+| Node.js | 26.13 (local); image uses 24 | Tests and local runs |
+| Next.js / React | 16.4.6 / 19.3.0 | Built and run locally |
+| drizzle-orm / better-sqlite3 | 0.45.4 / 13.2.0 | Tests |
+| openid-client / jose | 6.9.0 / 6.2 | Tests against a test identity provider |
+| unifi-protect | 5.4.2 | Compiled against its types only |
+| MediaMTX | 1.21.4 (macOS binary) | Run locally with `docker/mediamtx.yml` |
+| UniFi Protect / UNVR Pro | none | Not available |
+| Zitadel | none | Not available |
+| Docker image, Compose | none | Docker was not running |
+
+## Verified
+
+**Automated tests (`pnpm test`, 116 tests):**
+
+The media tests run against an in-memory relay that asks the real auth hook before admitting a
+reader. They show what the gateway decides, not how MediaMTX behaves.
+
+- Permissions: deny by default, individual and group grants, overlapping groups, disabled users,
+  group removal, grant revocation, cache invalidation, new cameras ungranted, rename and missing
+  cameras.
+- Views: AND tag filtering (`indoors` + `upper_level` gives four cameras), dynamic membership after
+  tag edits, static order and stability, a newly tagged but unauthorized camera staying hidden,
+  duplicate shares, revocation with another share remaining, sanitized responses, concurrent-edit
+  rejection.
+- Starting view: precedence, competing group defaults and the tie-break, validation on assignment,
+  deleted and unshared defaults, empty views.
+- API boundary: every data and media route returns 401 without a session; a forbidden camera is
+  byte-for-byte the same as a missing one for snapshots, recordings, playback, live setup, HLS
+  files, events and exports; event IDs and export IDs do not bypass camera checks; counts and
+  "has more" reflect authorized cameras only.
+- Media tickets: single use, bound to path and transport, refused without the hook secret, RTSP
+  readers refused, WHEP resource tied to its session; active sessions kicked on grant removal,
+  account disablement and session revocation; unknown readers kicked on both transports; a
+  revocation arriving during a sweep is swept straight after it; a sweep with nothing revoked kicks
+  nobody.
+- HLS fallback through the gateway: playlist then segment, the hook asked for each file; 401
+  without a session; 404 once the grant is removed, without the relay being asked; HLS readers
+  kicked on grant removal and session revocation, and the gateway's HLS state dropped with them.
+- Relay outage: WHEP setup, trickle, teardown and HLS answer 503 `relay_unavailable`; a sweep
+  survives it; `/ready` reports the relay as down and as up again.
+- MediaMTX adapter, against a local HTTP stub that records requests: path add and replace bodies,
+  control API credentials, reader listing with paging, kick endpoints, the WHEP offer with the
+  ticket as a Bearer token and the resource read from `location`, trickle and teardown forwarding,
+  HLS redirect following with the session cookie carried per reader, and the configured-path cache
+  being dropped when MediaMTX is unreachable, unhealthy or answers 404. The stub is not MediaMTX:
+  this pins what Vantage sends, not that MediaMTX accepts it.
+- Standing access: a grant stops holding, and the signal fires, when the session is revoked,
+  replaced, idle-expired or past its absolute limit, the preview ends or times out, the subject is
+  disabled, a grant or group membership is removed, or the camera is gone; unknown ids never hold;
+  camera sync signals only when the inventory changes.
+- Clip exports: bound to session and camera; an export made during a preview is refused and its
+  file deleted when that preview ends or times out.
+- Preview: subject's permissions on data and media, administrator stays the actor, all mutations and
+  admin routes blocked, forged, foreign and expired contexts rejected, two tabs kept apart, both
+  identities audited, subject's profile untouched.
+- Sign-in against an isolated test provider: PKCE S256, state and nonce, replayed callback, wrong
+  issuer, wrong audience, bad signature, expired token, organization and project admission, exact
+  issuer and subject mapping, no linking by email, zero-access provisioning, one-time bootstrap,
+  session rotation and expiry, CSRF, safe redirects, provider outage, back-channel logout including
+  replay and malformed tokens, and lifecycle re-validation.
+- No local login: no login, registration or password routes; no credential tables; mock mode in
+  production still requires OIDC settings.
+- Operations: clean install, upgrade from the previous schema with a pre-migration backup, failed
+  migration leaving data intact, newer-database refusal, backup integrity under WAL, restore into a
+  clean location with permissions preserved and sessions revoked, corrupt backup rejection.
+- Time zones: 23- and 25-hour days, the repeated autumn hour, the skipped spring hour.
+
+**Checked by hand against a real MediaMTX 1.21.4 process, mock cameras:**
+
+These checks were made before the MediaMTX calls were moved behind the relay interface
+(`src/server/media/relay.ts`, `mediamtx.ts`). The requests were moved without intended change and
+are now pinned by the stub tests above, but nothing below has been repeated against a real MediaMTX
+since the move.
+
+- Sign-in through the test provider, bootstrap administrator, demo seed, landing view.
+- Eight simultaneous WebRTC streams admitted through the auth hook.
+- Direct requests to MediaMTX refused: WHEP without or with a guessed ticket (401), HLS (401), RTSP
+  read (401), control API without credentials (401).
+- Removing a staff member from a group stopped their three playing streams in about 4 seconds.
+- HLS fallback through the gateway: master playlist, variant playlist, init segment, media segment;
+  a segment request without a session returns 401.
+- Recorded playback: a seek two hours back loaded one 60-second window and played from the right
+  offset.
+- Each screen (wall, player, activity, manage views, admin) rendered in light and dark mode at
+  1440 px wide, and the wall at 390 px wide (one column, no sideways scrolling) in a desktop
+  browser's narrow window. This is not a test on a real phone.
+
+## Not verified
+
+| Area | Why | What could go wrong |
+| --- | --- | --- |
+| Real UNVR: login, camera discovery, snapshots, events, thumbnails, video export, RTSPS relay | No recorder available | Private endpoint shapes or required privileges differ on your Protect version |
+| Recording gaps on a real UNVR | No known endpoint | Timeline shows only the overall recorded period |
+| Real Zitadel: login, admission claims, logout, back-channel logout, deactivation detection | No instance available | Claim names, PKCE-plus-refresh behaviour or error codes differ |
+| Docker image and Compose stack | Docker not running | Build errors, native module missing from the standalone output, MediaMTX environment overrides, volume ownership |
+| Persistence across container recreation | Needs Compose | Covered only by the file-level restore test |
+| Browser test suite | Not written | Screens were checked by hand in one desktop browser |
+| Phones and tablets | No device testing | Layout or touch problems |
+| HLS playback in a browser | Only the gateway responses were checked | Player-level issues |
+| Clip export in the browser, activity live updates in the browser | Checked through the API tests only | UI wiring |
+| Revocation bound under load | Checked with three streams | Slower with many sessions |
+| MediaMTX after the relay refactor | Not re-run against a real process | A request that differs from the hand-checked one in a way the stub tests do not catch |
+| Recovery after a MediaMTX restart | Cache invalidation tested against the stub only | Which status MediaMTX returns for a path it no longer has; whether re-adding an identical path disturbs readers |
+
+## Checking a real UNVR (read-only)
+
+With `.env` pointing at the recorder and the app running, signed in as an administrator:
+
+1. `curl -s https://<host>/api/ready` shows `"recorder":{"mode":"real","state":"connected"}`.
+2. Admin > Camera access lists your cameras by their Protect names.
+3. Open a camera: a still image appears, then live video. If it says "No live video", enable an
+   RTSP stream for that camera in Protect.
+4. Activity shows recent motion with thumbnails.
+5. Click an activity card: playback starts about five seconds before the event.
+6. Drag the timeline to several times of day, including one before the camera was installed.
+7. Save a 15-second clip and play the downloaded file.
+8. In Protect, confirm nothing changed: no new users, settings or streams.
+
+Record the Protect version and the role the Vantage user needed in the table above.
+
+## Checking a real Zitadel
+
+1. Sign in as the bootstrap administrator; Admin > History shows "Became the first administrator".
+2. Sign in as a user from another organization: you land on the signed-out page with "not set up".
+3. Sign in as a new user from the allowed organization: no cameras, role Staff.
+4. Sign out in Vantage: you are returned to the signed-out page and Zitadel's session ends.
+5. With a camera playing, terminate that user's session in Zitadel: video stops and the next click
+   asks for sign-in. Note how long it took.
+6. With a camera playing, deactivate the user in Zitadel: the stream stops within
+   `OIDC_RECHECK_SECONDS` plus `REVOCATION_SWEEP_SECONDS`. Note the time.
+7. Reactivate the user and confirm they must sign in again.

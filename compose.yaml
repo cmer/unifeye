@@ -1,0 +1,58 @@
+# Vantage: one application instance plus MediaMTX. Start with:  docker compose up -d
+# Put an HTTPS reverse proxy in front of 127.0.0.1:3000. Only two things face the network:
+# that proxy, and the WebRTC media port 8189 (UDP and TCP).
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MEDIAMTX_API_URL: http://mediamtx:9997
+      MEDIAMTX_WHEP_URL: http://mediamtx:8889
+      MEDIAMTX_HLS_URL: http://mediamtx:8888
+      # Trust the UNVR's certificate instead of disabling TLS checks (see docs/deployment.md).
+      NODE_EXTRA_CA_CERTS: ${PROTECT_TLS_CA_FILE:-}
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - vantage-data:/data          # SQLite database and backups. Local disk only, never a network share.
+      - vantage-cache:/cache        # Disposable, size-bounded playback and clip cache.
+      - ./certs:/certs:ro
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 20s
+    networks: [vantage]
+
+  mediamtx:
+    # The -ffmpeg variant is required for mock mode's on-demand test streams and has a shell for diagnostics.
+    image: bluenviron/mediamtx:1.21.4-ffmpeg
+    restart: unless-stopped
+    user: "1000:1000"
+    environment:
+      MTX_AUTHHTTPADDRESS: http://app:3000/api/internal/mediamtx-auth?secret=${MEDIAMTX_HOOK_SECRET:?set MEDIAMTX_HOOK_SECRET}
+      # The address browsers use to reach this host for WebRTC media (LAN IP or DNS name).
+      MTX_WEBRTCADDITIONALHOSTS: ${WEBRTC_PUBLIC_HOST:?set WEBRTC_PUBLIC_HOST}
+    volumes:
+      - ./docker/mediamtx.yml:/mediamtx.yml:ro
+    ports:
+      - "8189:8189/udp"             # WebRTC media. The API (9997), WHEP (8889), HLS (8888) and RTSP stay internal.
+      - "8189:8189/tcp"
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [vantage]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8889/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  vantage-data:
+  vantage-cache:
+
+networks:
+  vantage:

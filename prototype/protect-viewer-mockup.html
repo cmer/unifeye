@@ -1,0 +1,609 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vantage prototype (simulated)</title>
+<style>
+:root{--r:8px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+:root[data-theme=light]{--bg:#fff;--fg:#09090b;--mut:#f4f4f5;--mfg:#71717a;--bd:#e4e4e7;--pri:#18181b;--prifg:#fafafa;--side:#fafafa;--acc:#f4f4f5;--ring:#a1a1aa;--bad:#dc2626;--warn:#a16207;color-scheme:light}
+:root[data-theme=dark]{--bg:#09090b;--fg:#fafafa;--mut:#27272a;--mfg:#a1a1aa;--bd:#27272a;--pri:#fafafa;--prifg:#18181b;--side:#111113;--acc:#27272a;--ring:#71717a;--bad:#f87171;--warn:#facc15;color-scheme:dark}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font-size:14px;line-height:1.45;overflow:hidden;-webkit-font-smoothing:antialiased}
+#app{height:100%;display:flex}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer;background:none;border:0;padding:0}
+:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+:disabled{opacity:.5;cursor:not-allowed}
+svg.i{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.sp{flex:1}
+.vh{position:absolute;opacity:0;pointer-events:none}
+
+/* controls */
+.btn{display:inline-flex;align-items:center;gap:6px;height:34px;padding:0 12px;border:1px solid var(--bd);border-radius:var(--r);background:var(--bg);font-weight:500;font-size:13px;white-space:nowrap}
+.btn:hover{background:var(--acc)}
+.btn.pri{background:var(--pri);color:var(--prifg);border-color:var(--pri)}.btn.pri:hover{opacity:.9}
+.btn.bad{color:var(--bad)}
+.btn.sm{height:28px;padding:0 9px}
+.ib{display:inline-grid;place-items:center;width:34px;height:34px;border-radius:var(--r);border:1px solid var(--bd);background:var(--bg);flex:none;position:relative}
+.ib:hover{background:var(--acc)}
+.ghost{border-color:transparent;background:none}
+input[type=text],input[type=search],input[type=date],input[type=time],input[type=number],select{height:34px;border:1px solid var(--bd);border-radius:var(--r);background:var(--bg);padding:0 10px;font-size:13px;min-width:0}
+input[type=checkbox]{accent-color:var(--pri);width:16px;height:16px;margin:0}
+input.sw{appearance:none;width:36px;height:20px;border-radius:99px;background:var(--bd);position:relative;transition:.15s;cursor:pointer;vertical-align:middle}
+input.sw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--bg);box-shadow:0 1px 2px #0005;transition:.15s}
+input.sw:checked{background:var(--pri)}input.sw:checked::after{left:18px}
+.seg{display:inline-flex;background:var(--mut);border-radius:var(--r);padding:3px;gap:2px}
+.seg button{padding:4px 12px;border-radius:6px;font-size:13px;color:var(--mfg);font-weight:500}
+.seg button.on{background:var(--bg);color:var(--fg);box-shadow:0 1px 2px #0003}
+.tog{display:inline-flex;align-items:center;height:28px;padding:0 10px;border:1px solid var(--bd);border-radius:99px;font-size:12.5px;cursor:pointer;color:var(--mfg);margin:2px;position:relative}
+.tog:hover{color:var(--fg)}
+.tog.on{background:var(--pri);color:var(--prifg);border-color:var(--pri)}
+.tog:has(:focus-visible){outline:2px solid var(--ring);outline-offset:2px}
+.badge{border:1px solid var(--bd);border-radius:99px;padding:1px 8px;font-size:11.5px;color:var(--mfg);white-space:nowrap}
+.dot{width:7px;height:7px;border-radius:50%;background:#22c55e;flex:none;display:inline-block}.dot.off{background:#ef4444}.dot.miss{background:#71717a}
+
+/* sidebar */
+.sb{width:256px;flex:none;background:var(--side);border-right:1px solid var(--bd);display:flex;flex-direction:column}
+.sb.shut{display:none}
+.sbh{display:flex;align-items:center;gap:8px;padding:10px 10px 6px 14px}
+.lg{width:26px;height:26px;border-radius:7px;background:var(--pri);color:var(--prifg);display:grid;place-items:center;font-weight:700;font-size:13px}
+.sbs{flex:1;overflow:auto;padding:0 8px}
+.gl{font-size:12px;color:var(--mfg);font-weight:500;padding:14px 8px 6px}
+.si{display:flex;align-items:center;gap:8px;width:100%;height:32px;padding:0 8px;border-radius:6px;text-align:left;font-size:13.5px}
+.si:hover,.si.on{background:var(--acc)}.si.on{font-weight:500}
+.si>span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.si small{color:var(--mfg);font-size:12px}
+.si .star{color:#eab308;display:flex;flex:none}
+.sbf{border-top:1px solid var(--bd);padding:4px 10px 10px;display:grid;gap:6px}
+.sbf .gl{padding:8px 0 0}
+.me{display:flex;align-items:center;gap:8px;padding-top:6px}
+.av{width:30px;height:30px;border-radius:50%;background:var(--mut);display:grid;place-items:center;font-size:11.5px;font-weight:600;flex:none}
+.me .n{flex:1;min-width:0;font-size:13px;font-weight:500;line-height:1.25}.me small{display:block;color:var(--mfg);font-weight:400;font-size:12px}
+
+/* pane */
+.pane{flex:1;min-width:0;position:relative;display:flex;flex-direction:column;background:var(--bg)}
+.scroll{flex:1;overflow:auto;min-height:0;display:flex;flex-direction:column}
+.alert{display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--bd);font-size:13px;background:var(--mut);flex:none}
+.alert.bad{color:var(--bad)}
+.wd{flex:1;min-height:0;display:flex;flex-direction:column;position:relative}
+.wg{display:grid;gap:2px;grid-template-columns:repeat(3,minmax(0,1fr))}
+.wg.c2{grid-template-columns:repeat(2,minmax(0,1fr))}.wg.c4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.tile{position:relative;aspect-ratio:16/9;overflow:hidden;background:#000;display:block;width:100%;color:#fff;text-align:left}
+.tile[data-a]:hover::after{content:"";position:absolute;inset:0;box-shadow:inset 0 0 0 2px #fff}
+.tile:focus-visible{outline-offset:-3px;outline-color:#fff}
+.feed{position:absolute;inset:0}
+.scene{width:100%;height:100%;display:block}
+.shade{position:absolute;inset:0;background:#040714;pointer-events:none}
+.grain{position:absolute;inset:0;background:repeating-linear-gradient(0deg,#0000 0 2px,#0001 2px 3px);pointer-events:none}
+.walker{animation:walk 18s linear infinite;animation-play-state:paused}
+.tile.on .walker,.stage .walker{animation-play-state:running}
+.stage.paused .walker{animation-play-state:paused}
+@keyframes walk{from{transform:translateX(-20px)}to{transform:translateX(340px)}}
+@media(prefers-reduced-motion:reduce){.walker{animation:none}}
+.nm{position:absolute;left:10px;top:10px;background:#000a;color:#fff;border-radius:6px;padding:3px 8px;font-size:12.5px;font-weight:500;display:flex;gap:6px;align-items:center;max-width:calc(100% - 20px);white-space:nowrap;overflow:hidden}
+.offm{position:absolute;inset:0;display:grid;place-items:center;text-align:center;background:#18181b;color:#a1a1aa;padding:16px;font-size:13px}
+.offm b{display:block;color:#fafafa;font-weight:500;margin-bottom:2px}
+.offm .btn{margin-top:12px}
+.dock{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);display:flex;align-items:center;gap:2px;padding:4px;border-radius:12px;background:color-mix(in srgb,var(--bg) 92%,transparent);border:1px solid var(--bd);box-shadow:0 8px 24px #0006;backdrop-filter:blur(12px);max-width:calc(100% - 24px);overflow-x:auto;z-index:6}
+.dv{height:32px;padding:0 12px;border-radius:8px;font-size:13px;color:var(--mfg);white-space:nowrap;font-weight:500;flex:none}
+.dv:hover{color:var(--fg)}.dv.on{background:var(--pri);color:var(--prifg)}
+.sep{width:1px;height:20px;background:var(--bd);margin:0 4px;flex:none}
+.ib.has::after{content:"";position:absolute;top:6px;right:6px;width:7px;height:7px;border-radius:50%;background:#3b82f6}
+.fpill{position:absolute;left:50%;bottom:70px;transform:translateX(-50%);display:flex;align-items:center;gap:10px;padding:4px 4px 4px 14px;border-radius:99px;background:var(--bg);border:1px solid var(--bd);box-shadow:0 8px 24px #0006;font-size:13px;font-weight:500;white-space:nowrap;z-index:5;max-width:calc(100% - 24px)}
+.fpill span{color:var(--mfg);font-weight:400}
+.fpill .btn{border-radius:99px}
+.pop{position:absolute;z-index:8;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:12px;box-shadow:0 12px 32px #0008;padding:12px;width:min(300px,calc(100% - 24px))}
+.pop .gl{padding:12px 2px 6px}
+.pop input:not([type=checkbox]),.pop select{width:100%}
+.fpop{left:50%;bottom:70px;transform:translateX(-50%);max-height:calc(100% - 90px);overflow:auto}
+.jpop{right:14px;top:58px;display:grid;gap:8px}
+.ck{display:flex;align-items:center;gap:8px;padding:5px 4px;border-radius:6px;font-size:13.5px;cursor:pointer}.ck:hover{background:var(--acc)}.ck small{margin-left:auto;color:var(--mfg)}
+
+/* player */
+.vw{flex:1;position:relative;background:#000;color:#fff;min-height:0;overflow:hidden}
+.stage{position:absolute;inset:0}
+.vtop{position:absolute;left:0;right:0;top:0;display:flex;align-items:center;gap:10px;padding:14px 16px 40px;background:linear-gradient(#000b,#0000);transition:opacity .3s}
+.vtop b{font-size:15px;font-weight:600}
+.vbot{position:absolute;left:0;right:0;bottom:0;padding:48px 18px 14px;background:linear-gradient(#0000,#000d);transition:opacity .3s}
+.vw.idle .vtop,.vw.idle .vbot{opacity:0}
+.w{color:#fff!important;border-color:#fff4!important;background:#0000!important}.w:hover{background:#fff2!important}
+.ghost.w{border-color:transparent!important}
+select.w option{color:#000}
+.vst{font-size:12.5px;color:#d4d4d8;display:flex;align-items:center;gap:6px}
+.tl{position:relative;height:30px;cursor:pointer;touch-action:none;user-select:none}
+.trk{position:absolute;left:0;right:0;bottom:8px;height:5px;border-radius:99px;background:#fff3;overflow:hidden}
+.rng{position:absolute;top:0;bottom:0;background:#fffc;min-width:1px}
+.mk{position:absolute;bottom:17px;width:6px;height:6px;border-radius:50%;margin-left:-3px}
+.ph{position:absolute;bottom:3px;width:15px;height:15px;border-radius:50%;background:#fff;margin-left:-7.5px;box-shadow:0 0 0 4px #fff4;pointer-events:none}
+.hrs{display:flex;justify-content:space-between;font-size:11.5px;color:#a1a1aa;margin-top:2px}
+.ctl{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
+.ctl svg.i{width:20px;height:20px}
+.time{font-size:16px;font-weight:600;margin-left:8px;font-variant-numeric:tabular-nums}.time small{font-size:12.5px;font-weight:400;color:#d4d4d8;margin-left:8px}
+.bbox{position:absolute;border:2px solid;border-radius:4px;font-size:11px;font-weight:600;pointer-events:none}
+.bbox span{position:absolute;left:-2px;top:-19px;padding:1px 6px;color:#000;border-radius:4px 4px 0 0;white-space:nowrap}
+.hovtip{position:fixed;z-index:50;pointer-events:none;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:4px;width:140px;box-shadow:0 8px 24px #0008;font-size:12px;text-align:center}
+.hovtip .mini{position:relative;aspect-ratio:16/9;border-radius:5px;overflow:hidden;margin-bottom:3px;background:#000}
+
+/* pages */
+.pg{width:100%;max-width:1120px;margin:0 auto;padding:18px 24px 90px}
+.hd{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px;min-height:34px}
+h1{font-size:20px;font-weight:600;margin:0}
+.sub,.note{color:var(--mfg);font-size:13px}.note{margin:6px 0}.note.w{color:var(--warn)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}
+.cd{border:1px solid var(--bd);border-radius:10px;overflow:hidden;text-align:left;background:var(--bg);display:block;width:100%}
+.cd:hover{border-color:var(--ring)}
+.cd .th{position:relative;aspect-ratio:16/9;background:#000}
+.cd .m{padding:8px 12px 10px;display:grid}.cd b{font-weight:500}.cd .m span{color:var(--mfg);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hd select{max-width:180px}
+.tabs{display:inline-flex;flex-wrap:wrap;background:var(--mut);border-radius:var(--r);padding:3px;gap:2px;margin-bottom:16px}
+.tabs button{padding:5px 12px;border-radius:6px;font-size:13px;color:var(--mfg);font-weight:500}
+.tabs .on{background:var(--bg);color:var(--fg);box-shadow:0 1px 2px #0003}
+.card{border:1px solid var(--bd);border-radius:10px;padding:16px;margin-bottom:14px}
+.card h3{margin:0 0 4px;font-size:15px;font-weight:600}
+.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:10px 0}
+.row>.k{width:120px;color:var(--mfg);flex:none;font-size:13px}
+.cols2{display:grid;grid-template-columns:240px 1fr;gap:16px;align-items:start}
+.cols2>.card{padding:6px}
+.tw{overflow:auto;border:1px solid var(--bd);border-radius:10px}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{text-align:left;padding:10px 12px;border-top:1px solid var(--bd);vertical-align:middle}
+tr:first-child>*{border-top:0}
+th{font-weight:500;color:var(--mfg);font-size:12.5px;white-space:nowrap}
+td.c,th.c{text-align:center}
+td small,th small{display:block;color:var(--mfg);font-weight:400}
+.ord{display:flex;align-items:center;gap:8px;padding:4px 4px 4px 12px;border:1px solid var(--bd);border-radius:var(--r);margin-bottom:6px}.ord .n{flex:1}
+.empty{margin:auto;max-width:400px;text-align:center;color:var(--mfg);padding:60px 16px}
+.empty h3{color:var(--fg);margin:12px 0 4px;font-size:16px;font-weight:600}
+.empty svg.i{width:28px;height:28px}
+.empty .btn{margin-top:14px}
+.demo{position:fixed;bottom:16px;left:16px;z-index:30;display:flex;align-items:center;gap:8px;padding:3px 4px 3px 12px;border-radius:99px;border:1px solid var(--bd);background:color-mix(in srgb,var(--bg) 90%,transparent);backdrop-filter:blur(10px);font-size:12px;color:var(--mfg);box-shadow:0 4px 14px #0004;white-space:nowrap}
+.demo select{height:26px;border-radius:99px;font-size:12px;border:0;background:var(--mut);color:var(--fg)}
+#toasts{position:fixed;right:14px;bottom:14px;display:grid;gap:6px;z-index:100}
+.toast{background:var(--bg);border:1px solid var(--bd);padding:10px 14px;border-radius:var(--r);box-shadow:0 8px 24px #0006;max-width:340px;font-size:13px}
+.modal{position:fixed;inset:0;background:#000a;display:grid;place-items:center;z-index:80;padding:16px}
+.modal .card{width:min(420px,100%);background:var(--bg);margin:0}
+.bar{height:6px;border-radius:3px;background:var(--mut);overflow:hidden;margin:12px 0}.bar i{display:block;height:100%;background:var(--pri);transition:width .2s}
+@media(max-width:760px){
+ .sb{position:fixed;z-index:40;top:0;bottom:0;left:0;box-shadow:0 0 0 100vmax #0008}
+ .demo{display:none}
+ .wg,.wg.c4{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .cols2{grid-template-columns:1fr}
+ .pg{padding:14px 14px 90px}
+ .time small{display:none}
+}
+@media(max-width:480px){.wg,.wg.c2,.wg.c4{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="toasts" aria-live="polite"></div>
+<script>
+"use strict";
+/* Vantage prototype. Everything here is simulated in the browser: footage, activity, identities,
+   permissions and playback. The demo identity selector is not an authentication mechanism. */
+const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const IC={grid:'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z',bell:'M6 16V11a6 6 0 0112 0v5l2 2H4zM10 21h4',list:'M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01',shield:'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z',cam:'M3 7h12v10H3zM15 10l6-3v10l-6-3',star:'M12 3l2.7 5.6 6.3.9-4.5 4.3 1 6.2-5.5-3-5.5 3 1-6.2L3 9.5l6.3-.9z',play:'M8 5l11 7-11 7z',pause:'M8 5v14M16 5v14',back:'M15 5l-7 7 7 7',full:'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5',x:'M6 6l12 12M18 6L6 18',up:'M6 15l6-6 6 6',down:'M6 9l6 6 6-6',eye:'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 9a3 3 0 100 6 3 3 0 000-6z',dl:'M12 4v11M7 11l5 5 5-5M5 20h14',lock:'M6 11h12v9H6zM8 11V8a4 4 0 018 0v3',off:'M3 3l18 18M3 7h8m4 0v6m0 0l6 4V7l-4 2.6M3 7v10h12',plus:'M12 5v14M5 12h14',search:'M11 4a7 7 0 100 14 7 7 0 000-14zM21 21l-5-5',panel:'M4 5h16v14H4zM9 5v14',filter:'M4 6h16M7 12h10M10 18h4',sun:'M12 8a4 4 0 100 8 4 4 0 000-8zM12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M5 19l1.5-1.5M17.5 6.5L19 5',moon:'M20 14A8 8 0 0110 4a8 8 0 1010 10z',cal:'M5 6h14v14H5zM5 10h14M9 3v4M15 3v4',r10:'M4 12a8 8 0 108-8H7M10 1L7 4l3 3',f10:'M20 12a8 8 0 11-8-8h5M14 1l3 3-3 3'};
+const ic=n=>`<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="${IC[n]}"/></svg>`;
+
+/* ---------- seeded demo data ---------- */
+const C=(id,name,scene,hue,tags,online=true)=>({id,name,scene,hue,tags,online});
+const DB={
+ tags:['indoors','outdoors','upper_level','ground_level','entrance','front_desk','public_area','hallway','stairwell','parking','perimeter','deliveries','restricted'],
+ cams:[
+  C('c01','Front Entrance','entrance',215,['outdoors','ground_level','entrance','public_area']),
+  C('c02','Lobby Front Desk','lobby',30,['indoors','ground_level','front_desk','public_area']),
+  C('c03','Reception Waiting','waiting',190,['indoors','ground_level','front_desk','public_area']),
+  C('c04','Upper Hallway East','hall',220,['indoors','upper_level','hallway']),
+  C('c05','Upper Hallway West','hall',260,['indoors','upper_level','hallway']),
+  C('c06','Upper Lounge','lounge',20,['indoors','upper_level','public_area']),
+  C('c07','Upper Stairwell','stairs',200,['indoors','upper_level','stairwell']),
+  C('c08','Roof Terrace','roof',205,['outdoors','upper_level']),
+  C('c09','Parking Lot North','parking',210,['outdoors','parking','perimeter']),
+  C('c10','Parking Lot South','parking',225,['outdoors','parking','perimeter'],false),
+  C('c11','Loading Dock','dock',35,['outdoors','perimeter','deliveries']),
+  C('c12','Rear Exit','exit',150,['outdoors','perimeter','entrance']),
+  C('c13','Stock Room','stock',40,['indoors','ground_level','restricted']),
+  C('c14','Server Closet','rack',240,['indoors','ground_level','restricted'])],
+ users:[
+  {id:'u_admin',name:'Avery Chen',label:'Admin',sub:'281474976710001',role:'admin',active:true,priv:true},
+  {id:'u_upper',name:'Morgan Reyes',label:'Upper Level Staff',sub:'281474976710002',role:'staff',active:true,priv:false},
+  {id:'u_front',name:'Sam Okafor',label:'Front Desk',sub:'281474976710003',role:'staff',active:true,priv:true},
+  {id:'u_sec',name:'Jordan Blake',label:'Security',sub:'281474976710004',role:'staff',active:true,priv:false},
+  {id:'u_new',name:'Riley Park',label:'New hire, no access yet',sub:'281474976710005',role:'staff',active:true,priv:false}],
+ groups:[
+  {id:'g_all',name:'All Staff',prio:10,members:['u_upper','u_front','u_sec','u_new']},
+  {id:'g_front',name:'Front Desk Team',prio:20,members:['u_front','u_sec']},
+  {id:'g_upper',name:'Upper Level Team',prio:30,members:['u_upper']},
+  {id:'g_sec',name:'Security',prio:40,members:['u_sec']}],
+ grants:{'g:g_upper':['c04','c05','c06','c07','c08'],'g:g_front':['c01','c02','c03'],'g:g_sec':['c07','c09','c10','c11','c12'],'u:u_front':['c11']},
+ views:[
+  {id:'v_upper',name:'Upper Level Indoors',type:'dynamic',tags:['indoors','upper_level'],cams:[],cols:2,owner:'u_admin',priv:false,share:{org:false,groups:['g_upper','g_sec'],users:[]}},
+  {id:'v_front',name:'Front Desk',type:'static',tags:[],cams:['c02','c03','c01','c11'],cols:2,owner:'u_admin',priv:false,share:{org:false,groups:['g_front'],users:['u_front']}},
+  {id:'v_perim',name:'Perimeter',type:'dynamic',tags:['outdoors','perimeter'],cams:[],cols:2,owner:'u_admin',priv:false,share:{org:false,groups:['g_sec'],users:[]}},
+  {id:'v_all',name:'Building Overview',type:'static',tags:[],cams:['c01','c02','c04','c06','c09','c11','c13','c99','c12'],cols:3,owner:'u_admin',priv:false,share:{org:true,groups:[],users:[]}},
+  {id:'v_rest',name:'Restricted Rooms',type:'dynamic',tags:['restricted'],cams:[],cols:2,owner:'u_admin',priv:false,share:{org:false,groups:[],users:[]}},
+  {id:'v_my',name:'My deliveries',type:'dynamic',tags:['deliveries'],cams:[],cols:2,owner:'u_front',priv:true,share:{org:false,groups:[],users:[]}}],
+ defaults:{org:'v_all',groups:{g_upper:'v_upper',g_front:'v_front',g_sec:'v_perim'},users:{},personal:{u_front:'v_my'}},
+ audit:[]
+};
+DB.cams.forEach((c,i)=>c.n=i+1);
+const cam=id=>DB.cams.find(c=>c.id===id), user=id=>DB.users.find(u=>u.id===id), view=id=>DB.views.find(v=>v.id===id), group=id=>DB.groups.find(g=>g.id===id);
+
+/* ---------- state ---------- */
+const LS={get(k,d){try{const v=localStorage.getItem('vantage.'+k);return v==null?d:JSON.parse(v)}catch{return d}},set(k,v){try{localStorage.setItem('vantage.'+k,JSON.stringify(v))}catch{}}};
+const S={actor:'u_admin',preview:null,pvExp:0,route:'wall',viewId:null,tags:[],q:'',landWhy:'',v:null,ev:{cam:'',range:24,type:'',n:24},vtab:'views',editId:null,atab:'users',pvPick:'u_upper',nvr:false,expired:false,side:false,modal:null,tz:LS.get('tz','local')};
+const eff=()=>S.preview||S.actor;
+const isAdmin=()=>!S.preview&&user(S.actor).role==='admin';
+function audit(action,target='',outcome='ok'){DB.audit.unshift({t:Date.now(),actor:S.actor,subject:S.preview,action,target,outcome})}
+function mut(){if(S.preview){toast('Nothing can be changed while seeing as staff');audit('Tried to change something while seeing as staff','','denied');return false}return true}
+function toast(m){const d=document.createElement('div');d.className='toast';d.textContent=m;$('#toasts').append(d);setTimeout(()=>d.remove(),3800)}
+
+/* ---------- authorization model (mirrors the server-side policy service) ---------- */
+const groupsOf=uid=>DB.groups.filter(g=>g.members.includes(uid));
+function authCams(uid){const u=user(uid);if(!u||!u.active)return[];if(u.role==='admin')return[...DB.cams];
+ const ids=new Set(DB.grants['u:'+uid]||[]);for(const g of groupsOf(uid))for(const id of DB.grants['g:'+g.id]||[])ids.add(id);
+ return DB.cams.filter(c=>ids.has(c.id))}
+function accViews(uid){const u=user(uid);if(!u||!u.active)return[];const gs=new Set(groupsOf(uid).map(g=>g.id));
+ return DB.views.filter(v=>v.priv?v.owner===uid:(u.role==='admin'||v.share.org||v.share.users.includes(uid)||v.share.groups.some(g=>gs.has(g))))}
+function resolve(v,uid){const auth=new Set(authCams(uid).map(c=>c.id)),admin=user(uid).role==='admin';
+ const list=v.type==='dynamic'?DB.cams.filter(c=>v.tags.every(t=>c.tags.includes(t))).sort((a,b)=>a.name.localeCompare(b.name))
+  :v.cams.map(id=>cam(id)||{id,missing:true,name:'Missing camera',tags:[],online:false});
+ return list.filter(c=>c.missing?admin:auth.has(c.id))}
+/* Landing precedence: individual > group (highest priority number, ties by group id) > personal > organization > wall */
+function landing(uid){const u=user(uid),acc=new Set(accViews(uid).map(v=>v.id)),ok=(id,why)=>id&&acc.has(id)?{id,why}:null;let r;
+ if(r=ok(DB.defaults.users[uid],'Individual default assigned by an administrator'))return r;
+ for(const g of groupsOf(uid).sort((a,b)=>b.prio-a.prio||a.id.localeCompare(b.id)))if(r=ok(DB.defaults.groups[g.id],`Group default from ${g.name} (priority ${g.prio})`))return r;
+ if(u.priv&&(r=ok(DB.defaults.personal[uid],'Personal default')))return r;
+ if(r=ok(DB.defaults.org,'Organization default'))return r;
+ return{id:null,why:authCams(uid).length?'No default applies, so the authorized camera wall opens':'No camera access'}}
+function canEdit(v){if(S.preview)return false;const u=user(S.actor);return v.priv?v.owner===u.id&&(u.priv||u.role==='admin'):u.role==='admin'}
+
+/* ---------- time helpers: UTC storage, rendered in a selectable zone ---------- */
+const tzName=()=>S.tz==='local'?Intl.DateTimeFormat().resolvedOptions().timeZone:S.tz;
+const _f={};
+function P(ms,tz=tzName()){const f=_f[tz]||(_f[tz]=new Intl.DateTimeFormat('en-CA',{timeZone:tz,hourCycle:'h23',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}));const o={};for(const x of f.formatToParts(ms))o[x.type]=x.value;return o}
+const fT=ms=>{const p=P(ms);return`${p.hour}:${p.minute}:${p.second}`},fHM=ms=>{const p=P(ms);return`${p.hour}:${p.minute}`},fD=ms=>{const p=P(ms);return`${p.year}-${p.month}-${p.day}`};
+function off(ms,tz){const p=P(ms,tz);return Date.UTC(+p.year,p.month-1,+p.day,+p.hour,+p.minute,+p.second)-Math.floor(ms/1000)*1000}
+function z2u(y,mo,d,h,mi,s,tz=tzName()){const g=Date.UTC(y,mo-1,d,h,mi,s);return g-off(g-off(g,tz),tz)}
+function dayB(ms){const p=P(ms),n=new Date(Date.UTC(+p.year,p.month-1,+p.day+1));return[z2u(+p.year,+p.month,+p.day,0,0,0),z2u(n.getUTCFullYear(),n.getUTCMonth()+1,n.getUTCDate(),0,0,0)]}
+const ago=ms=>{const m=Math.round((Date.now()-ms)/6e4);return m<1?'just now':m<60?m+' min ago':m<1440?Math.round(m/60)+' h ago':Math.round(m/1440)+' d ago'};
+
+/* ---------- simulated recordings and events ---------- */
+const DAY=864e5,RET=7*DAY,T0=Date.now();
+function rng(a){return()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const TY={motion:{l:'Motion',c:'#fbbf24'},person:{l:'Person',c:'#60a5fa'},vehicle:{l:'Vehicle',c:'#a78bfa'},package:{l:'Package',c:'#34d399'},animal:{l:'Animal',c:'#fb923c'}};
+function gaps(c,a,b){const g=[[-Infinity,T0-RET],[Date.now(),Infinity]];if(!c.online)g.push([T0-3*36e5,Infinity]);
+ for(let d=Math.floor(a/DAY)-1;d<=Math.floor(b/DAY);d++){const r=rng(c.n*7919+d*13),k=Math.floor(r()*3);for(let i=0;i<k;i++){const s=d*DAY+r()*DAY;g.push([s,s+(4+r()*36)*6e4])}}
+ return g.sort((x,y)=>x[0]-y[0])}
+function recRanges(c,a,b){const out=[];let p=a;for(const[s,e]of gaps(c,a,b)){if(e<=p)continue;if(s>=b)break;if(s>p)out.push([p,s]);p=Math.max(p,e)}if(p<b)out.push([p,b]);return out}
+const inRec=(c,t)=>recRanges(c,t,t+1).length>0;
+const nextRec=(c,t)=>{const r=recRanges(c,t,t+2*DAY)[0];return r?r[0]:null};
+const _ev={};
+function camEvents(c){if(_ev[c.id])return _ev[c.id];const out=[],types=['person'];if(c.tags.includes('outdoors'))types.push('vehicle','animal');if(c.tags.includes('deliveries')||c.tags.includes('entrance'))types.push('package');
+ for(let d=Math.floor((T0-RET)/DAY);d<=Math.floor(T0/DAY);d++){const r=rng(c.n*1009+d*31),n=5+Math.floor(r()*12);
+  for(let i=0;i<n;i++){const t=Math.floor(d*DAY+r()*DAY),type=r()<.45?'motion':types[Math.floor(r()*types.length)],dur=5+Math.floor(r()*40),x=10+r()*55,y=30+r()*25;
+   if(t<T0-6e4&&t>T0-RET&&inRec(c,t))out.push({id:`e${c.n}_${d}_${i}`,cam:c.id,t,type,dur,x,y})}}
+ return _ev[c.id]=out.sort((a,b)=>a.t-b.t)}
+function evAt(c,t){return camEvents(c).find(e=>t>=e.t&&t<=e.t+e.dur*1000)}
+
+/* ---------- illustrated scenes (generated locally; no external feeds) ---------- */
+function art(c){const h=c.hue,f=(s,l)=>`hsl(${h} ${s}% ${l}%)`,
+ p=(pts,s,l)=>`<polygon points="${pts}" fill="${f(s,l)}"/>`,
+ r=(x,y,w,ht,s,l,rx=0)=>`<rect x="${x}" y="${y}" width="${w}" height="${ht}" rx="${rx}" fill="${f(s,l)}"/>`,
+ N=n=>[...Array(n).keys()],
+ room=r(0,0,320,180,10,19)+p('0,180 100,95 220,95 320,180',10,29)+p('0,0 100,30 100,95 0,180',12,23)+p('320,0 220,30 220,95 320,180',12,26)+r(100,30,120,65,10,15),
+ sky=`<rect width="320" height="180" fill="${f(35,40)}"/>`+r(0,82,320,98,14,24),
+ w=`<g class="walker" style="animation-duration:${12+c.n*2}s;animation-delay:-${c.n*3}s"><circle cx="0" cy="116" r="6" fill="#0c0d10"/><rect x="-6" y="123" width="12" height="27" rx="5" fill="#0c0d10"/></g>`;
+ switch(c.scene){
+ case'hall':return room+r(146,48,28,47,30,36,1)+p('28,52 62,58 62,128 28,152',20,32)+p('292,52 258,58 258,128 292,152',20,34)+`<ellipse cx="160" cy="12" rx="30" ry="4" fill="#fff" opacity=".45"/><ellipse cx="160" cy="26" rx="16" ry="2.5" fill="#fff" opacity=".35"/>`+w;
+ case'lounge':return room+r(232,40,44,36,40,48,2)+r(60,100,90,16,35,32,6)+r(60,112,90,26,35,38,6)+r(190,120,60,8,20,45,2)+r(214,128,6,22,20,30)+w;
+ case'stairs':return r(0,0,320,180,10,18)+N(7).map(i=>r(40+i*26,150-i*20,240-i*26,20,10,24+i*3)).join('')+`<path d="M30 140 210 4" stroke="${f(20,55)}" stroke-width="4"/>`;
+ case'lobby':return room+r(118,38,84,40,40,46,2)+p('60,150 250,150 262,118 72,118',25,40)+r(60,150,190,24,25,30)+`<circle cx="285" cy="118" r="16" fill="hsl(140 35% 30%)"/>`+r(281,130,8,26,20,30)+w;
+ case'waiting':return room+r(120,40,80,34,45,44,2)+N(3).map(i=>r(40+i*48,104,38,16,30,36,3)+r(40+i*48,122,38,10,30,42,3)).join('')+r(214,118,70,6,20,48,2)+w;
+ case'entrance':return sky+r(90,20,140,110,12,20)+r(104,40,52,90,40,46)+r(164,40,52,90,40,42)+p('60,180 104,130 216,130 260,180',10,36)+r(0,130,90,50,25,26)+r(230,130,90,50,25,26)+w;
+ case'roof':return`<rect width="320" height="180" fill="${f(45,44)}"/>`+N(6).map(i=>r(i*56,60+i*37%30,48,60,20,26+i*7%8)).join('')+r(0,112,320,68,8,30)+r(0,96,320,4,10,50)+N(8).map(i=>r(i*46,96,3,20,10,50)).join('');
+ case'parking':return sky+p('0,180 60,82 260,82 320,180',6,22)+N(5).map(i=>`<path d="M${40+i*60} 180 ${92+i*34} 84" stroke="#ddd" stroke-opacity=".5" stroke-width="2"/>`).join('')+r(132,96,34,18,60,34,4)+r(70,128,52,30,45,40,6)+r(196,122,50,28,10,60,6)+w;
+ case'dock':return sky+r(20,24,280,96,14,28)+N(3).map(i=>r(40+i*88,48,64,72,10,40+i*3)+N(5).map(j=>r(40+i*88,58+j*13,64,1.5,10,26)).join('')).join('')+r(0,120,320,60,8,22)+r(214,96,84,50,30,52,3)+r(196,112,20,34,30,40,3);
+ case'exit':return sky+r(60,10,200,125,12,24)+r(132,44,56,91,25,36)+r(176,86,5,10,20,70)+r(136,24,48,12,90,38,2)+p('100,180 132,135 188,135 220,180',8,34);
+ case'stock':return room+N(2).map(s=>N(3).map(i=>r(s?232:18,40+i*36,70,5,20,44)+N(3).map(j=>r((s?236:22)+j*22,22+i*36,18,18,35+j*10,34+j*5,1)).join('')).join('')).join('')+r(130,104,60,40,30,38,2);
+ case'rack':return room+N(3).map(i=>r(60+i*70,36,56,120,10,12,2)+N(8).map(j=>r(64+i*70,44+j*13,48,8,10,20)+`<circle cx="${70+i*70}" cy="${48+j*13}" r="1.6" fill="${(i+j)%3?'#34d399':'#fbbf24'}"/>`).join('')).join('');}
+ return room}
+function feed(c,t=Date.now()){const h=+P(t).hour,dk=h<6||h>=20?1:h<8?(8-h)/2:h>=18?(h-17)/3:0,o=dk*(c.tags.includes('outdoors')?.6:.22);
+ return`<svg class="scene" viewBox="0 0 320 180" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Simulated scene">${art(c)}</svg><div class="shade" style="opacity:${o.toFixed(2)}"></div><div class="grain"></div>`}
+const bbox=e=>`<div class="bbox" style="left:${e.x}%;top:${e.y}%;width:16%;height:38%;border-color:${TY[e.type].c}"><span style="background:${TY[e.type].c}">${TY[e.type].l}</span></div>`;
+
+/* ---------- display helpers ---------- */
+Object.assign(S,{side:LS.get('side',false),pop:null,theme:LS.get('theme','system')});
+const fmt=o=>{const c={};return ms=>{const tz=tzName();return(c[tz]||(c[tz]=new Intl.DateTimeFormat(undefined,{...o,timeZone:tz}))).format(ms)}};
+const tS=fmt({hour:'numeric',minute:'2-digit',second:'2-digit'}),tM=fmt({hour:'numeric',minute:'2-digit'}),dL=fmt({weekday:'short',month:'short',day:'numeric'});
+function applyTheme(){const t=S.theme==='system'?(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'):S.theme;document.documentElement.dataset.theme=t;return t}
+const empty=(i,h,p,x='')=>`<div class="empty">${ic(i)}<h3>${h}</h3><p>${p}</p>${x}</div>`;
+const initials=n=>n.split(' ').map(x=>x[0]).join('').slice(0,2);
+const tog=(arr,id,on)=>on?(arr.includes(id)||arr.push(id),arr):arr.filter(x=>x!==id);
+
+/* ---------- navigation ---------- */
+function goLanding(){const l=landing(eff());Object.assign(S,{route:'wall',viewId:l.id,tags:[],q:'',v:null,modal:null,pop:null});render()}
+function colsKey(){return`cols.${eff()}.${S.viewId||'all'}`}
+function getCols(){const v=view(S.viewId);return S.preview?(v?v.cols:3):LS.get(colsKey(),v?v.cols:3)}
+function baseCams(){const uid=eff(),v=view(S.viewId);return v&&accViews(uid).includes(v)?resolve(v,uid):authCams(uid).sort((a,b)=>a.name.localeCompare(b.name))}
+function wallCams(){const q=S.q.trim().toLowerCase();return baseCams().filter(c=>S.tags.every(t=>c.tags.includes(t))&&(!q||c.name.toLowerCase().includes(q)||c.tags.some(t=>t.includes(q))))}
+function openViewer(id,t){S.route='viewer';S.pop=null;S.v={cam:id,live:t==null,t:t??Date.now(),playing:true,speed:1,zoom:S.v?.zoom||'day',w0:null};render()}
+
+/* ---------- shell ---------- */
+function render(){
+ const sc=$('.scroll'),st=sc?sc.scrollTop:0,u=user(S.actor),e=user(eff());applyTheme();
+ let pane;
+ if(S.expired)pane=`<div class="scroll">${empty('lock','Your session has expired','Sign in again to continue. No video is shown while you are signed out.','<button class="btn pri" data-a="resume">Sign in with Zitadel (simulated)</button>')}</div>`;
+ else if(!e.active)pane=`<div class="scroll">${empty('lock','Account turned off','An administrator has turned off access for this account.')}</div>`;
+ else pane={wall,viewer,events,views,admin}[S.route]();
+ $('#app').innerHTML=`${sidebar()}<div class="pane">
+  ${S.preview?`<div class="alert">${ic('eye')}<span>Seeing Vantage as <b>${esc(e.name)}</b>. You are still signed in as ${esc(u.name)}. Nothing can be changed here. Ends in <span id="pvLeft"></span>.</span><span class="sp"></span><button class="btn sm" data-a="pvExit">Exit</button></div>`:''}
+  ${S.nvr?`<div class="alert bad">${ic('off')}<span><b>Can't reach the recorder.</b> Live video, recordings and activity are unavailable. Your views and settings are safe. Retrying.</span></div>`:''}
+  ${pane}</div>
+  ${S.side||S.route==='viewer'?'':`<div class="demo" title="Footage, activity, sign-in, permissions and playback are all simulated">Simulated demo<select data-c="ident" aria-label="Demo identity (simulated, not a real sign-in)">${identOpts()}</select></div>`}${S.modal?modal():''}`;
+ const s2=$('.scroll');if(s2)s2.scrollTop=st;
+ if(S.route==='wall')watchTiles();if(S.route==='viewer')tick(true);pvClock();
+}
+const identOpts=()=>DB.users.map(x=>`<option value="${x.id}" ${x.id===S.actor?'selected':''}>${esc(x.label)}: ${esc(x.name)}</option>`).join('');
+function sidebar(){const uid=eff(),e=user(uid),live=e.active&&!S.expired,l=landing(uid),vs=live?accViews(uid):[],ac=live?authCams(uid):[],on=S.route==='viewer'?'wall':S.route;
+ const nav=(r,i,t)=>`<button class="si ${on===r?'on':''}" data-a="nav" data-r="${r}">${ic(i)}<span>${t}</span></button>`;
+ return`<aside class="sb ${S.side?'':'shut'}"><div class="sbh"><span class="lg">V</span><b>Vantage</b><span class="sp"></span><button class="ib ghost" data-a="side" aria-label="Hide sidebar">${ic('panel')}</button></div>
+ <div class="sbs"><div class="gl">Cameras</div>
+ <button class="si ${on==='wall'&&!S.viewId?'on':''}" data-a="view" data-id="">${ic('cam')}<span>All cameras</span><small>${ac.length}</small></button>
+ ${vs.map(v=>`<button class="si ${on==='wall'&&S.viewId===v.id?'on':''}" data-a="view" data-id="${v.id}" title="${v.type==='dynamic'?'Follows tags':'Fixed list'}${v.priv?', private':''}${l.id===v.id?'. '+esc(l.why):''}">${ic('grid')}<span>${esc(v.name)}</span>${l.id===v.id?`<i class="star" aria-label="Opens when you sign in">${ic('star')}</i>`:''}<small>${resolve(v,uid).filter(c=>!c.missing).length}</small></button>`).join('')}
+ ${live?`<div class="gl">Browse</div>${nav('events','bell','Activity')}${nav('views','list','Manage views')}${isAdmin()?nav('admin','shield','Admin'):''}`:''}</div>
+ <div class="sbf"><div class="gl">Prototype controls</div><select data-c="ident" aria-label="Demo identity (simulated)">${identOpts()}</select>
+ <select data-c="sim" aria-label="Simulate a situation"><option value="">Simulate a situation…</option><option value="nvr">${S.nvr?'Recorder is back':'Recorder unreachable'}</option><option value="exp">Session expired</option></select>
+ <div class="me"><span class="av">${esc(initials(user(S.actor).name))}</span><span class="n">${esc(user(S.actor).name)}<small>${esc(user(S.actor).label)}</small></span><button class="ib ghost" data-a="theme" aria-label="Switch between light and dark">${ic(applyTheme()==='dark'?'sun':'moon')}</button></div></div></aside>`}
+const pgHead=(t,right='')=>`<div class="hd">${S.side?'':`<button class="ib ghost" data-a="side" aria-label="Show sidebar">${ic('panel')}</button>`}<h1>${t}</h1><span class="sp"></span>${right}</div>`;
+
+/* ---------- camera wall ---------- */
+function tile(c){if(c.missing)return`<div class="tile"><div class="offm"><div><b>Camera removed</b>This camera is no longer on the recorder.</div></div><span class="nm"><i class="dot miss"></i>Missing camera</span></div>`;
+ const dead=S.nvr||!c.online;
+ return`<button class="tile" data-a="open" data-id="${c.id}" ${dead?'data-off="1"':''} aria-label="Open ${esc(c.name)}"><div class="feed">${dead?`<div class="offm"><div><b>${S.nvr?'Recorder unreachable':'Camera offline'}</b>${S.nvr?'Waiting to reconnect':'Earlier recordings are still available'}</div></div>`:feed(c)}</div><span class="nm"><i class="dot ${dead?'off':''}"></i>${esc(c.name)}</span></button>`}
+function wallDyn(){const uid=eff(),v=view(S.viewId),ok=v&&accViews(uid).includes(v),ac=authCams(uid),cams=wallCams(),q=S.q.trim(),filt=S.tags.length||q,all='<button class="btn" data-a="view" data-id="">Show all my cameras</button>';let b;
+ if(S.viewId&&!ok)b=empty('lock','This view is not available','It may have been removed, or it is no longer shared with you.',all);
+ else if(!ac.length)b=empty('lock','No cameras yet','You are signed in, but no cameras have been assigned to you. Ask an administrator to add you to a group.');
+ else if(!cams.length)b=filt?empty('search','No cameras match','A camera has to carry every tag you picked.','<button class="btn" data-a="clear">Clear filters</button>'):empty('cam','Nothing to show here','This view is shared with you, but none of its cameras are assigned to you.',all);
+ else b=`<div class="wg c${getCols()}">${cams.map(tile).join('')}</div>`;
+ return`<div class="wd" id="wdyn"><div class="scroll">${b}</div>${filt&&cams.length&&S.pop!=='filter'?`<div class="fpill">${esc([...S.tags,q&&`"${q}"`].filter(Boolean).join(' + '))}<span>${cams.length} camera${cams.length===1?'':'s'}</span><button class="btn sm" data-a="clear">Clear</button></div>`:''}</div>`}
+function wall(){const uid=eff(),vs=accViews(uid),filt=S.tags.length||S.q.trim();
+ return`${wallDyn()}<div class="dock">${S.side?'':`<button class="ib ghost" data-a="side" aria-label="Show sidebar">${ic('panel')}</button><span class="sep"></span><button class="dv ${S.viewId?'':'on'}" data-a="view" data-id="">All</button>${vs.slice(0,4).map(v=>`<button class="dv ${S.viewId===v.id?'on':''}" data-a="view" data-id="${v.id}">${esc(v.name)}</button>`).join('')}${vs.length>4?'<button class="dv" data-a="side">More</button>':''}<span class="sep"></span>`}
+ <button class="ib ghost ${filt?'has':''}" data-a="pop" data-p="filter" aria-label="Filter and layout" title="Filter and layout">${ic('filter')}</button><button class="ib ghost" data-a="full" data-sel=".pane" aria-label="Full screen" title="Full screen">${ic('full')}</button></div>${S.pop==='filter'?filterPop():''}`}
+function filterPop(){const u=user(eff()),cams=wallCams(),cols=getCols(),fc={};cams.forEach(c=>c.tags.forEach(t=>fc[t]=(fc[t]||0)+1));
+ const tags=[...new Set([...S.tags,...Object.keys(fc)])].sort(),canSave=!S.preview&&(u.role==='admin'||u.priv);
+ return`<div class="pop fpop" role="dialog" aria-label="Filter and layout"><input type="search" id="q" data-i="q" placeholder="Search cameras" value="${esc(S.q)}" aria-label="Search cameras">
+ <div class="gl">Only cameras with all of these tags</div>${tags.map(t=>`<label class="ck"><input type="checkbox" data-c="ftag" data-t="${esc(t)}" ${S.tags.includes(t)?'checked':''}>${esc(t)}<small>${fc[t]||0}</small></label>`).join('')||'<div class="note">No tags on these cameras.</div>'}
+ <div class="gl">Columns</div><div class="seg">${[2,3,4].map(n=>`<button class="${cols===n?'on':''}" data-a="cols" data-n="${n}">${n}</button>`).join('')}</div>
+ <div class="row" style="margin-bottom:0">${S.tags.length||S.q?'<button class="btn sm" data-a="clear">Clear</button>':''}<span class="sp"></span>${canSave?'<button class="btn sm" data-a="saveView">Save as a view</button>':''}</div></div>`}
+/* viewport-aware loading with a bounded number of simultaneous streams; the rest hold a still image */
+const CAP=9;let io;
+function watchTiles(){io?.disconnect();const on=new Set,wait=new Set;
+ io=new IntersectionObserver(es=>{for(const e of es){const el=e.target;if(e.isIntersecting){if(on.has(el))continue;if(on.size<CAP){on.add(el);el.classList.add('on')}else wait.add(el)}else{on.delete(el);wait.delete(el);el.classList.remove('on')}}
+  for(const el of wait){if(on.size>=CAP)break;wait.delete(el);on.add(el);el.classList.add('on')}},{threshold:.2});
+ $$('.tile[data-a]:not([data-off])').forEach(t=>io.observe(t))}
+
+/* ---------- player ---------- */
+function win(){const v=S.v;if(v.zoom==='day')return dayB(v.t);const span=v.zoom*6e4;if(v.w0==null||v.t<v.w0+span*.04||v.t>v.w0+span*.96)v.w0=v.t-span/2;return[v.w0,v.w0+span]}
+function viewer(){const v=S.v,c=v&&authCams(eff()).find(x=>x.id===v.cam);
+ if(!c)return`<div class="scroll">${empty('lock','Not available','This camera does not exist or is not assigned to you.','<button class="btn" data-a="back">Back to cameras</button>')}</div>`;
+ return`<div class="vw" id="vw"><div class="stage" id="stage"></div>
+ <div class="vtop"><button class="ib ghost w" data-a="back" aria-label="Back to cameras">${ic('back')}</button><b>${esc(c.name)}</b><span class="vst" id="vst"></span><span class="sp"></span>
+  <button class="btn w" data-a="pop" data-p="jump">${ic('cal')}<span id="vday"></span></button><button class="btn w" data-a="live" id="liveb">Go live</button></div>
+ <div class="vbot"><div class="tl" id="tl"><div id="tlin"></div><div class="ph" id="ph"></div></div><div class="hrs" id="hrs"></div>
+  <div class="ctl"><button class="ib ghost w" data-a="skip" data-d="-10" aria-label="Back 10 seconds" title="Back 10 seconds">${ic('r10')}</button><button class="ib ghost w" data-a="play" id="playb" aria-label="Play or pause"></button><button class="ib ghost w" data-a="skip" data-d="10" aria-label="Forward 10 seconds" title="Forward 10 seconds">${ic('f10')}</button>
+  <span class="time"><span id="tc"></span><small id="tcs"></small></span><span class="sp"></span>
+  <select class="w ghost" data-c="speed" aria-label="Playback speed">${[.5,1,2,4,8].map(x=>`<option value="${x}" ${v.speed===x?'selected':''}>${x}×</option>`).join('')}</select>
+  <button class="btn w ghost" data-a="export">${ic('dl')}Save clip</button><button class="ib ghost w" data-a="full" data-sel="#vw" aria-label="Full screen">${ic('full')}</button></div></div>
+ ${S.pop==='jump'?`<div class="pop jpop" role="dialog" aria-label="Jump to a time"><input type="date" data-c="date" id="vdate" aria-label="Date" min="${fD(T0-RET)}" max="${fD(Date.now())}"><input type="time" step="1" data-c="time" id="vtime" aria-label="Time">
+  <select data-c="tz" aria-label="Time zone">${[['local','My time zone'],['UTC','UTC'],['America/Toronto','Toronto'],['America/Vancouver','Vancouver'],['Europe/Paris','Paris'],['Australia/Sydney','Sydney']].map(([k,l])=>`<option value="${k}" ${S.tz===k?'selected':''}>${esc(l)}</option>`).join('')}</select>
+  <div class="gl" style="padding:4px 2px 0">Timeline shows</div><div class="seg">${[['day','Day'],[360,'6 h'],[60,'1 h'],[10,'10 min']].map(([k,l])=>`<button class="${String(v.zoom)===String(k)?'on':''}" data-a="zoom" data-z="${k}">${l}</button>`).join('')}</div></div>`:''}</div>`}
+function drawTl(){const v=S.v,c=cam(v.cam),[a,b]=win(),span=b-a,pc=t=>((t-a)/span*100).toFixed(3);let h='<div class="trk">';
+ if(!S.nvr)for(const[s,e]of recRanges(c,a,b))h+=`<div class="rng" style="left:${pc(s)}%;width:${((e-s)/span*100).toFixed(3)}%"></div>`;h+='</div>';
+ if(!S.nvr)for(const e of camEvents(c))if(e.t>a&&e.t<b)h+=`<i class="mk" title="${TY[e.type].l}, ${tM(e.t)}" style="left:${pc(e.t)}%;background:${TY[e.type].c}"></i>`;
+ $('#tlin').innerHTML=h;$('#hrs').innerHTML=[0,.25,.5,.75,1].map(f=>`<span>${tM(a+span*f)}</span>`).join('');v._win=[a,b]}
+function drawStage(){const v=S.v,c=cam(v.cam),st=$('#stage');if(!st)return;let h;const rec=inRec(c,v.t-(v.live?2000:0));
+ if(S.nvr)h=`<div class="offm"><div><b>Recorder unreachable</b>Video will come back when it reconnects.</div></div>`;
+ else if(v.live&&!c.online)h=`<div class="offm"><div><b>Camera offline</b>No live video right now.<br><button class="btn w" data-a="lastrec">Watch the last recording</button></div></div>`;
+ else if(!v.live&&!rec){const n=nextRec(c,v.t);h=`<div class="offm"><div><b>Nothing recorded at ${tS(v.t)}</b>The camera was not recording at this time.<br>${n?`<button class="btn w" data-a="seekto" data-t="${n}">Skip to ${tM(n)}</button> `:''}<button class="btn w" data-a="live">Go live</button></div></div>`}
+ else{const e=evAt(c,v.t);h=feed(c,v.t)+(e?bbox(e):'')}
+ st.innerHTML=h;st.classList.toggle('paused',!v.playing);v._key=stKey()}
+const stKey=()=>{const v=S.v,c=cam(v.cam),e=evAt(c,v.t);return[v.live,inRec(c,v.t-(v.live?2000:0)),e?.id,P(v.t).hour,S.nvr,c.online].join()};
+function tick(full){const v=S.v;if(S.route!=='viewer'||!v||!$('#tl'))return;if(v.live)v.t=Date.now();
+ const[a,b]=v._win||[0,0];if(full||v.t<a||v.t>b||(v.zoom!=='day'&&(v.t<a+(b-a)*.04||v.t>a+(b-a)*.96)))drawTl();
+ if(full||v._key!==stKey())drawStage();
+ const[w0,w1]=v._win;$('#ph').style.left=((v.t-w0)/(w1-w0)*100).toFixed(3)+'%';
+ $('#tc').textContent=tS(v.t);$('#tcs').textContent=v.live?'':dL(v.t);$('#vday').textContent=dL(v.t);
+ $('#vst').innerHTML=v.live?'<i class="dot off"></i>Live':'Recorded';$('#liveb').hidden=v.live;$('#playb').innerHTML=ic(v.playing?'pause':'play');
+ const d=$('#vdate'),tm=$('#vtime');if(d&&document.activeElement!==d)d.value=fD(v.t);if(tm&&document.activeElement!==tm)tm.value=fT(v.t)}
+let lastMove=Date.now();
+setInterval(()=>{const v=S.v;if(S.route==='viewer'&&v){if(!v.live&&v.playing&&!S.nvr){const c=cam(v.cam);let t=v.t+250*v.speed;
+   if(t>=Date.now()-1500){v.live=c.online;t=Date.now();if(!c.online)v.playing=false}
+   else if(inRec(c,v.t)&&!inRec(c,t)){const n=nextRec(c,t);if(n&&n<Date.now()){t=n;toast('Skipped a gap with no recording')}else v.playing=false}
+   v.t=t}tick();$('#vw')?.classList.toggle('idle',v.playing&&!S.pop&&!S.modal&&Date.now()-lastMove>3500)}
+ if(S.preview&&Date.now()>S.pvExp){audit('preview.timeout',S.preview);S.preview=null;toast('Preview ended');goLanding()}pvClock()},250);
+function pvClock(){const n=$('#pvLeft');if(n){const s=Math.max(0,Math.round((S.pvExp-Date.now())/1000));n.textContent=`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`}}
+function seek(t){const v=S.v,now=Date.now();if(t>=now-1500){v.live=true;v.t=now;v.playing=true}else{v.live=false;v.t=Math.max(t,T0-RET+1000)}tick(true)}
+
+/* ---------- activity ---------- */
+function evList(){const uid=eff(),f=S.ev,cs=authCams(uid).filter(c=>!f.cam||c.id===f.cam),from=Date.now()-f.range*36e5;if(S.nvr)return[];
+ return cs.flatMap(camEvents).filter(e=>e.t>=from&&(!f.type||e.type===f.type)).sort((a,b)=>b.t-a.t)}
+function events(){const uid=eff(),f=S.ev,ac=authCams(uid);if(f.cam&&!ac.some(c=>c.id===f.cam))f.cam='';const l=evList();
+ return`<div class="scroll"><div class="pg">${pgHead('Activity',`<select data-c="evcam" aria-label="Camera"><option value="">All cameras</option>${ac.map(c=>`<option value="${c.id}" ${f.cam===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select>
+ <select data-c="evrange" aria-label="Time range">${[[1,'Last hour'],[6,'Last 6 hours'],[24,'Last 24 hours'],[72,'Last 3 days'],[168,'Last 7 days']].map(([k,t])=>`<option value="${k}" ${f.range==k?'selected':''}>${t}</option>`).join('')}</select>
+ <select data-c="evtype" aria-label="Kind of activity"><option value="">Everything</option>${Object.entries(TY).map(([k,t])=>`<option value="${k}" ${f.type===k?'selected':''}>${t.l}</option>`).join('')}<option disabled>Licence plates (not supported by these cameras)</option></select>`)}
+ ${S.nvr?empty('off','Activity unavailable','The recorder is unreachable, so activity cannot be loaded.'):!ac.length?empty('lock','No cameras yet','Activity appears once cameras are assigned to you.'):!l.length?empty('bell','Nothing in this time range','Try a longer time range or another kind of activity.'):
+ `<div class="cards">${l.slice(0,f.n).map(e=>{const c=cam(e.cam);return`<button class="cd" data-a="evopen" data-id="${e.id}" data-cam="${e.cam}"><div class="th">${feed(c,e.t)}${bbox(e)}</div><div class="m"><b>${TY[e.type].l}</b><span>${esc(c.name)} · ${dL(e.t)}, ${tM(e.t)}</span></div></button>`}).join('')}</div>
+ ${l.length>f.n?`<div style="text-align:center;padding-top:18px"><button class="btn" data-a="evmore">Show more</button></div>`:''}`}</div></div>`}
+
+/* ---------- manage views ---------- */
+const kind=v=>v.type==='dynamic'?'Follows tags':'Fixed list';
+function views(){const uid=eff(),ad=isAdmin(),u=user(uid),l=accViews(uid),v=l.find(x=>x.id===S.editId)||l[0];
+ const hd=pgHead('Manage views',!S.preview&&(ad||u.priv)?`<button class="btn pri" data-a="vnew">${ic('plus')}New view</button>`:'')+`<div class="tabs"><button class="${S.vtab==='views'?'on':''}" data-a="vtab" data-t="views">Views</button><button class="${S.vtab==='defaults'?'on':''}" data-a="vtab" data-t="defaults">Starting view</button></div>`;
+ const wrap=x=>`<div class="scroll"><div class="pg">${hd}${x}</div></div>`;
+ if(S.vtab==='defaults')return wrap(defaultsTab());
+ if(!v)return wrap(empty('list','No views yet',u.priv||ad?'Create one here, or save a filter from the camera wall.':'No views have been shared with you yet.'));
+ const ed=canEdit(v),dis=ed?'':'disabled',mine=resolve(v,uid),auth=authCams(uid);
+ return wrap(`<div class="cols2"><div class="card">${l.map(x=>`<button class="si ${x.id===v.id?'on':''}" data-a="vsel" data-id="${x.id}">${ic('grid')}<span>${esc(x.name)}</span><small>${x.priv?'Private':kind(x)}</small></button>`).join('')}</div>
+ <div><div class="card"><h3>${esc(v.name)}</h3><p class="note">${ed?'':'You can open this view but not change it.'}</p>
+  <div class="row"><span class="k">Name</span><input type="text" data-c="vname" value="${esc(v.name)}" ${dis} style="flex:1;max-width:320px" aria-label="View name"></div>
+  <div class="row"><span class="k">Cameras</span><div class="seg"><button class="${v.type==='dynamic'?'on':''}" data-a="vtype" data-t="dynamic" ${dis}>Follow tags</button><button class="${v.type==='static'?'on':''}" data-a="vtype" data-t="static" ${dis}>Fixed list</button></div>
+   <span class="sub">${v.type==='dynamic'?'Cameras come and go as tags change.':'Stays exactly as you arrange it.'}</span></div>
+  <div class="row"><span class="k">Columns</span><div class="seg">${[2,3,4].map(n=>`<button class="${v.cols===n?'on':''}" data-a="vcols" data-n="${n}" ${dis}>${n}</button>`).join('')}</div></div>
+  ${v.type==='dynamic'?`<div class="row" style="align-items:flex-start"><span class="k">Has all of</span><div style="flex:1">${DB.tags.map(t=>`<button class="tog ${v.tags.includes(t)?'on':''}" data-a="vtag" data-t="${esc(t)}" ${dis}>${esc(t)}</button>`).join('')}</div></div>
+   <p class="note">${v.tags.length?'':'With no tags picked, this view includes every camera. '}Right now it shows you ${mine.length} camera${mine.length===1?'':'s'}${mine.length?': '+mine.map(c=>esc(c.name)).join(', '):''}.</p>`
+  :`<div class="row" style="align-items:flex-start"><span class="k">In this order</span><div style="flex:1;max-width:440px">${mine.map(c=>`<div class="ord"><i class="dot ${c.missing?'miss':c.online?'':'off'}"></i><span class="n">${esc(c.name)}${c.missing?' <small class="sub">(removed from the recorder)</small>':''}</span>
+     <button class="ib ghost" data-a="vmove" data-id="${c.id}" data-d="-1" ${dis} aria-label="Move up">${ic('up')}</button><button class="ib ghost" data-a="vmove" data-id="${c.id}" data-d="1" ${dis} aria-label="Move down">${ic('down')}</button><button class="ib ghost" data-a="vrm" data-id="${c.id}" ${dis} aria-label="Remove">${ic('x')}</button></div>`).join('')||'<p class="note">None of your cameras are in this view.</p>'}
+    ${ed?`<select data-c="vadd" aria-label="Add a camera"><option value="">Add a camera…</option>${auth.filter(c=>!v.cams.includes(c.id)).map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>`:''}</div></div>`}
+  <div class="row" style="margin-bottom:0"><button class="btn" data-a="view" data-id="${v.id}">Open</button>${ed?`<span class="sp"></span><button class="btn bad" data-a="vdel">Delete</button>`:''}</div></div>
+  ${v.priv?`<div class="card"><h3>Sharing</h3><p class="note">Only ${esc(user(v.owner).name)} can see this view. Private views cannot be shared.</p></div>`:ad?`<div class="card"><h3>Sharing</h3><p class="note">Sharing lets people open this view. It never gives them new cameras: everyone sees only the cameras they already have.</p>
+   <div class="row"><span class="k">Everyone</span><input type="checkbox" class="sw" data-c="shOrg" ${v.share.org?'checked':''} aria-label="Share with all staff"><span class="sub">All staff</span></div>
+   <div class="row"><span class="k">Groups</span><div style="flex:1">${DB.groups.map(g=>`<label class="tog ${v.share.groups.includes(g.id)?'on':''}"><input type="checkbox" class="vh" data-c="shG" data-id="${g.id}" ${v.share.groups.includes(g.id)?'checked':''}>${esc(g.name)}</label>`).join('')}</div></div>
+   <div class="row"><span class="k">People</span><div style="flex:1">${DB.users.filter(x=>x.role!=='admin').map(x=>`<label class="tog ${v.share.users.includes(x.id)?'on':''}"><input type="checkbox" class="vh" data-c="shU" data-id="${x.id}" ${v.share.users.includes(x.id)?'checked':''}>${esc(x.name)}</label>`).join('')}</div></div></div>
+  <div class="card"><h3>What each person sees</h3><div class="tw" style="margin-top:10px"><table><tr><th>Person</th><th>Cameras shown</th></tr>${DB.users.filter(x=>x.role!=='admin').map(x=>{const a=accViews(x.id).includes(v),r=a?resolve(v,x.id):[];return`<tr><td>${esc(x.name)}</td><td>${a?(r.length?r.map(c=>esc(c.name)).join(', '):'<span class="note w">Opens empty: they have none of these cameras</span>'):'<span class="sub">Not shared with them</span>'}</td></tr>`}).join('')}</table></div></div>`
+  :`<div class="card"><h3>Sharing</h3><p class="note">An administrator shared this view with you. It lists only cameras assigned to you.</p></div>`}</div></div>`)}
+function defaultsTab(){const uid=eff(),ad=isAdmin(),u=user(uid),opt=(cur,l)=>`<option value="">None</option>`+l.map(v=>`<option value="${v.id}" ${cur===v.id?'selected':''}>${esc(v.name)}</option>`).join(''),cur=DB.views.filter(v=>!v.priv);
+ const l=landing(uid),me=`<div class="card"><h3>Your starting view</h3><p class="note">When you sign in you see <b>${esc(l.id?view(l.id).name:'all your cameras')}</b>. ${esc(l.why)}.</p>
+  ${u.priv?`<div class="row" style="margin-bottom:0"><span class="k">My choice</span><select data-c="defMe" ${S.preview?'disabled':''}>${opt(DB.defaults.personal[uid],accViews(uid))}</select><span class="sub">Used when an administrator has not chosen for you.</span></div>`:''}</div>`;
+ if(!ad)return me;
+ return`${me}<div class="card"><h3>How the starting view is chosen</h3><p class="note">The first of these that applies wins: a view picked for the person, a view picked for one of their groups (highest priority number first), the person's own choice, the view for everyone, then the full camera wall. A view the person can no longer open is skipped.</p>
+  <div class="row" style="margin-bottom:0"><span class="k">For everyone</span><select data-c="defOrg">${opt(DB.defaults.org,cur)}</select></div></div>
+ <div class="card"><h3>For each group</h3><div class="tw" style="margin-top:10px"><table><tr><th>Group</th><th>Priority</th><th>Starting view</th></tr>${[...DB.groups].sort((a,b)=>b.prio-a.prio).map(g=>`<tr><td>${esc(g.name)}</td><td><input type="number" data-c="gprio" data-id="${g.id}" value="${g.prio}" style="width:76px" aria-label="Priority"></td><td><select data-c="defG" data-id="${g.id}">${opt(DB.defaults.groups[g.id],cur)}</select></td></tr>`).join('')}</table></div></div>
+ <div class="card"><h3>For each person</h3><div class="tw" style="margin-top:10px"><table><tr><th>Person</th><th>Picked for them</th><th>They will see</th></tr>${DB.users.map(x=>{const r=landing(x.id);return`<tr><td>${esc(x.name)}<small>${esc(x.label)}</small></td><td><select data-c="defU" data-id="${x.id}">${opt(DB.defaults.users[x.id],cur)}</select></td><td>${esc(r.id?view(r.id).name:'Camera wall')}<small>${esc(r.why)}${r.id&&!resolve(view(r.id),x.id).length?'. Opens empty':''}</small></td></tr>`}).join('')}</table></div></div>`}
+
+/* ---------- admin ---------- */
+function admin(){const T=[['users','People'],['groups','Groups'],['access','Camera access'],['tags','Tags'],['preview','See as staff'],['audit','History']];
+ return`<div class="scroll"><div class="pg">${pgHead('Admin')}<div class="tabs">${T.map(([k,l])=>`<button class="${S.atab===k?'on':''}" data-a="atab" data-t="${k}">${l}</button>`).join('')}</div>${{
+ users:()=>`<p class="note" style="margin-bottom:12px">People show up here after their first sign-in, with no cameras. Passwords and sign-in security are managed in Zitadel.</p><div class="tw"><table><tr><th>Person</th><th>Role</th><th>Groups</th><th class="c">Cameras</th><th class="c">Own views</th><th class="c">Active</th><th></th></tr>${DB.users.map(u=>`<tr><td>${esc(u.name)}<small>${esc(u.label)}</small></td>
+  <td><select data-c="urole" data-id="${u.id}" ${u.id===S.actor?'disabled title="You cannot change your own role"':''} aria-label="Role"><option value="staff" ${u.role==='staff'?'selected':''}>Staff</option><option value="admin" ${u.role==='admin'?'selected':''}>Admin</option></select></td>
+  <td>${DB.groups.filter(g=>g.members.includes(u.id)).map(g=>`<span class="badge">${esc(g.name)}</span>`).join(' ')||'<span class="sub">None yet</span>'}</td>
+  <td class="c">${authCams(u.id).length}</td><td class="c"><input type="checkbox" class="sw" data-c="upriv" data-id="${u.id}" ${u.priv?'checked':''} aria-label="May create own views"></td><td class="c"><input type="checkbox" class="sw" data-c="uact" data-id="${u.id}" ${u.active?'checked':''} ${u.id===S.actor?'disabled':''} aria-label="Active"></td>
+  <td>${u.role==='staff'&&u.active?`<button class="btn sm" data-a="pvStart" data-id="${u.id}">See as them</button>`:''}</td></tr>`).join('')}</table></div>`,
+ groups:()=>`<div class="row" style="margin-top:0"><input type="text" id="gname" placeholder="New group name" aria-label="New group name"><button class="btn" data-a="gadd">${ic('plus')}Add group</button></div>${DB.groups.map(g=>`<div class="card"><div class="row" style="margin-top:0"><input type="text" data-c="gname" data-id="${g.id}" value="${esc(g.name)}" aria-label="Group name"><span class="sub">${(DB.grants['g:'+g.id]||[]).length} cameras</span><span class="sp"></span><button class="btn sm bad" data-a="gdel" data-id="${g.id}">Delete</button></div>
+  <div>${DB.users.filter(u=>u.role!=='admin').map(u=>`<label class="tog ${g.members.includes(u.id)?'on':''}"><input type="checkbox" class="vh" data-c="gmem" data-g="${g.id}" data-id="${u.id}" ${g.members.includes(u.id)?'checked':''}>${esc(u.name)}</label>`).join('')}</div></div>`).join('')}`,
+ access:()=>{const st=DB.users.filter(u=>u.role!=='admin'),subs=[...DB.groups.map(g=>['g:'+g.id,g.name,'Group']),...st.map(u=>['u:'+u.id,u.name,'Person'])];
+  return`<p class="note" style="margin-bottom:12px">Nobody sees a camera until it is ticked here, for them or for one of their groups. Tags and shared views never give access.</p><div class="tw"><table><tr><th>Camera</th>${subs.map(([k,n,t])=>`<th class="c">${esc(n)}<small>${t}</small></th>`).join('')}</tr>
+  ${DB.cams.map(c=>`<tr><td style="white-space:nowrap"><i class="dot ${c.online?'':'off'}" style="margin-right:8px"></i>${esc(c.name)}</td>${subs.map(([k,n])=>`<td class="c"><input type="checkbox" data-c="grant" data-k="${k}" data-id="${c.id}" ${(DB.grants[k]||[]).includes(c.id)?'checked':''} aria-label="${esc(n)}: ${esc(c.name)}"></td>`).join('')}</tr>`).join('')}</table></div>`},
+ tags:()=>`<div class="row" style="margin-top:0"><input type="text" id="tname" placeholder="New tag" aria-label="New tag"><button class="btn" data-a="tadd">${ic('plus')}Add tag</button><span class="sub">Tags live in Vantage. The recorder is never changed.</span></div>
+  <div class="tw"><table><tr><th>Camera</th><th>Tags</th></tr>${DB.cams.map(c=>`<tr><td style="white-space:nowrap">${esc(c.name)}</td><td>${DB.tags.map(t=>`<label class="tog ${c.tags.includes(t)?'on':''}"><input type="checkbox" class="vh" data-c="ctag" data-id="${c.id}" data-t="${esc(t)}" ${c.tags.includes(t)?'checked':''}>${esc(t)}</label>`).join('')}</td></tr>`).join('')}</table></div>
+  <div class="card" style="margin-top:14px"><h3>Rename or remove</h3>${DB.tags.map(t=>`<div class="row"><input type="text" data-c="tren" data-t="${esc(t)}" value="${esc(t)}" style="width:180px" aria-label="Tag name"><span class="sub">${DB.cams.filter(c=>c.tags.includes(t)).length} cameras</span><span class="sp"></span><button class="btn sm bad" data-a="tdel" data-t="${esc(t)}">Remove</button></div>`).join('')}</div>`,
+ preview:()=>{const st=DB.users.filter(u=>u.role==='staff'&&u.active),s=st.find(u=>u.id===S.pvPick)||st[0];if(!s)return'<p class="note">There are no active staff to look at.</p>';const l=landing(s.id);
+  return`<div class="card"><h3>See Vantage as a staff member</h3><p class="note">Check exactly what someone sees. You stay signed in as yourself, nothing can be changed while looking, it ends after 15 minutes, and it is recorded in History. Their account is not touched.</p>
+  <div class="row"><span class="k">Staff member</span><select data-c="pvPick">${st.map(u=>`<option value="${u.id}" ${u.id===s.id?'selected':''}>${esc(u.name)}</option>`).join('')}</select><button class="btn pri" data-a="pvStart" data-id="${s.id}">${ic('eye')}Start</button></div>
+  <div class="row"><span class="k">Starts on</span><span>${esc(l.id?view(l.id).name:'Camera wall')}</span><span class="sub">${esc(l.why)}</span></div>
+  <div class="row" style="align-items:flex-start"><span class="k">Cameras</span><div style="flex:1">${authCams(s.id).map(c=>`<span class="badge">${esc(c.name)}</span>`).join(' ')||'<span class="sub">None</span>'}</div></div>
+  <div class="row" style="align-items:flex-start;margin-bottom:0"><span class="k">Views</span><div style="flex:1">${accViews(s.id).map(v=>`<span class="badge">${esc(v.name)}</span>`).join(' ')||'<span class="sub">None</span>'}</div></div></div>`},
+ audit:()=>`<div class="tw"><table><tr><th>When</th><th>Who</th><th>Seeing as</th><th>What</th><th>Details</th></tr>${DB.audit.map(a=>`<tr><td style="white-space:nowrap">${dL(a.t)}, ${tS(a.t)}</td><td>${esc(user(a.actor)?.name)}</td><td>${a.subject?esc(user(a.subject)?.name):''}</td><td>${esc(a.action)}${a.outcome==='ok'?'':' <span class="badge">blocked</span>'}</td><td>${esc(a.target)}</td></tr>`).join('')||'<tr><td colspan="5" class="sub">Nothing yet. Changes made in this demo session appear here.</td></tr>'}</table></div>`}[S.atab]()}</div></div>`}
+
+/* ---------- save clip dialog ---------- */
+function modal(){const m=S.modal;return`<div class="modal" data-a="mclose"><div class="card" role="dialog" aria-label="Save clip"><h3>Save a clip from ${esc(cam(m.cam).name)}</h3>
+ ${m.state==='idle'?`<div class="row"><span class="k">Starts at</span><span>${dL(m.t)}, ${tS(m.t)}</span></div><div class="row"><span class="k">Length</span><select data-c="xlen">${[15,30,60,120,300].map(s=>`<option value="${s}" ${m.len===s?'selected':''}>${s<60?s+' seconds':s/60+(s===60?' minute':' minutes')}</option>`).join('')}</select></div>${m.err?`<p class="note w">${esc(m.err)}</p>`:''}<div class="row" style="margin-bottom:0"><span class="sp"></span><button class="btn" data-a="mclose" data-x="1">Cancel</button><button class="btn pri" data-a="xgo">Save clip</button></div>`
+ :m.state==='run'?`<p class="note">Preparing your clip…</p><div class="bar"><i style="width:${m.p}%"></i></div><div class="row" style="margin-bottom:0"><span class="sp"></span><button class="btn" data-a="xcancel">Cancel</button></div>`
+ :`<p class="note">Your clip is ready. The download link works only for you and expires in 10 minutes.</p><div class="row" style="margin-bottom:0"><span class="sp"></span><button class="btn" data-a="mclose" data-x="1">Close</button><button class="btn pri" data-a="xdl">${ic('dl')}Download (simulated)</button></div>`}</div></div>`}
+
+/* ---------- actions ---------- */
+const edV=()=>{const v=accViews(eff()).find(x=>x.id===S.editId)||accViews(eff())[0];return v&&canEdit(v)&&mut()?v:null};
+const A={
+ nav(d){S.route=d.r;if(innerWidth<=760)S.side=false;if(d.r==='wall'&&!accViews(eff()).some(v=>v.id===S.viewId))S.viewId=null;render()},
+ side(){S.side=!S.side;LS.set('side',S.side);render()},
+ theme(){S.theme=applyTheme()==='dark'?'light':'dark';LS.set('theme',S.theme);render()},
+ pop(d){S.pop=S.pop===d.p?null:d.p;render();if(S.pop==='filter'&&innerWidth>760)$('#q')?.focus()},
+ view(d){S.route='wall';S.viewId=d.id||null;S.tags=[];S.q='';if(innerWidth<=760)S.side=false;render()},
+ clear(){S.tags=[];S.q='';render()},
+ cols(d){if(S.preview)return toast('Layout is not saved while seeing as staff');LS.set(colsKey(),+d.n);render()},
+ full(d){const el=$(d.sel);document.fullscreenElement?document.exitFullscreen():el?.requestFullscreen?.().catch(()=>toast('Full screen is blocked here'))},
+ open(d){if(authCams(eff()).some(c=>c.id===d.id))openViewer(d.id)},
+ back(){S.route='wall';S.pop=null;render()},
+ saveView(){if(!mut())return;const u=user(S.actor),cs=wallCams();if(!S.tags.length&&!cs.length)return toast('Nothing to save');
+  const v={id:'v'+Date.now(),name:S.tags.length?S.tags.join(' + '):'New view',type:S.tags.length?'dynamic':'static',tags:[...S.tags],cams:S.tags.length?[]:cs.map(c=>c.id),cols:getCols(),owner:u.id,priv:u.role!=='admin',share:{org:false,groups:[],users:[]}};
+  DB.views.push(v);audit('Created a view',v.name);Object.assign(S,{route:'views',vtab:'views',editId:v.id,pop:null});toast(v.priv?'Saved as a private view':'View saved. Share it to let others open it.');render()},
+ play(){const v=S.v;if(v.live){v.live=false;v.playing=false;v.t=Date.now()-1000}else v.playing=!v.playing;tick(true)},
+ skip(d){seek(S.v.t+d.d*1000)},live(){S.v.playing=true;seek(Date.now())},seekto(d){S.v.playing=true;seek(+d.t)},
+ lastrec(){const c=cam(S.v.cam),r=recRanges(c,T0-RET,Date.now()).pop();if(r){S.v.playing=true;seek(r[1]-6e4)}},
+ zoom(d){S.v.zoom=d.z==='day'?'day':+d.z;S.v.w0=null;render()},
+ export(){const v=S.v;if(S.nvr)return toast('Clips are unavailable while the recorder is unreachable');S.modal={cam:v.cam,t:v.live?Date.now()-6e4:v.t,len:30,state:'idle',p:0};render()},
+ mclose(d,el,ev){if(ev.target!==el&&!d.x)return;clearInterval(S.modal?.iv);S.modal=null;render()},
+ xgo(){const m=S.modal,c=cam(m.cam),r=recRanges(c,m.t,m.t+m.len*1000);if(r.length!==1||r[0][0]>m.t||r[0][1]<m.t+m.len*1000){m.err='Part of that time has no recording. Pick a moment that was recorded.';return render()}
+  m.state='run';m.err='';m.iv=setInterval(()=>{m.p+=8;if(m.p>=100){clearInterval(m.iv);m.state='done';audit('Saved a clip',c.name)}render()},220);render()},
+ xcancel(){clearInterval(S.modal.iv);S.modal=null;toast('Clip cancelled');render()},
+ xdl(){toast('Simulated: the real app downloads the clip through a private, expiring link')},
+ evmore(){S.ev.n+=24;render()},
+ evopen(d){const c=authCams(eff()).find(x=>x.id===d.cam),e=c&&camEvents(c).find(x=>x.id===d.id);if(e)openViewer(c.id,e.t-5000)},
+ vtab(d){S.vtab=d.t;render()},atab(d){S.atab=d.t;render()},vsel(d){S.editId=d.id;render()},
+ vnew(){if(!mut())return;const u=user(S.actor);if(u.role!=='admin'&&!u.priv)return;const v={id:'v'+Date.now(),name:'Untitled view',type:'dynamic',tags:[],cams:[],cols:3,owner:u.id,priv:u.role!=='admin',share:{org:false,groups:[],users:[]}};DB.views.push(v);S.editId=v.id;S.vtab='views';audit('Created a view',v.name);render()},
+ vtype(d){const v=edV();if(!v||v.type===d.t)return;
+  if(d.t==='static'){if(!confirm('Switch to a fixed list? The cameras that match right now are kept, and the tag rule is removed.'))return;v.cams=resolve(v,S.actor).map(c=>c.id);v.tags=[]}
+  else{if(!confirm('Switch to following tags? The fixed camera list is removed.'))return;v.cams=[]}
+  v.type=d.t;audit('Changed a view',v.name);render()},
+ vcols(d){const v=edV();if(v){v.cols=+d.n;render()}},
+ vtag(d){const v=edV();if(v){v.tags=tog(v.tags,d.t,!v.tags.includes(d.t));audit('Changed a view',v.name);render()}},
+ vmove(d){const v=edV();if(!v)return;const vis=resolve(v,S.actor).map(c=>c.id),i=vis.indexOf(d.id),j=i+ +d.d;if(j<0||j>=vis.length)return;const a=v.cams.indexOf(vis[i]),b=v.cams.indexOf(vis[j]);[v.cams[a],v.cams[b]]=[v.cams[b],v.cams[a]];render()},
+ vrm(d){const v=edV();if(v){v.cams=v.cams.filter(x=>x!==d.id);audit('Changed a view',v.name);render()}},
+ vdel(){const v=edV();if(!v||!confirm(`Delete "${v.name}"? Anyone who starts on it will start somewhere else.`))return;DB.views=DB.views.filter(x=>x!==v);const D=DB.defaults;if(D.org===v.id)D.org='';for(const o of[D.groups,D.users,D.personal])for(const k in o)if(o[k]===v.id)delete o[k];if(S.viewId===v.id)S.viewId=null;S.editId=null;audit('Deleted a view',v.name);render()},
+ pvStart(d){if(!isAdmin()){audit('Tried to see as staff',d.id,'denied');return toast('Only administrators can do this')}const s=user(d.id);if(!s||s.role!=='staff'||!s.active)return toast('That person cannot be previewed');S.preview=s.id;S.pvExp=Date.now()+15*6e4;audit('Started seeing as staff',s.name);goLanding()},
+ pvExit(){audit('Stopped seeing as staff',user(S.preview).name);S.preview=null;S.route='admin';S.atab='preview';render()},
+ resume(){S.expired=false;goLanding()},
+ gadd(){if(!mut())return;const n=$('#gname').value.trim();if(!n)return;DB.groups.push({id:'g'+Date.now(),name:n,prio:10,members:[]});audit('Added a group',n);render()},
+ gdel(d){if(!mut())return;const g=group(d.id);if(!confirm(`Delete ${g.name}? Its members lose the cameras and views they had through it.`))return;DB.groups=DB.groups.filter(x=>x!==g);delete DB.grants['g:'+g.id];delete DB.defaults.groups[g.id];DB.views.forEach(v=>v.share.groups=v.share.groups.filter(x=>x!==g.id));audit('Deleted a group',g.name);render()},
+ tadd(){if(!mut())return;const n=$('#tname').value.trim().toLowerCase().replace(/[^a-z0-9_]+/g,'_');if(!n||DB.tags.includes(n))return toast(n?'That tag already exists':'Type a tag name first');DB.tags.push(n);audit('Added a tag',n);render()},
+ tdel(d){if(!mut())return;const used=DB.views.filter(v=>v.type==='dynamic'&&v.tags.includes(d.t));if(!confirm(`Remove the tag ${d.t}?${used.length?` ${used.length} view(s) use it and will stop filtering by it.`:''}`))return;DB.tags=DB.tags.filter(t=>t!==d.t);DB.cams.forEach(c=>c.tags=c.tags.filter(t=>t!==d.t));DB.views.forEach(v=>v.tags=v.tags.filter(t=>t!==d.t));S.tags=S.tags.filter(t=>t!==d.t);audit('Removed a tag',d.t);render()}
+};
+const shareOk=(v,kind,id)=>kind==='g'?(v.share.org||v.share.groups.includes(id)):accViews(id).includes(v);
+const Ch={
+ ident(el){S.actor=el.value;S.preview=null;goLanding()},
+ sim(el){if(el.value==='nvr')S.nvr=!S.nvr;if(el.value==='exp')S.expired=true;render()},
+ ftag(el){S.tags=tog(S.tags,el.dataset.t,el.checked);render()},
+ speed(el){S.v.speed=+el.value},
+ tz(el){S.tz=el.value;if(!S.preview)LS.set('tz',S.tz);S.v&&(S.v.w0=null);render()},
+ date(el){if(!el.value)return;const[y,m,d]=el.value.split('-').map(Number),p=P(S.v.t);S.v.playing=true;seek(z2u(y,m,d,+p.hour,+p.minute,+p.second))},
+ time(el){if(!el.value)return;const[h,mi,s=0]=el.value.split(':').map(Number),p=P(S.v.t);S.v.playing=true;seek(z2u(+p.year,+p.month,+p.day,h,mi,s))},
+ evcam(el){S.ev.cam=el.value;S.ev.n=24;render()},evrange(el){S.ev.range=+el.value;S.ev.n=24;render()},evtype(el){S.ev.type=el.value;S.ev.n=24;render()},
+ xlen(el){S.modal.len=+el.value},pvPick(el){S.pvPick=el.value;render()},
+ vname(el){const v=edV();if(v&&el.value.trim()){v.name=el.value.trim();audit('Renamed a view',v.name)}render()},
+ vadd(el){const v=edV();if(v&&el.value&&authCams(S.actor).some(c=>c.id===el.value)){v.cams.push(el.value);audit('Changed a view',v.name)}render()},
+ shOrg(el){const v=edV();if(v){v.share.org=el.checked;audit(el.checked?'Shared a view':'Stopped sharing a view',`${v.name}: all staff`)}render()},
+ shG(el){const v=edV();if(v){v.share.groups=tog(v.share.groups,el.dataset.id,el.checked);audit(el.checked?'Shared a view':'Stopped sharing a view',`${v.name}: ${group(el.dataset.id).name}`)}render()},
+ shU(el){const v=edV();if(v){v.share.users=tog(v.share.users,el.dataset.id,el.checked);audit(el.checked?'Shared a view':'Stopped sharing a view',`${v.name}: ${user(el.dataset.id).name}`)}render()},
+ defOrg(el){if(mut()){const v=view(el.value);if(v&&!v.share.org)toast('Tip: share this view with all staff, or only people who can already open it will start on it');DB.defaults.org=el.value;audit('Set the starting view',`Everyone: ${v?.name||'none'}`)}render()},
+ defG(el){if(mut()){const v=view(el.value),g=group(el.dataset.id);if(v&&!shareOk(v,'g',g.id))toast(`Share "${v.name}" with ${g.name} first`);else{el.value?DB.defaults.groups[g.id]=el.value:delete DB.defaults.groups[g.id];audit('Set the starting view',`${g.name}: ${v?.name||'none'}`)}}render()},
+ defU(el){if(mut()){const v=view(el.value),u=user(el.dataset.id);if(v&&!shareOk(v,'u',u.id))toast(`${u.name} cannot open "${v.name}". Share it with them first.`);else{el.value?DB.defaults.users[u.id]=el.value:delete DB.defaults.users[u.id];audit('Set the starting view',`${u.name}: ${v?.name||'none'}`)}}render()},
+ defMe(el){if(mut()&&user(S.actor).priv){el.value?DB.defaults.personal[S.actor]=el.value:delete DB.defaults.personal[S.actor]}render()},
+ gprio(el){if(mut())group(el.dataset.id).prio=+el.value||0;render()},
+ gname(el){if(mut()&&el.value.trim())group(el.dataset.id).name=el.value.trim();render()},
+ gmem(el){if(mut()){const g=group(el.dataset.g);g.members=tog(g.members,el.dataset.id,el.checked);audit(el.checked?'Added to a group':'Removed from a group',`${user(el.dataset.id).name}: ${g.name}`)}render()},
+ urole(el){if(mut()&&el.dataset.id!==S.actor){user(el.dataset.id).role=el.value;audit('Changed a role',`${user(el.dataset.id).name}: ${el.value}`)}render()},
+ upriv(el){if(mut())user(el.dataset.id).priv=el.checked;render()},
+ uact(el){if(mut()&&el.dataset.id!==S.actor){user(el.dataset.id).active=el.checked;audit(el.checked?'Turned an account on':'Turned an account off',user(el.dataset.id).name)}render()},
+ grant(el){if(mut()){const k=el.dataset.k;DB.grants[k]=tog(DB.grants[k]||[],el.dataset.id,el.checked);audit(el.checked?'Gave camera access':'Removed camera access',`${k.startsWith('g:')?group(k.slice(2)).name:user(k.slice(2)).name}: ${cam(el.dataset.id).name}`)}render()},
+ ctag(el){if(mut()){const c=cam(el.dataset.id);c.tags=tog(c.tags,el.dataset.t,el.checked);audit(el.checked?'Tagged a camera':'Untagged a camera',`${c.name}: ${el.dataset.t}`)}render()},
+ tren(el){const o=el.dataset.t,n=el.value.trim().toLowerCase().replace(/[^a-z0-9_]+/g,'_');if(mut()&&n&&n!==o&&!DB.tags.includes(n)){const rn=a=>a.map(t=>t===o?n:t);DB.tags=rn(DB.tags);DB.cams.forEach(c=>c.tags=rn(c.tags));DB.views.forEach(v=>v.tags=rn(v.tags));S.tags=rn(S.tags);audit('Renamed a tag',`${o} to ${n}`)}render()}
+};
+document.addEventListener('click',ev=>{const el=ev.target.closest('[data-a]'),shut=S.pop&&!ev.target.closest('.pop,[data-a=pop]');if(shut)S.pop=null;
+ if(el&&!el.disabled)A[el.dataset.a]?.(el.dataset,el,ev);if(shut&&$('.pop'))render()});
+document.addEventListener('change',ev=>{const el=ev.target;if(el.dataset?.c)Ch[el.dataset.c]?.(el)});
+document.addEventListener('input',ev=>{if(ev.target.dataset?.i!=='q')return;S.q=ev.target.value;$('#wdyn').outerHTML=wallDyn();watchTiles()});
+/* timeline: click or drag to seek, hover for a preview */
+const tlT=ev=>{const r=$('#tl').getBoundingClientRect(),[a,b]=S.v._win;return a+Math.min(1,Math.max(0,(ev.clientX-r.left)/r.width))*(b-a)};
+let drag=false,tip;
+document.addEventListener('pointerdown',ev=>{if(ev.target.closest?.('#tl')){drag=true;S.v.playing=true;seek(tlT(ev))}});
+document.addEventListener('pointerup',()=>drag=false);
+document.addEventListener('pointermove',ev=>{lastMove=Date.now();const on=S.route==='viewer'&&ev.target.closest?.('#tl');if(!on&&!drag){tip?.remove();tip=null;return}
+ if(!$('#tl'))return;const t=tlT(ev),c=cam(S.v.cam),r=$('#tl').getBoundingClientRect();if(drag)seek(t);
+ if(!tip){tip=document.createElement('div');tip.className='hovtip';document.body.append(tip)}
+ const ok=!S.nvr&&t<Date.now()&&inRec(c,t),e=ok&&evAt(c,t);tip.innerHTML=`<div class="mini">${ok?feed(c,t)+(e?bbox(e):''):'<div class="offm" style="font-size:11px">Not recorded</div>'}</div>${tS(t)}`;
+ tip.style.left=Math.min(innerWidth-148,Math.max(4,ev.clientX-70))+'px';tip.style.top=(r.top-110)+'px'});
+document.addEventListener('keydown',ev=>{lastMove=Date.now();if(ev.key==='Escape'&&S.pop){S.pop=null;return render()}
+ if(S.route!=='viewer'||S.modal||/INPUT|SELECT|TEXTAREA/.test(ev.target.tagName))return;
+ if(ev.key===' '){ev.preventDefault();A.play()}else if(ev.key==='ArrowLeft')seek(S.v.t-10000);else if(ev.key==='ArrowRight')seek(S.v.t+10000);else if(ev.key==='Escape'&&!document.fullscreenElement)A.back()});
+matchMedia('(prefers-color-scheme: light)').addEventListener('change',()=>S.theme==='system'&&render());
+/* simulated live updates: new activity arrives now and then on a camera the viewer may see */
+setInterval(()=>{if(S.nvr||S.expired)return;const cs=authCams(eff()).filter(c=>c.online);if(!cs.length)return;const c=cs[Math.floor(Math.random()*cs.length)],t=Date.now()-8000;
+ camEvents(c).push({id:'live'+t,cam:c.id,t,type:Math.random()<.5?'motion':'person',dur:6,x:20+Math.random()*40,y:35+Math.random()*15});
+ if(S.route==='events'&&!document.activeElement?.matches('select'))render();else if(S.route==='viewer'&&S.v?.cam===c.id)drawTl()},20000);
+goLanding();
+</script>
+</body>
+</html>
