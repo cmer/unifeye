@@ -3,9 +3,10 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import * as oidc from "openid-client";
 import { audit } from "../audit";
 import type { Policy } from "../authz/policy";
-import { config } from "../config";
+import { config, groupsClaim } from "../config";
 import { schema, type Db } from "../db";
 import { decrypt, hashToken, HttpError, log, newId, randomToken } from "../util";
+import { claimValues, recordProviderGroups } from "./claims";
 import type { Sessions, SessionRow } from "./session";
 
 const LOGOUT_EVENT = "http://schemas.openid.net/event/backchannel-logout";
@@ -20,19 +21,6 @@ export class AdmissionError extends Error {
 export function safeReturnTo(v: string | null | undefined): string {
   if (!v || !v.startsWith("/") || v.startsWith("//") || v.includes("\\") || v.includes("\n") || v.startsWith("/api/")) return "/";
   return v;
-}
-
-/**
- * The values an admission claim carries: a string, an array of strings, or an object whose keys
- * are the values (the shape some providers use for roles).
- */
-function claimValues(claims: Record<string, unknown>, name: string): string[] {
-  let v: unknown = claims[name];
-  if (v === undefined && name.includes(".")) v = name.split(".").reduce<unknown>((o, k) => (o && typeof o === "object" ? (o as Record<string, unknown>)[k] : undefined), claims);
-  if (typeof v === "string") return v ? [v] : [];
-  if (Array.isArray(v)) return v.filter((x): x is string => typeof x === "string" && x !== "");
-  if (v && typeof v === "object") return Object.keys(v);
-  return [];
 }
 
 /**
@@ -136,7 +124,7 @@ export class Oidc {
       let u = tx.select().from(schema.users).where(and(eq(schema.users.issuer, iss), eq(schema.users.subject, sub))).get();
       if (!u) {
         // First admitted sign-in: a profile with no cameras, no groups and no administrator rights.
-        const row = { id: newId(), issuer: iss, subject: sub, email, name, role: "staff" as const, status: "active" as const, allowPrivateViews: false, createdAt: t, updatedAt: t, lastLoginAt: null, version: 1 };
+        const row = { id: newId(), issuer: iss, subject: sub, email, name, role: "staff" as const, status: "active" as const, allowPrivateViews: false, providerGroups: [] as string[], createdAt: t, updatedAt: t, lastLoginAt: null, version: 1 };
         tx.insert(schema.users).values(row).run();
         u = row;
         policyChanged = true;
@@ -152,9 +140,12 @@ export class Oidc {
         policyChanged = true;
       }
       tx.update(schema.users).set({ name: name || u.name, email, lastLoginAt: t, updatedAt: t }).where(eq(schema.users.id, u.id)).run();
+      // Group sync: memberships follow the provider's group claim on every sign-in.
+      const gc = groupsClaim(c);
+      if (gc && recordProviderGroups(this.db, u.id, claimValues(claims, gc), { ip: ctx.ip })) policyChanged = true;
       return u;
     }, { behavior: "immediate" });
-    // Only a new profile or the bootstrap promotion changes what Policy caches; an ordinary sign-in does not.
+    // Only a new profile, the bootstrap promotion or a group-sync change alters what Policy caches.
     if (policyChanged) this.policy.invalidate();
     if (user.status !== "active") fail("user_disabled", { userId: user.id });
 
@@ -220,12 +211,32 @@ export class Oidc {
   }
 
   /**
+   * Group sync during re-validation, so a group removed at the provider takes effect within
+   * OIDC_RECHECK_SECONDS rather than at the next sign-in. Only an ID token that verifies against the
+   * issuer's keys and names this exact person is used; anything else leaves memberships unchanged.
+   */
+  private async resyncGroups(cfg: oidc.Configuration, userId: string, idToken: string) {
+    const c = config(), gc = groupsClaim(c);
+    if (!gc) return;
+    const u = this.db.select().from(schema.users).where(eq(schema.users.id, userId)).get();
+    if (!u) return;
+    try {
+      const { payload } = await jwtVerify(idToken, this.keys(cfg), { issuer: cfg.serverMetadata().issuer, audience: c.OIDC_CLIENT_ID!, subject: u.subject, clockTolerance: 30 });
+      if (payload.iss !== u.issuer) return;
+      if (this.db.transaction(() => recordProviderGroups(this.db, u.id, claimValues(payload, gc)), { behavior: "immediate" })) this.policy.invalidate();
+    } catch (e) {
+      log("warn", "group sync skipped: the refreshed ID token did not verify", { userId, error: e });
+    }
+  }
+
+  /**
    * Lifecycle reconciliation. Back-channel logout covers session termination and sign-out, but
    * providers generally do not send it when a user is deactivated, locked or deleted. Each session
    * therefore holds a refresh token (encrypted, used for nothing else) that is exercised on a schedule:
    *  - provider rejects it  -> the session is revoked (detected within OIDC_RECHECK_SECONDS).
    *  - provider unreachable -> nothing is extended; after OIDC_MAX_STALE_SECONDS the session is suspended.
    * A session that received no refresh token is not re-checked; it ends on back-channel logout or its own limits.
+   * When the refresh response carries an ID token, group memberships are re-synced from it as well.
    */
   async reconcile(): Promise<{ checked: number; revoked: number; unreachable: number }> {
     const c = config(), out = { checked: 0, revoked: 0, unreachable: 0 };
@@ -239,6 +250,7 @@ export class Oidc {
       try {
         const r = await oidc.refreshTokenGrant(cfg, decrypt(s.refreshTokenEnc!, c.TOKEN_ENC_KEY));
         this.sessions.markValidated(s.id, r.refresh_token);
+        if (r.id_token) await this.resyncGroups(cfg, s.userId, r.id_token);
       } catch (e) {
         if (e instanceof oidc.ResponseBodyError && e.status >= 400 && e.status < 500) {
           this.sessions.revoke(s.id, "provider_revoked");

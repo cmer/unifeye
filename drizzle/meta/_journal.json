@@ -15,6 +15,13 @@
       "when": 1794795538107,
       "tag": "0001_export_preview",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1794855061301,
+      "tag": "0002_provider_group_sync",
+      "breakpoints": true
     }
   ]
 }
