@@ -208,6 +208,25 @@ tab skips WebRTC for 10 minutes (`src/ui/live.tsx`). Tearing down a WHEP session
 once. The per-session limit (`MAX_WALL_STREAMS` + 3) counts distinct streams (camera and quality),
 not relay readers, because HLS takes a new reader every 25 seconds.
 
+### Sound
+
+Video starts muted, and sound plays only after a viewer clicks the speaker (or presses M in the
+player), so browsers' autoplay rules never block a stream. One camera plays sound at a time across
+the wall and the player (`src/ui/sound.tsx`); turning one on turns the previous one off.
+
+Whether a stream has sound is decided in the browser once it plays:
+
+- WebRTC: MediaMTX carries Opus, G.711 and LPCM, not AAC. For a stream without any of those it
+  still answers with a placeholder audio track that never sends a packet, so sound counts only when
+  packets arrive (the track unmutes). Still muted three seconds after connecting means no audio.
+- HLS: the playlist's codecs (hls.js), or the browser's own report for native HLS.
+- Recorded video: the browser's report for the MP4.
+
+A camera without sound shows a greyed-out speaker that explains "No audio". While sound is on, a
+small meter shows the level actually arriving, so a viewer can tell a quiet room from a problem with
+their own speakers. The meter is missing where the browser cannot expose an element's audio
+(Safari for HLS and recordings).
+
 ### The relay seam
 
 Everything Vantage says to MediaMTX goes through one interface, `Relay` (`src/server/media/relay.ts`):
@@ -268,7 +287,9 @@ zone, so a day is 23, 24 or 25 hours long around daylight-saving changes.
   period, and a gap shows up as "Nothing recorded" when you seek into it.
 - Live video needs an RTSP stream already enabled on the camera in Protect. Enabling one would be a
   write, so Vantage does not do it.
-- Protect camera audio is AAC, which WebRTC cannot carry. Live video over WebRTC is silent; HLS
-  carries the audio. H.265 cameras play only in browsers that support it.
+- WebRTC carries a camera's sound only if Protect's RTSPS stream includes an Opus track next to the
+  AAC one. One camera checked on a real UNVR did; whether every camera model does is not known. A
+  camera with AAC only has sound over HLS and shows "No audio" over WebRTC. H.265 cameras play only
+  in browsers that support it.
 - SQLite means one application instance on local disk. Running replicas or placing the database on
   a network filesystem is not supported.
