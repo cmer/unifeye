@@ -196,11 +196,31 @@ them separately. To restore into a clean volume, omit `--force`.
 
 ## 7. Upgrades and rollback
 
-1. `docker compose pull` or rebuild, then `docker compose up -d`. Migrations apply at start-up after
-   an automatic backup. `node cli.mjs migrate` runs the same step on its own.
+On the server, from the checkout:
+
+```sh
+scripts/update.sh
+```
+
+It fetches `origin/main`, backs up the database, builds the new image while the current version
+keeps running, then restarts and waits until both containers are healthy. If the build fails,
+nothing is restarted. Local edits to tracked files (for example a changed `compose.yaml`) are carried
+over; if they conflict with the new code, the update stops before changing anything. Settings that
+only this server needs belong in `compose.override.yaml`, which the update never touches.
+`scripts/update.sh --help` lists the options.
+
+The server needs read access to the repository. For a private repository, add a read-only deploy
+key: create one with `ssh-keygen -t ed25519 -f ~/.ssh/unifeye_deploy`, add the `.pub` file under
+the repository's Settings > Deploy keys, then in the checkout switch to the SSH address and use that key:
+`git remote set-url origin git@github.com:<owner>/unifeye.git` and
+`git config core.sshCommand "ssh -i ~/.ssh/unifeye_deploy -o IdentitiesOnly=yes"`.
+
+1. Migrations apply at start-up after an automatic backup. `node cli.mjs migrate` runs the same step
+   on its own.
 2. If a migration fails the app does not start and the database is unchanged.
-3. To roll back, start the previous image and restore the `-pre-migration` backup taken by the
-   upgrade. A database newer than the running build is refused at start-up.
+3. To roll back, run `scripts/update.sh <previous commit>`; the update prints the command when it
+   finishes. If the update included a migration (it says so before building), also restore the
+   `-pre-migration` backup it took: a database newer than the running build is refused at start-up.
 
 ## 8. Sizing and limits
 

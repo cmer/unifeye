@@ -67,4 +67,5 @@ access; they start with no cameras until you add them to a group in Admin.
 | Back up now | `pnpm unifeye backup` |
 | Check a backup | `pnpm unifeye verify <file>` |
 | Restore | `pnpm unifeye restore <file> [--force]` |
+| Update a Compose deployment to the latest `main` | `scripts/update.sh` (on the server; see docs/deployment.md) |
 | Deploy | `docker compose up -d` (see [docs/deployment.md](docs/deployment.md)) |
