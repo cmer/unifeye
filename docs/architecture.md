@@ -194,8 +194,9 @@ existing sessions are not extended, and a session that could not be re-validated
 2. Vantage calls MediaMTX itself with a random ticket bound to session, subject, camera, path and
    transport, valid for 30 seconds and single-use for WebRTC.
 3. MediaMTX runs with `authMethod: http` and asks Vantage's hook before serving any reader. A
-   request without a valid ticket is refused even if it reaches MediaMTX directly. RTSP readers are
-   never admitted.
+   request without a valid ticket is refused even if it reaches MediaMTX directly. The only RTSP
+   reader admitted is the relay's own FFmpeg (publisher credentials, internal address), and only on
+   the internal `_src` paths described under Sound; no ticket ever names one of those.
 4. Each admitted MediaMTX session is recorded with its grant. A sweep re-checks all of them with
    `Access` and kicks failures through the control API. It runs on every access signal and on a
    timer; a signal that arrives during a sweep triggers another one straight after. Readers Vantage
@@ -233,6 +234,17 @@ A camera without sound shows a greyed-out speaker that explains "No audio". Whil
 small meter shows the level actually arriving, so a viewer can tell a quiet room from a problem with
 their own speakers. The meter is missing where the browser cannot expose an element's audio
 (Safari for HLS and recordings).
+
+Protect stamps its live audio in milliseconds while declaring a 16 kHz (AAC) or 48 kHz (Opus)
+clock, so its timestamps run 16 to 48 times too slow. Browsers play the first fraction of a second
+and then discard nearly every packet as late: a moment of garbled sound, then silence. For a camera
+with a microphone (`featureFlags.hasMic`), the relay therefore takes two paths (`mediamtx.ts`):
+MediaMTX pulls the camera into `<path>_src` as before, keeping the certificate fingerprint check,
+and an FFmpeg it starts on demand reads that path over loopback RTSP, copies the video, decodes the
+camera's first audio track and re-encodes it to AAC (for HLS) and Opus (for WebRTC) with timestamps
+counted from the samples, then publishes `<path>`, which is what readers get tickets for. It adds
+about half a second to start-up and one small FFmpeg process per stream being watched. Cameras
+without a microphone are pulled directly, as before.
 
 ### The relay seam
 
@@ -318,9 +330,9 @@ zone, so a day is 23, 24 or 25 hours long around daylight-saving changes.
   period, and a gap shows up as "Nothing recorded" when you seek into it.
 - Live video needs an RTSP stream already enabled on the camera in Protect. Enabling one would be a
   write, so Vantage does not do it.
-- WebRTC carries a camera's sound only if Protect's RTSPS stream includes an Opus track next to the
-  AAC one. One camera checked on a real UNVR did; whether every camera model does is not known. A
-  camera with AAC only has sound over HLS and shows "No audio" over WebRTC. H.265 cameras play only
-  in browsers that support it.
+- Live sound depends on rebuilding Protect's audio timestamps (see Sound). If a Protect release
+  fixes them, the rebuild is still correct but no longer needed. Audio timing counts samples from
+  the start of each stream, so sound and video may drift apart slightly over a long session. H.265
+  cameras play only in browsers that support it.
 - SQLite means one application instance on local disk. Running replicas or placing the database on
   a network filesystem is not supported.

@@ -53,6 +53,20 @@ describe("MediaMTX adapter: control API", () => {
     expect(seen).toHaveLength(2);
     expect(JSON.parse(seen[1].body)).toEqual({ source: "rtsps://nvr/rotated", sourceOnDemand: true, sourceOnDemandCloseAfter: "10s", rtspTransport: "tcp" });
   });
+  it("pulls a camera with retimed audio into an internal path, and publishes the camera path through FFmpeg", async () => {
+    const src = { kind: "rtsp" as const, url: "rtsps://nvr/secret", tlsFingerprint: "AB:CD", retimeAudio: true };
+    await relay.ensureStream("c_cam1_focus", src);
+    expect(lines()).toEqual(["POST /v3/config/paths/add/c_cam1_focus_src", "POST /v3/config/paths/add/c_cam1_focus"]);
+    expect(JSON.parse(seen[0].body)).toEqual({ source: "rtsps://nvr/secret", sourceOnDemand: true, sourceOnDemandCloseAfter: "10s", rtspTransport: "tcp", sourceFingerprint: "AB:CD" });
+    const pub = JSON.parse(seen[1].body);
+    expect(pub).toMatchObject({ source: "publisher", runOnDemandRestart: true, runOnDemandCloseAfter: "10s" });
+    expect(pub.runOnDemand).toContain("-i rtsp://vantage-publisher:api@127.0.0.1:$RTSP_PORT/c_cam1_focus_src ");
+    expect(pub.runOnDemand).toContain("-c:v copy -filter:a asetpts=N/SR/TB");
+    expect(pub.runOnDemand).toMatch(/rtsp:\/\/vantage-publisher:api@127\.0\.0\.1:\$RTSP_PORT\/\$MTX_PATH$/);
+    expect(pub.runOnDemand).not.toContain("rtsps://nvr/secret"); // the camera URL stays in MediaMTX's source, not in a command line
+    await relay.ensureStream("c_cam1_focus", src);
+    expect(seen).toHaveLength(2); // unchanged: no call
+  });
   it("configures a command source as a publisher path, and replaces a path that already exists", async () => {
     answer = (r, res) => (r.url.includes("/add/") ? status(400)(r, res) : ok(res));
     await relay.ensureStream("c_cam1_focus", { kind: "command", command: "ffmpeg -i x" });

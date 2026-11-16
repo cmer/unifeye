@@ -119,6 +119,13 @@ since the move.
   Turning sound on for one wall tile turned it off on the other; the M key toggled it in the player.
   Not heard through speakers, and not checked in Safari or Firefox, whose audio detection takes a
   different path.
+- Live sound from a real UNVR camera (one camera, 2560×1920 with AAC 16 kHz and Opus tracks), in
+  headless Chromium over WebRTC against MediaMTX 1.21.4, outside Vantage: pulled directly, Chrome
+  discarded 430 of 560 audio packets and concealed 95% of the samples (the garble-then-silence
+  heard in Chrome and Safari), because Protect's audio timestamps advance in milliseconds against a
+  16 or 48 kHz clock. Through the retiming FFmpeg command `mediamtx.ts` generates: 0 packets
+  discarded, 0 samples concealed, no video freezes, about 1 s to start. A video-only source through
+  the same command played video with no audio track. Not heard through speakers; HLS not played.
 
 ## Not verified
 
@@ -133,7 +140,7 @@ since the move.
 | Browser test suite | Not written | Screens were checked by hand in one desktop browser |
 | Phones and tablets | No device testing | Layout or touch problems |
 | HLS playback in a browser | Only the gateway responses were checked | Player-level issues |
-| Sound from a real UNVR | Its streams were probed (one camera sends Opus and AAC, one sends none) but not played in Vantage | A camera model without Opus is silent over WebRTC; recordings from Protect may lack audio |
+| Sound from a real UNVR in Vantage end to end | The retiming relay was checked outside Vantage only (see Verified) | HLS sound, wall-quality streams, other camera models; recordings from Protect may lack audio |
 | Sound in Safari and Firefox | Only Chromium was used | "No audio" shown wrongly, or the speaker missing; no level meter in Safari for HLS and recordings |
 | Clip export in the browser, activity live updates in the browser | Checked through the API tests only | UI wiring |
 | Revocation bound under load | Checked with three streams | Slower with many sessions |

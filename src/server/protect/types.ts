@@ -28,8 +28,13 @@ export interface ProtectEvent {
   hasThumbnail: boolean;
 }
 export type LiveSource =
-  /** An RTSP(S) URL that MediaMTX pulls on demand. Contains upstream credentials or secrets: server-side only. */
-  | { kind: "rtsp"; url: string; tlsFingerprint?: string }
+  /**
+   * An RTSP(S) URL that MediaMTX pulls on demand. Contains upstream credentials or secrets: server-side only.
+   * `retimeAudio`: the stream may carry sound whose timestamps browsers cannot play (Protect stamps
+   * its audio packets in milliseconds against a 16 or 48 kHz clock), so the relay re-encodes the
+   * sound with timestamps rebuilt from the sample count. Video is passed through untouched.
+   */
+  | { kind: "rtsp"; url: string; tlsFingerprint?: string; retimeAudio?: boolean }
   /** A command MediaMTX runs on demand to publish into the path (used by the mock adapter). */
   | { kind: "command"; command: string };
 export interface RecordingRanges {

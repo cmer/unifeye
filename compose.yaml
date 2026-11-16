@@ -26,7 +26,8 @@ services:
     networks: [vantage]
 
   mediamtx:
-    # The -ffmpeg variant is required for mock mode's on-demand test streams and has a shell for diagnostics.
+    # The -ffmpeg variant is required: it re-encodes camera sound (Protect's audio timestamps are unusable
+    # as sent) and runs mock mode's test streams. It also has a shell for diagnostics.
     image: bluenviron/mediamtx:1.21.4-ffmpeg
     restart: unless-stopped
     user: "1000:1000"
