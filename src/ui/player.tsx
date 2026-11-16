@@ -437,7 +437,7 @@ function ClipDialog({ name, startMs, endMs, first, onClose }: { name: string; st
   }, [job.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const close = () => { if (job.status === "running") void api(`/exports/${job.id}`, { method: "DELETE" }).catch(() => {}); onClose(job.status === "ready"); };
   const ready = job.status === "ready", pct = job.progress ?? 0, measured = job.status === "running" && pct > 0 && pct < 95;
-  const note = pct >= 95 ? "Putting the pieces together…" : left != null ? fmtLeft(left) : pct > 0 ? "Estimating time left…" : endMs - startMs > 5 * 60_000 ? "Waiting for the recorder. Time left appears once the first part arrives." : "Waiting for the recorder…";
+  const note = pct >= 95 ? "Putting the pieces together…" : left != null ? fmtLeft(left) : pct > 0 ? "Estimating time left…" : "Waiting for the recorder…";
   return (
     <Dialog open onOpenChange={(o) => !o && close()}>
       <DialogContent>
