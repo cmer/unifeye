@@ -55,7 +55,7 @@ export function Wall({ viewId }: { viewId?: string }) {
   const prefKey = `cols:${viewId ?? "all"}`;
   const cols = [2, 3, 4].includes(Number(me.preferences[prefKey])) ? Number(me.preferences[prefKey]) : data?.view?.columns ?? 3;
   const needle = q.trim().toLowerCase();
-  const shown = useMemo(() => (data?.cameras ?? []).filter((c) => tags.every((t) => c.tags.includes(t)) && (!needle || c.name.toLowerCase().includes(needle) || c.tags.some((t) => t.includes(needle)))), [data, tags, needle]);
+  const shown = useMemo(() => (data?.cameras ?? []).filter((c) => !c.missing && tags.every((t) => c.tags.includes(t)) && (!needle || c.name.toLowerCase().includes(needle) || c.tags.some((t) => t.includes(needle)))), [data, tags, needle]);
   const facet = useMemo(() => { const m = new Map<string, number>(); shown.forEach((c) => c.tags.forEach((t) => m.set(t, (m.get(t) ?? 0) + 1))); tags.forEach((t) => m.has(t) || m.set(t, 0)); return [...m].sort((a, b) => a[0].localeCompare(b[0])); }, [shown, tags]);
 
   useEffect(() => {
@@ -82,7 +82,7 @@ export function Wall({ viewId }: { viewId?: string }) {
   let body: React.ReactNode;
   if (gone) body = <Empty icon={<Lock />} title="View unavailable">It may have been deleted or is no longer shared with you.<div><Button variant="outline" className="mt-4" onClick={() => nav("/?all")}>Show all cameras</Button></div></Empty>;
   else if (!data) body = <div className={`grid gap-0.5 ${GRID[cols]}`}>{Array.from({ length: 6 }, (_, i) => <div key={i} className="aspect-video animate-pulse bg-muted" />)}</div>;
-  else if (!data.cameras.length) body = viewId
+  else if (!data.cameras.some((c) => !c.missing)) body = viewId
     ? <Empty icon={<CameraIcon />} title="No cameras to show">You don&apos;t have access to any cameras in this view.<div><Button variant="outline" className="mt-4" onClick={() => nav("/?all")}>Show all cameras</Button></div></Empty>
     : <Empty icon={<Lock />} title="No cameras yet">Ask an administrator for access.</Empty>;
   else if (!shown.length) body = <Empty icon={<Search />} title="No matching cameras">Try removing a tag or changing your search.<div><Button variant="outline" className="mt-4" onClick={() => setFilter({ tags: [], q: "" })}>Clear filters</Button></div></Empty>;
@@ -91,13 +91,12 @@ export function Wall({ viewId }: { viewId?: string }) {
       {shown.map((c) => (
         <div key={c.id} data-cam={c.id} className="group relative aspect-video overflow-hidden bg-black text-white">
           <button onClick={() => nav(`/camera/${c.id}`)} aria-label={`Open ${c.name}`} className="peer absolute inset-0 text-left outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-inset">
-            {c.missing ? <div className="absolute inset-0 grid place-items-center bg-zinc-900 p-4 text-center text-sm text-zinc-400"><div className="font-medium text-zinc-50">Camera removed</div></div>
-              : <LiveVideo cameraId={c.id} quality="wall" active={streaming.has(c.id) && me.recorder !== "down"} online={c.online && me.recorder !== "down"} sound={sound === c.id} onAudio={(h) => setAudio((a) => (a[c.id] === h ? a : { ...a, [c.id]: h }))} onGone={() => { setTick((n) => n + 1); void reload(); }} />}
-            <span className="absolute top-2.5 left-2.5 flex max-w-[calc(100%-4.5rem)] items-center gap-1.5 truncate rounded-md bg-black/65 px-2 py-0.5 text-xs font-medium"><i className={`size-1.5 shrink-0 rounded-full ${c.missing ? "bg-zinc-500" : c.online ? "bg-green-500" : "bg-red-500"}`} />{c.name}</span>
+            <LiveVideo cameraId={c.id} quality="wall" active={streaming.has(c.id) && me.recorder !== "down"} online={c.online && me.recorder !== "down"} sound={sound === c.id} onAudio={(h) => setAudio((a) => (a[c.id] === h ? a : { ...a, [c.id]: h }))} onGone={() => { setTick((n) => n + 1); void reload(); }} />
+            <span className="absolute top-2.5 left-2.5 flex max-w-[calc(100%-4.5rem)] items-center gap-1.5 truncate rounded-md bg-black/65 px-2 py-0.5 text-xs font-medium"><i className={`size-1.5 shrink-0 rounded-full ${c.online ? "bg-green-500" : "bg-red-500"}`} />{c.name}</span>
             {recording.has(c.id) && <RecMark className="absolute top-2.5 right-2.5" />}
           </button>
           <span className={`pointer-events-none absolute inset-0 ring-2 transition ring-inset ${sound === c.id && audio[c.id] ? "ring-green-400" : "ring-white/0 group-hover:ring-white"}`} />
-          {!c.missing && <span className="absolute right-2 bottom-2"><SoundButton cameraId={c.id} has={audio[c.id] ?? null} className="size-7 rounded-md bg-black/65 opacity-0 group-hover:opacity-100 peer-focus-visible:opacity-100 focus-visible:opacity-100 hover:bg-black/80 [&_svg]:size-3.5" onClassName="bg-white text-black opacity-100 hover:bg-white/90" /></span>}
+          <span className="absolute right-2 bottom-2"><SoundButton cameraId={c.id} has={audio[c.id] ?? null} className="size-7 rounded-md bg-black/65 opacity-0 group-hover:opacity-100 peer-focus-visible:opacity-100 focus-visible:opacity-100 hover:bg-black/80 [&_svg]:size-3.5" onClassName="bg-white text-black opacity-100 hover:bg-white/90" /></span>
         </div>
       ))}
     </div>

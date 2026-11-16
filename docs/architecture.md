@@ -101,6 +101,10 @@ Time limits pass without an event, so a timer (`REVOCATION_SWEEP_SECONDS`) recor
 preview expiries, which fires the signal, and sweeps the relay regardless. The camera sync runs
 every 30 seconds and signals only when the inventory changed; a new name or recorder metadata
 refreshes the description cache without a signal, because neither is an input to any decision.
+The inventory holds only cameras adopted by this recorder: one Protect merely sees on the network, or
+one adopted by another NVR, is left out, so a camera that is un-adopted goes missing like a removed
+one. Missing cameras keep their grants, tags and view slots but are hidden from the camera wall;
+administrators still see them, marked removed, in the access matrix and view editor.
 
 A session suspended because the provider could not be reached is not ended and produces no signal. Its
 requests fail at once and the timer's relay sweep stops its streams; an open event feed closes at
