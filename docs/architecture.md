@@ -253,7 +253,12 @@ while a window plays, the player buffers the next one in a hidden video element 
 the current one ends, so playback continues without a black gap (the next window is buffered only
 once it is fully recorded; near live, the old load-on-end path still applies). Windows are cached on disk within a size and age limit. A seek
 that is abandoned cancels its export if nobody else is waiting for it. Clips start on a keyframe, so
-the first frame can be up to one keyframe interval early. Clicking an event starts
+the first frame can be up to one keyframe interval early. With adaptive recording, Protect exports
+the Low channel with a video clock that runs fast (a 60-second window holds about 38 seconds of
+video beside 60 seconds of audio), which made the picture race ahead and then freeze. After each
+export, the UniFi adapter spreads the video frames evenly across the audio's span with an FFmpeg
+stream copy (`retimeVideoToAudio` in `src/server/protect/ffmpeg.ts`); files that are already
+consistent are left alone. Clicking an event starts
 `EVENT_PREROLL_SECONDS` (default 5) before it.
 
 Times are UTC in storage and transport and shown in a selectable zone. Day boundaries follow the
