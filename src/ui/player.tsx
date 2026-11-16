@@ -1,5 +1,5 @@
 "use client";
-import { ArrowLeft, CalendarDays, Download, Lock, Maximize, Pause, Play, RotateCcw, RotateCw } from "lucide-react";
+import { ArrowLeft, CalendarDays, Download, Lock, Maximize, Pause, Play, RotateCcw, RotateCw, ZoomIn, ZoomOut } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,10 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
 const fmtLen = (ms: number) => { const s = Math.round(ms / 1000), m = Math.floor(s / 60); return m ? `${m} min${s % 60 ? ` ${s % 60} sec` : ""}` : `${s} sec`; };
 /** While trimming, the timeline zooms to the selection with room on both sides to extend it. */
 const viewFor = (a: number, b: number): [number, number] => { const span = Math.max(180_000, (b - a) * 2.5), mid = (a + b) / 2; return [mid - span / 2, mid + span / 2]; };
+/** How much of the day the timeline shows, widest first. 0 is the whole day. */
+const ZOOMS: [number, string][] = [[0, "Whole day"], [6 * 3600_000, "6 hours"], [3600_000, "1 hour"], [600_000, "10 minutes"]];
+/** Spacing between timeline labels: the first that gives at most six across. */
+const TICKS = [60_000, 120_000, 300_000, 600_000, 900_000, 1800_000, 3600_000, 7200_000, 3 * 3600_000, 6 * 3600_000];
 
 /**
  * One camera, live or recorded. Recorded video is fetched in short windows: seeking loads only the
@@ -39,7 +43,10 @@ export function Player({ cameraId }: { cameraId: string }) {
   const [target, setTarget] = useState({ ms: startAt, n: 0 });
   const [playing, setPlaying] = useState(true);
   const [speed, setSpeed] = useState(1);
-  const [zoom, setZoom] = useState<"day" | number>("day");
+  const [zoom, setZoom] = useState(0);
+  /** Start of the zoomed-in stretch. It stays put while the playhead is inside it, so clicks and drags land where aimed. */
+  const [view, setView] = useState<number | null>(null);
+  const [zoomNote, setZoomNote] = useState<{ text: string; n: number } | null>(null);
   const [rec, setRec] = useState<Ranges | null>(null);
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [noRec, setNoRec] = useState(false);
@@ -123,6 +130,12 @@ export function Player({ cameraId }: { cameraId: string }) {
   useEffect(() => { const v = video.current; if (!v || live) return; if (playing) void v.play().catch(() => {}); else v.pause(); }, [playing, live, src]);
   const nextRange = rec?.ranges.find(([a]) => a > t);
 
+  const zoomBy = (d: number) => {
+    const z = clamp(zoom + d, 0, ZOOMS.length - 1);
+    if (z === zoom) return;
+    setZoom(z); setView(null); setZoomNote((p) => ({ text: ZOOMS[z][1], n: (p?.n ?? 0) + 1 }));
+  };
+  useEffect(() => { if (!zoomNote) return; const i = setTimeout(() => setZoomNote(null), 1200); return () => clearTimeout(i); }, [zoomNote]);
   const back = () => (history.length > 1 ? history.back() : nav("/"));
   const toggle = () => { if (live) { seek(Date.now() - 6000, false); setPlaying(false); } else setPlaying((p) => !p); };
   useEffect(() => {
@@ -133,6 +146,7 @@ export function Player({ cameraId }: { cameraId: string }) {
       if (e.defaultPrevented || (e.target as HTMLElement).closest("input,select,textarea,[role=dialog]")) return;
       if (e.key === "Escape") { if (jump) setJump(false); else if (!document.fullscreenElement) back(); return; }
       if (e.key === " ") { e.preventDefault(); toggle(); } else if (e.key === "ArrowLeft") seek(t - 10000); else if (e.key === "ArrowRight") seek(t + 10000);
+      else if (e.key === "-") zoomBy(-1); else if (e.key === "=" || e.key === "+") zoomBy(1);
     };
     if (!lastMove.current) lastMove.current = Date.now();
     const i = setInterval(() => setIdle(playing && !jump && !trim && Date.now() - lastMove.current > 3500), 500);
@@ -144,9 +158,18 @@ export function Player({ cameraId }: { cameraId: string }) {
   if (!cam) return <div className="flex-1 bg-black" />;
 
   let a = dayStart, b = dayEnd;
-  // Zoomed in, the timeline shows the fixed slice of time that contains the playhead and pages forward with it.
+  // Zoomed in, the timeline shows a stretch of the day around the playhead. It holds still while the
+  // playhead is inside it and re-centres when the playhead leaves (live sits near the right edge).
+  const span = ZOOMS[zoom][0];
   if (trim) [a, b] = trim.view;
-  else if (zoom !== "day") { const span = zoom * 60000; a = Math.floor(t / span) * span; b = a + span; }
+  else if (span) {
+    const fits = view !== null && view >= dayStart && view + span <= dayEnd && t >= view && t <= view + span;
+    a = fits ? view : clamp(t - span * (live ? 0.9 : 0.5), dayStart, dayEnd - span); b = a + span;
+    if (a !== view) setView(a);
+  }
+  const step = TICKS.find((s) => (b - a) / s <= 6) ?? TICKS[TICKS.length - 1];
+  const ticks: number[] = [];
+  for (let m = dayStart + Math.ceil((a - dayStart) / step) * step; m <= b; m += step) ticks.push(m);
   const pct = (ms: number) => `${Math.min(100, Math.max(0, ((ms - a) / (b - a)) * 100))}%`;
   const at = (el: HTMLElement, clientX: number) => { const r = el.getBoundingClientRect(); return a + Math.min(1, Math.max(0, (clientX - r.left) / r.width)) * (b - a); };
   const down = me.recorder === "down";
@@ -185,12 +208,11 @@ export function Player({ cameraId }: { cameraId: string }) {
             <Input type="date" aria-label="Date" value={dateInput(t, tz)} onChange={(e) => { if (!e.target.value) return; const [y, m, d] = e.target.value.split("-").map(Number), p = zonedParts(t, tz); seek(zonedToUtc(y, m, d, p.hour, p.minute, p.second, tz)); }} />
             <Input type="time" step={1} aria-label="Time" value={timeInput(t, tz)} onChange={(e) => { if (!e.target.value) return; const [h, mi, s = 0] = e.target.value.split(":").map(Number), p = zonedParts(t, tz); seek(zonedToUtc(p.year, p.month, p.day, h, mi, s, tz)); }} />
             <Select aria-label="Time zone" value={typeof me.preferences.tz === "string" ? me.preferences.tz : "local"} onChange={(e) => setPref("tz", e.target.value)}>{ZONES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</Select>
-            <div className="pt-1 text-xs font-medium text-muted-foreground">Timeline shows</div>
-            <div className="inline-flex gap-0.5 rounded-lg bg-muted p-0.5">{([["day", "Day"], [360, "6 h"], [60, "1 h"], [10, "10 min"]] as const).map(([k, l]) => <button key={k} onClick={() => setZoom(k)} className={`flex-1 rounded-md px-2 py-1 text-sm font-medium ${zoom === k ? "bg-background shadow-sm" : "text-muted-foreground"}`}>{l}</button>)}</div>
           </div>
         </>
       )}
       <div className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent px-4 pt-12 pb-[max(0.9rem,env(safe-area-inset-bottom))] transition-opacity ${idle ? "opacity-0" : ""}`}>
+        {zoomNote && <div key={zoomNote.n} role="status" className="pointer-events-none absolute top-5 left-1/2 -translate-x-1/2 rounded-md bg-black/75 px-2.5 py-1 text-xs font-semibold whitespace-nowrap">{zoomNote.text}</div>}
         <div ref={tl} className="relative h-8 cursor-pointer touch-none select-none" role="slider" aria-label="Timeline" aria-valuemin={a} aria-valuemax={b} aria-valuenow={Math.round(t)} aria-valuetext={fmtTime(t, tz)} tabIndex={0}
           onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); const ms = at(e.currentTarget, e.clientX); if (trim) dragTrim(Math.abs(ms - trim.a) <= Math.abs(ms - trim.b) ? "a" : "b", ms); else seek(ms); }}
           onPointerUp={(e) => { if (trim?.grab) dragTrim(trim.grab, at(e.currentTarget, e.clientX), true); }}
@@ -207,7 +229,7 @@ export function Player({ cameraId }: { cameraId: string }) {
             {trim.grab && <span className="pointer-events-none absolute bottom-8 -translate-x-1/2 rounded bg-yellow-400 px-1.5 py-px text-[11px] font-semibold whitespace-nowrap text-black" style={{ left: pct(trim[trim.grab]) }}>{fmtTime(trim[trim.grab], tz)}</span>}
           </> : <i className="pointer-events-none absolute bottom-[3px] size-[15px] -translate-x-1/2 rounded-full bg-white shadow-[0_0_0_4px_rgba(255,255,255,.25)]" style={{ left: pct(t) }} />}
         </div>
-        <div className="mt-0.5 flex justify-between text-[11px] text-zinc-400">{[0, 0.25, 0.5, 0.75, 1].map((f) => <span key={f}>{(b - a < 600_000 ? fmtTime : fmtShort)(a + (b - a) * f, tz)}</span>)}</div>
+        <div className="relative mt-0.5 h-4 text-[11px] text-zinc-400">{ticks.map((m) => { const f = (m - a) / (b - a); return <span key={m} className={`absolute top-0 whitespace-nowrap ${f < 0.04 ? "" : f > 0.96 ? "-translate-x-full" : "-translate-x-1/2"}`} style={{ left: pct(m) }}>{fmtShort(m, tz)}</span>; })}</div>
         {trim ? (
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {(["a", "b"] as const).map((g) => <input key={g} type="time" step={1} aria-label={g === "a" ? "Clip starts" : "Clip ends"} value={timeInput(trim[g], tz)} onChange={(e) => typeTrim(g, e.target.value)} className="h-9 rounded-lg border border-white/30 bg-transparent px-2 text-sm text-white tabular-nums outline-none [color-scheme:dark] focus-visible:border-white" />)}
@@ -223,6 +245,8 @@ export function Player({ cameraId }: { cameraId: string }) {
           <Button variant="ghost" size="icon" className={ghost} aria-label="Forward 10 seconds" onClick={() => seek(t + 10000)}><RotateCw /></Button>
           <span className="ml-2 text-base font-semibold tabular-nums">{fmtTime(t, tz)}</span>
           <span className="flex-1" />
+          <Button variant="ghost" size="icon" className={ghost} aria-label="Zoom out" title="Zoom out (−)" disabled={zoom === 0} onClick={() => zoomBy(-1)}><ZoomOut /></Button>
+          <Button variant="ghost" size="icon" className={ghost} aria-label="Zoom in" title="Zoom in (+)" disabled={zoom === ZOOMS.length - 1} onClick={() => zoomBy(1)}><ZoomIn /></Button>
           {!live && <select aria-label="Playback speed" value={speed} onChange={(e) => setSpeed(Number(e.target.value))} className="h-9 rounded-lg bg-transparent px-1 text-sm text-white outline-none hover:bg-white/15 [&>option]:text-black">{[0.5, 1, 2, 4, 8].map((x) => <option key={x} value={x}>{x}×</option>)}</select>}
           <Button variant="ghost" className={ghost} disabled={down} onClick={startTrim}><Download /><span className="max-sm:hidden">Save clip</span></Button>
           <Button variant="ghost" size="icon" className={ghost} aria-label="Full screen" onClick={() => { const el = box.current!, v = video.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null; if (document.fullscreenElement) void document.exitFullscreen(); else if (el.requestFullscreen) el.requestFullscreen().catch(() => toast("Full screen isn't available")); else v?.webkitEnterFullscreen?.(); }}><Maximize /></Button>
