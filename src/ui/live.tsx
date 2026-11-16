@@ -31,11 +31,15 @@ const skipWebrtc = () => {
  * still image is shown, which is how the wall keeps the number of open streams bounded.
  * Everything is torn down when the tile leaves the screen or the page changes.
  */
-export function LiveVideo({ cameraId, quality, active, online, className = "", onGone }: { cameraId: string; quality: "wall" | "focus"; active: boolean; online: boolean; className?: string; onGone?: () => void }) {
+/** How live video is reaching the browser: WebRTC (real-time) or the HLS fallback (a few seconds behind). */
+export type Transport = "webrtc" | "hls";
+
+export function LiveVideo({ cameraId, quality, active, online, className = "", onGone, onTransport }: { cameraId: string; quality: "wall" | "focus"; active: boolean; online: boolean; className?: string; onGone?: () => void; /** Reports the transport while video is playing, null otherwise. */ onTransport?: (t: Transport | null) => void }) {
   const video = useRef<HTMLVideoElement>(null);
   const [raw, setState] = useState<State>("idle");
   const [attempt, setAttempt] = useState(0);
   const [still, setStill] = useState(0);
+  const [via, setVia] = useState<Transport>("webrtc");
 
   const playingNow = active && online && raw === "playing";
   useEffect(() => {
@@ -65,7 +69,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
           h.on(Hls.Events.ERROR, (_e, d) => { if (d.fatal) { h.destroy(); if (attempt < 4) retry(); else setState("error"); } });
           h.loadSource(src); h.attachMedia(el); hls = h;
         }
-        el.onplaying = () => !closed && setState("playing");
+        el.onplaying = () => { if (!closed) { setVia("hls"); setState("playing"); } };
         void el.play().catch(() => {});
       } catch { setState("error"); }
     };
@@ -92,7 +96,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
         pc.ontrack = (e) => { if (!closed && el.srcObject !== e.streams[0]) el.srcObject = e.streams[0]; };
         pc.onconnectionstatechange = () => {
           if (closed || !pc) return;
-          if (pc.connectionState === "connected") { connected = true; clearTimeout(timer); setState("playing"); }
+          if (pc.connectionState === "connected") { connected = true; clearTimeout(timer); setVia("webrtc"); setState("playing"); }
           else if (pc.connectionState === "failed" && !connected) unreachable();
           // Also fires when the server ends the stream because access was removed; the retry then gets a clean "not available".
           else if (pc.connectionState === "failed" || pc.connectionState === "disconnected" || pc.connectionState === "closed") retry();
@@ -128,6 +132,9 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
   }, [cameraId, quality, active, online, attempt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const state: State = active && online ? raw : "idle";
+  const shown = state === "playing" ? via : null;
+  useEffect(() => { onTransport?.(shown); }, [shown]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => onTransport?.(null), []); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className={`absolute inset-0 bg-black ${className}`}>
       {online && <img alt="" src={mediaUrl(`/api/cameras/${cameraId}/snapshot?w=${quality === "focus" ? 1280 : 640}&n=${still}`)} className="absolute inset-0 size-full object-cover" onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} onLoad={(e) => { e.currentTarget.style.visibility = "visible"; }} />}

@@ -5,9 +5,10 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from "@/components/ui/popover";
 import { api, dateInput, dayBounds, EVENT_COLOR, EVENT_LABEL, fmtDay, fmtShort, fmtTime, mediaUrl, timeInput, zonedParts, zonedToUtc, type ActivityEvent, type Camera } from "./api";
 import { Empty, fail, RecMark, Select, useApp, useRecording } from "./app";
-import { LiveVideo } from "./live";
+import { LiveVideo, type Transport } from "./live";
 
 type Ranges = { ranges: [number, number][]; precision: "exact" | "bounds" };
 const ZONES: [string, string][] = [["local", "My time zone"], ["UTC", "UTC"], ["America/Toronto", "Toronto"], ["America/Vancouver", "Vancouver"], ["America/Chicago", "Chicago"], ["Europe/London", "London"], ["Europe/Paris", "Paris"], ["Australia/Sydney", "Sydney"]];
@@ -35,6 +36,7 @@ export function Player({ cameraId }: { cameraId: string }) {
   const startAt = Number(loc.query.get("t")) || 0;
   const [cam, setCam] = useState<Camera | null | "gone">(null);
   const [live, setLive] = useState(!startAt);
+  const [via, setVia] = useState<Transport | null>(null);
   const [t, setT] = useState(() => startAt || Date.now());
   const [target, setTarget] = useState({ ms: startAt, n: 0 });
   const [playing, setPlaying] = useState(true);
@@ -141,7 +143,7 @@ export function Player({ cameraId }: { cameraId: string }) {
 
   return (
     <div ref={box} className="relative min-h-0 flex-1 overflow-hidden bg-black text-white">
-      {live ? <LiveVideo cameraId={cameraId} quality="focus" active={!down} online={cam.online && !down} />
+      {live ? <LiveVideo cameraId={cameraId} quality="focus" active={!down} online={cam.online && !down} onTransport={setVia} />
         : <video ref={video} key={`${ws}:${target.n}`} src={src} playsInline muted className="absolute inset-0 size-full object-contain"
             onLoadedMetadata={(e) => { const v = e.currentTarget; v.currentTime = Math.max(0, (target.ms - clipStart) / 1000); v.playbackRate = speed; if (playing) void v.play().catch(() => {}); }}
             onTimeUpdate={(e) => setT(clipStart + e.currentTarget.currentTime * 1000)}
@@ -159,7 +161,7 @@ export function Player({ cameraId }: { cameraId: string }) {
       <div className={`absolute inset-x-0 top-0 flex items-center gap-2.5 bg-gradient-to-b from-black/70 to-transparent px-4 pt-3.5 pb-10 transition-opacity ${idle ? "opacity-0" : ""}`}>
         <Button variant="ghost" size="icon" className={ghost} aria-label="Back to cameras" onClick={() => (history.length > 1 ? history.back() : nav("/"))}><ArrowLeft /></Button>
         <b className="truncate text-[15px] font-semibold">{cam.name}</b>
-        <span className="flex items-center gap-1.5 text-xs text-zinc-300">{live ? <><i className="size-1.5 rounded-full bg-red-500" />Live</> : "Recorded"}</span>
+        {live ? <LiveLabel via={via} /> : <span className="text-xs text-zinc-300">Recorded</span>}
         {recording.has(cameraId) && <RecMark />}
         <span className="flex-1" />
         <Button variant="outline" className="border-white/30 bg-transparent text-white hover:bg-white/15 hover:text-white" onClick={() => setJump((j) => !j)}><CalendarDays />{fmtDay(t, tz)}</Button>
@@ -251,5 +253,26 @@ function ClipDialog({ name, startMs, endMs, first, onClose }: { name: string; st
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+const VIA: Record<Transport | "none", [string, string]> = {
+  webrtc: ["Real-time", "Direct connection (WebRTC). Under a second behind."],
+  hls: ["A few seconds behind", "Real-time isn't reachable from this network, so this uses standard streaming (HLS)."],
+  none: ["Connecting", "Live video is starting."],
+};
+
+/** "Live" in the player's top bar. A ring around the dot means real-time (WebRTC); hover or tap explains. */
+function LiveLabel({ via }: { via: Transport | null }) {
+  const [title, text] = VIA[via ?? "none"];
+  return (
+    <Popover>
+      <PopoverTrigger openOnHover delay={150} aria-label={`Live: ${title}`} className="flex cursor-default items-center gap-1.5 rounded text-xs text-zinc-300 underline decoration-white/40 decoration-dotted underline-offset-[3px] outline-none focus-visible:ring-2 focus-visible:ring-white">
+        <i className={`size-1.5 rounded-full bg-red-500 ${via === "webrtc" ? "outline-[1.5px] outline-offset-[1.5px] outline-red-500/60 outline-solid" : ""}`} />Live
+      </PopoverTrigger>
+      <PopoverContent align="start" sideOffset={8} className="w-60">
+        <PopoverHeader><PopoverTitle>{title}</PopoverTitle><PopoverDescription>{text}</PopoverDescription></PopoverHeader>
+      </PopoverContent>
+    </Popover>
   );
 }
