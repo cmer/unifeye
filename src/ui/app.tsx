@@ -86,13 +86,13 @@ export function App() {
           {ctx.me.preview && (
             <div className="flex shrink-0 items-center gap-3 border-b bg-muted px-4 py-2 text-sm">
               <Eye className="size-4 shrink-0" />
-              <span>Seeing Vantage as <b>{ctx.me.preview.subject.name}</b>. You are still signed in as {ctx.me.user.name}. Nothing can be changed here.</span>
+              <span>Viewing as <b>{ctx.me.preview.subject.name}</b>. Changes are turned off.</span>
               <Button size="sm" variant="outline" className="ml-auto" onClick={async () => { await api("/preview", { method: "DELETE" }).catch(() => {}); setPreviewToken(null); location.assign("/admin"); }}>Exit</Button>
             </div>
           )}
           {ctx.me.recorder === "down" && (
             <div className="flex shrink-0 items-center gap-3 border-b bg-destructive/10 px-4 py-2 text-sm text-destructive">
-              <WifiOff className="size-4 shrink-0" /><span><b>Can&apos;t reach the recorder.</b> Live video, recordings and activity are unavailable. Your views and settings are safe.</span>
+              <WifiOff className="size-4 shrink-0" /><span><b>Can&apos;t reach the recorder.</b> Video and activity are unavailable right now.</span>
             </div>
           )}
           <div className="relative flex min-h-0 flex-1 flex-col">{page}</div>

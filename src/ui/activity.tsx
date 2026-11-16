@@ -43,14 +43,14 @@ export function Activity() {
         <Select aria-label="Camera" value={cam} onChange={(e) => { setCam(e.target.value); setLimit(48); }}><option value="">All cameras</option>{cams.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</Select>
         <Select aria-label="Time range" value={hours} onChange={(e) => { setHours(Number(e.target.value)); setLimit(48); }}>{RANGES.map(([h, l]) => <option key={h} value={h}>{l}</option>)}</Select>
         <Select aria-label="Kind of activity" value={type} onChange={(e) => { setType(e.target.value); setLimit(48); }}>
-          <option value="">Everything</option>
-          {ALL_TYPES.map((t) => <option key={t} value={t} disabled={!supported.includes(t)}>{EVENT_LABEL[t]}{supported.includes(t) ? "" : " (not supported by these cameras)"}</option>)}
+          <option value="">All activity</option>
+          {ALL_TYPES.map((t) => <option key={t} value={t} disabled={!supported.includes(t)}>{EVENT_LABEL[t]}{supported.includes(t) ? "" : " (not available)"}</option>)}
         </Select>
       </PageHeader>
-      {down ? <Empty icon={<WifiOff />} title="Activity unavailable">The recorder is unreachable, so activity cannot be loaded.</Empty>
+      {down ? <Empty icon={<WifiOff />} title="Activity unavailable">Try again in a moment.</Empty>
         : !res ? <div className="grid grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] gap-3.5">{Array.from({ length: 8 }, (_, i) => <div key={i} className="aspect-[4/3] animate-pulse rounded-xl bg-muted" />)}</div>
-        : !cams.length ? <Empty icon={<Lock />} title="No cameras yet">Activity appears once cameras are assigned to you.</Empty>
-        : !res.events.length ? <Empty icon={<Bell />} title="Nothing in this time range">Try a longer time range or another kind of activity.</Empty>
+        : !cams.length ? <Empty icon={<Lock />} title="No cameras yet">Ask an administrator for access.</Empty>
+        : !res.events.length ? <Empty icon={<Bell />} title="No activity">Try a longer time range.</Empty>
         : <>
             <div className="grid grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] gap-3.5">
               {res.events.map((e) => (
