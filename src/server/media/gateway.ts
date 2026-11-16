@@ -39,7 +39,10 @@ const isInternal = (ip = "") => /^(127\.|::1$|::ffff:127\.|10\.|192\.168\.|172\.
 export class Media {
   private tickets = new Map<string, Ticket>();
   private live = new Map<string, Live>();
-  private whep = new Map<string, Grant & { path: string }>();
+  /** WHEP resource -> its grant and the relay reader it admitted, so a teardown frees that reader's slot at once. */
+  private whep = new Map<string, Grant & { path: string; readerId?: string }>();
+  /** WebRTC ticket -> relay reader id, between the hook admitting the reader and `whepCreate` reading it back. */
+  private admitted = new Map<string, string>();
   /** One entry per session + subject + preview + stream: who it was opened for, when to re-issue, and the relay's reader. */
   private hlsJar = new Map<string, { grant: Grant; exp: number; reader: HlsReader }>();
   private sweeping = false;
@@ -60,12 +63,13 @@ export class Media {
 
   /** Authorizes a live view and prepares the relay path. Throws 404 for anything the subject may not see. */
   private async issue(a: Actor, cameraId: string, q: Quality, kind: ReaderKind): Promise<{ ticket: string; path: string }> {
-    const cam = this.policy.camera(subjectOf(a), cameraId);
-    const mine = [...this.live.values()].filter((l) => l.sessionId === a.sessionId).length;
-    if (mine >= config().MAX_WALL_STREAMS + 3) throw new HttpError(429, "too_many_streams", "Too many live streams are open");
+    const cam = this.policy.camera(subjectOf(a), cameraId), path = pathFor(cameraId, q);
+    // The limit is on distinct streams (camera + quality), not relay readers: HLS takes a new reader
+    // every 25 s and a WebRTC attempt may precede it, and none of that is another stream on screen.
+    const mine = new Set([...this.live.values()].filter((l) => l.sessionId === a.sessionId).map((l) => l.path));
+    if (!mine.has(path) && mine.size >= config().MAX_WALL_STREAMS + 3) throw new HttpError(429, "too_many_streams", "Too many live streams are open");
     const src = await this.adapter().liveSource(cam.protectId, q).catch(() => { throw new HttpError(503, "nvr_unavailable"); });
     if (!src) throw new HttpError(409, "no_live_stream", "This camera has no live stream available");
-    const path = pathFor(cameraId, q);
     await this.relay.ensureStream(path, src).catch((e) => { log("error", "relay path setup failed", { error: e }); throw new HttpError(503, "relay_unavailable"); });
     const ticket = randomToken();
     this.tickets.set(ticket, { ...this.access.grant(a, cameraId), path, kind, exp: Date.now() + 30_000, single: kind === "webrtc", used: false });
@@ -85,6 +89,7 @@ export class Media {
     if (!t || Date.now() > t.exp || t.path !== b.path || t.kind !== b.protocol || (t.single && t.used) || !b.id || !this.access.holds(t)) return false;
     t.used = true;
     if (t.single) this.tickets.delete(token);
+    if (t.kind === "webrtc") this.admitted.set(token, b.id);
     this.live.set(b.id, { sessionId: t.sessionId, subjectId: t.subjectId, previewId: t.previewId, cameraId: t.cameraId, kind: t.kind, path: t.path, since: Date.now() });
     return true;
   }
@@ -92,12 +97,15 @@ export class Media {
   // ---- WebRTC (WHEP). Signalling is proxied; media flows over ICE to MediaMTX's UDP/TCP port. ----
   async whepCreate(a: Actor, cameraId: string, q: Quality, sdpOffer: string) {
     const { ticket, path } = await this.issue(a, cameraId, q, "webrtc");
-    const r = await this.relay.whepCreate(path, ticket, sdpOffer).catch(relayDown);
-    this.tickets.delete(ticket);
+    let readerId: string | undefined;
+    const r = await this.relay.whepCreate(path, ticket, sdpOffer).catch(relayDown).finally(() => {
+      readerId = this.admitted.get(ticket);
+      this.tickets.delete(ticket); this.admitted.delete(ticket);
+    });
     if (r.outcome !== "created") throw new HttpError(r.outcome === "no_stream" ? 409 : 502, r.outcome === "no_stream" ? "no_live_stream" : "relay_error");
     const secret = r.resource;
     if (!/^[A-Za-z0-9-]{8,80}$/.test(secret)) throw new HttpError(502, "relay_error");
-    this.whep.set(secret, { ...this.access.grant(a, cameraId), path });
+    this.whep.set(secret, { ...this.access.grant(a, cameraId), path, readerId });
     return { sdp: r.sdp, secret, etag: r.etag };
   }
   /** ICE trickle (PATCH) and teardown (DELETE). Only the session that created the WHEP resource may touch it. */
@@ -105,7 +113,12 @@ export class Media {
     const w = this.whep.get(secret);
     if (!w || !this.access.heldBy(w, a)) throw notFound();
     const status = await (method === "PATCH" ? this.relay.whepTrickle(w.path, secret, body, headers) : this.relay.whepClose(w.path, secret, headers)).catch(relayDown);
-    if (method === "DELETE") this.whep.delete(secret);
+    if (method === "DELETE") {
+      this.whep.delete(secret);
+      // Otherwise the reader keeps counting against the stream limit until a sweep notices it is gone
+      // (20 s or more), which would refuse the HLS fallback that usually follows a failed WebRTC attempt.
+      if (w.readerId) this.live.delete(w.readerId);
+    }
     return status;
   }
 

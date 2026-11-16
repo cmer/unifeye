@@ -207,6 +207,29 @@ describe("media tickets and active-stream revocation", () => {
     expect((await call(f.u.front, "PATCH", `/media/live/whep/${secret}`, { raw: "a=candidate" })).status).toBe(404); // gone after teardown
     expect(f.relay.ids("webrtc")).toEqual([]);
   });
+  it("limits distinct streams per session, not relay readers, and frees a slot when WebRTC is torn down", async () => {
+    (config() as { MAX_WALL_STREAMS: number }).MAX_WALL_STREAMS = -1; // a limit of 2 streams
+    const hlsQ = (camera: string, q: string) => call(f.u.front, "GET", `/media/live/${f.cam[camera]}/hls/${q}/index.m3u8`);
+    expect((await whep(f.u.front, "Front Entrance", "?q=wall")).status).toBe(201);
+    const dock = await whep(f.u.front, "Loading Dock", "?q=wall");
+    expect(dock.status).toBe(201);
+    expect((await hlsQ("Front Entrance", "focus")).status).toBe(429); // a third stream
+    // More readers for a stream already open are not more streams: a retry, or the HLS fallback.
+    expect((await whep(f.u.front, "Front Entrance", "?q=wall")).status).toBe(201);
+    expect((await hlsQ("Loading Dock", "wall")).status).toBe(200);
+    const secret = dock.res.headers.get("location")!.split("/").pop();
+    expect((await call(f.u.front, "DELETE", `/media/live/whep/${secret}`)).status).toBe(200);
+    expect((await hlsQ("Front Entrance", "focus")).status).toBe(429); // the dock's HLS reader still holds that slot
+  });
+  it("frees a stream slot as soon as its WebRTC session is torn down, without waiting for a sweep", async () => {
+    (config() as { MAX_WALL_STREAMS: number }).MAX_WALL_STREAMS = -1; // a limit of 2 streams
+    expect((await whep(f.u.front, "Front Entrance", "?q=wall")).status).toBe(201);
+    const dock = await whep(f.u.front, "Loading Dock", "?q=wall");
+    expect((await hls(f.u.front, "Front Entrance", "index.m3u8")).status).toBe(200); // same stream as an open one
+    expect((await call(f.u.front, "GET", `/media/live/${f.cam["Loading Dock"]}/hls/focus/index.m3u8`)).status).toBe(429);
+    expect((await call(f.u.front, "DELETE", `/media/live/whep/${dock.res.headers.get("location")!.split("/").pop()}`)).status).toBe(200);
+    expect((await call(f.u.front, "GET", `/media/live/${f.cam["Loading Dock"]}/hls/focus/index.m3u8`)).status).toBe(200);
+  });
   it("tells only administrators which cameras are recording, and not while previewing as staff", async () => {
     const r = await call(f.u.admin, "GET", "/recording");
     expect(r.status).toBe(200);
