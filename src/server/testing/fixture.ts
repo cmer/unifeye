@@ -24,7 +24,7 @@ export function makeFixture(db: Db = openDb(":memory:")) {
   setConfigForTests(loadConfig(TEST_ENV));
   migrate(db, { migrationsFolder: join(process.cwd(), "drizzle") });
   const adapter = new MockProtectAdapter("default", { liveEvents: false, rtspPublishUrl: (p) => `rtsp://127.0.0.1:8554/${p}` });
-  // The relay is in memory and asks the real auth hook, as MediaMTX does through /api/internal/mediamtx-auth.
+  // The relay is in memory and asks the real auth hook, as MediaMTX does through the hook listener (hook-server.ts).
   const relay = new MemoryRelay();
   const s = buildServices(db, adapter, relay);
   relay.connect((body) => s.media.hook(config().MEDIAMTX_HOOK_SECRET ?? null, body));

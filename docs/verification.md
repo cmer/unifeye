@@ -15,7 +15,7 @@ should be assumed to work.
 | MediaMTX | 1.21.4 (macOS binary) | Run locally with `docker/mediamtx.yml` |
 | UniFi Protect / UNVR Pro | none | Not available |
 | OIDC provider | none (only the test provider) | Not available |
-| Docker image, Compose | none | Docker was not running |
+| Docker image, Compose | Docker Engine with Compose v2 on a Linux VM | Built and run with `compose.yaml` against a real UNVR |
 
 ## Verified
 
@@ -143,6 +143,18 @@ since the move.
   discarded, 0 samples concealed, no video freezes, about 1 s to start. A video-only source through
   the same command played video with no audio track. Not heard through speakers; HLS not played.
 
+**Docker image and Compose stack (2026-11-16, Linux VM, real UNVR, behind a Cloudflare tunnel):**
+
+- The first build of the image failed (`better-sqlite3` had no compiler), the ops CLI could not load
+  `better-sqlite3` in the image, and the MediaMTX health check never passed. All three are fixed in
+  the Dockerfile and `compose.yaml`; the image build now loads `better-sqlite3` from the CLI's path.
+- Both containers start healthy, the app connects to the UNVR with TLS verification
+  (`PROTECT_TLS_CA_FILE`), and `cli.mjs backup` and `restore` work inside the app container.
+- The data volume survived `docker compose down` and `up`.
+- MediaMTX's auth hook on its own port (`HOOK_PORT`) was checked with a real MediaMTX 1.21.4 in the
+  QA stack: the control API is admitted through it, and `POST /api/internal/mediamtx-auth` on the
+  web port returns 404. That check was local, not in the Compose stack.
+
 ## Not verified
 
 | Area | Why | What could go wrong |
@@ -151,8 +163,7 @@ since the move.
 | "Recording now" indicator on a real UNVR | No recorder available | Relies on the camera `isRecording` field and realtime camera updates; a wrong assumption shows a stale or missing REC mark, never extra access |
 | Recording gaps on a real UNVR | No known endpoint | Timeline shows only the overall recorded period |
 | A real OIDC provider: login, admission claim, logout, back-channel logout, deactivation detection | No instance available | Claim placement, refresh-token or back-channel behaviour, or error codes differ by provider |
-| Docker image and Compose stack | Docker not running | Build errors, native module missing from the standalone output, MediaMTX environment overrides, volume ownership |
-| Persistence across container recreation | Needs Compose | Covered only by the file-level restore test |
+| The hook port inside the Compose stack | Checked locally, not yet in Compose | MediaMTX cannot reach `app:3001`, so no video plays |
 | Browser test suite | Not written | Screens were checked by hand in one desktop browser |
 | Phones and tablets | No device testing | Layout or touch problems |
 | HLS playback in a browser | Only the gateway responses were checked | Player-level issues |

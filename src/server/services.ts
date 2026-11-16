@@ -14,6 +14,7 @@ import { backupDatabase, pruneBackups } from "./db/backup";
 import { runMigrations } from "./db/migrate";
 import { Events } from "./events";
 import { Media } from "./media/gateway";
+import { startHookServer } from "./media/hook-server";
 import { MediaMtxRelay, MTX_PUBLISH_USER } from "./media/mediamtx";
 import { Recordings } from "./media/recordings";
 import type { Relay } from "./media/relay";
@@ -85,6 +86,10 @@ export function startRuntime(): Promise<void> {
   return (g.__unifeyeStart ??= (async () => {
     const c = config(), s = services();
     await runMigrations(s.db, { backupDir: c.BACKUP_DIR });
+    // MediaMTX's auth hook has its own listener, off the public port. Without it no video plays, so a
+    // failure to listen (port taken) aborts start-up like a failed migration.
+    const hook = await startHookServer(s.media, { host: c.HOOK_HOST, port: c.HOOK_PORT });
+    log("info", "media hook listening", { host: c.HOOK_HOST, port: c.HOOK_PORT });
     const every = (sec: number, name: string, fn: () => unknown) => {
       const t = setInterval(() => { Promise.resolve().then(fn).catch((e) => log("error", `${name} failed`, { error: e })); }, sec * 1000);
       t.unref();
@@ -110,6 +115,7 @@ export function startRuntime(): Promise<void> {
     const stop = async () => {
       log("info", "shutting down");
       s.state.timers.forEach(clearInterval);
+      hook.close();
       await s.adapter.close().catch(() => {});
       try { s.db.$client.pragma("wal_checkpoint(TRUNCATE)"); s.db.$client.close(); } catch { /* already closed */ }
       process.exit(0);

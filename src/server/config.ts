@@ -92,6 +92,12 @@ const schema = z.object({
   MEDIAMTX_API_URL: z.string().url().default("http://127.0.0.1:9997"),
   MEDIAMTX_WHEP_URL: z.string().url().default("http://127.0.0.1:8889"),
   MEDIAMTX_HLS_URL: z.string().url().default("http://127.0.0.1:8888"),
+  /**
+   * Where Unifeye answers MediaMTX's auth hook. A separate listener from the web app, never published
+   * or put behind the reverse proxy. Inside a container it must listen on all interfaces (0.0.0.0).
+   */
+  HOOK_HOST: z.string().default("127.0.0.1"),
+  HOOK_PORT: int(3001, 1),
   /** Shared secret MediaMTX presents when calling the Unifeye auth hook. */
   MEDIAMTX_HOOK_SECRET: z.string().optional(),
   /** Username Unifeye uses for the MediaMTX control API (checked by the same hook). */
@@ -107,6 +113,8 @@ const schema = z.object({
 
 export type Config = z.infer<typeof schema>;
 /** Set by Unifeye itself on every authorization request; overriding them would weaken the flow. */
+/** Shared secrets between Unifeye and MediaMTX must be long enough that guessing is hopeless. */
+const MIN_SECRET = 32;
 const RESERVED_AUTH_PARAMS = new Set(["client_id", "redirect_uri", "response_type", "response_mode", "scope", "state", "nonce", "code_challenge", "code_challenge_method", "request", "request_uri"]);
 let cached: Config | undefined;
 
@@ -123,6 +131,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     if (c.OIDC_ALLOW_INSECURE_ISSUER) problems.push("OIDC_ALLOW_INSECURE_ISSUER is not allowed in production");
     if (c.PROTECT_TLS_INSECURE) problems.push("PROTECT_TLS_INSECURE is not allowed in production");
     if (!c.APP_URL.startsWith("https://")) problems.push("APP_URL must use https in production");
+    for (const k of ["MEDIAMTX_HOOK_SECRET", "MEDIAMTX_API_SECRET"] as const)
+      if (c[k] && c[k].length < MIN_SECRET) problems.push(`${k} must be at least ${MIN_SECRET} characters (openssl rand -hex 24)`);
   }
   if (c.UNIFEYE_MODE === "real")
     for (const k of ["PROTECT_HOST", "PROTECT_USERNAME", "PROTECT_PASSWORD"] as const)

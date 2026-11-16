@@ -111,14 +111,8 @@ Use the tunnel hostname in the redirect, post-logout and back-channel logout URI
 
 ## Cloudflare settings for the hostname
 
-### Block the internal hook
-
-MediaMTX calls `/api/internal/mediamtx-auth` over the Compose network. Browsers never need it. It is
-protected by `MEDIAMTX_HOOK_SECRET`, but block it at the edge as well. In **Security > WAF > Custom
-rules**, create:
-
-- Expression: `(http.host eq "unifeye.example.com" and starts_with(http.request.uri.path, "/api/internal/"))`
-- Action: **Block**
+Point the tunnel at port 3000 only. MediaMTX calls Unifeye's auth hook on port 3001 over the Compose
+network, and that port is not served through the tunnel, so there is nothing to block.
 
 ### Let the identity provider's back-channel logout through
 
@@ -172,7 +166,7 @@ and Cloudflare does not cache it. Do not add a "Cache Everything" rule for this 
    play. Open another view: tiles start without the wait.
 3. On the office network, tiles should play almost at once (WebRTC). Hover over a tile and click
    its speaker to check sound.
-4. `curl -i https://unifeye.example.com/api/internal/mediamtx-auth` should be blocked by Cloudflare
-   (403) rather than answered by Unifeye.
+4. `curl -i -X POST https://unifeye.example.com/api/internal/mediamtx-auth` should return 404: the
+   hook is not served through the tunnel.
 5. Sign out at your identity provider, then reload Unifeye in another tab. You should be signed out
    (straight away with back-channel logout, otherwise within `OIDC_RECHECK_SECONDS`).
