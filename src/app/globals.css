@@ -128,3 +128,16 @@
     @apply font-sans;
   }
 }
+/* Clip export progress: a sweep while nothing can be measured, a moving sheen on a measured bar. */
+@keyframes clip-sweep { from { left: -40%; } to { left: 100%; } }
+@keyframes clip-shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
+.clip-sweep { animation: clip-sweep 1.4s ease-in-out infinite; }
+.clip-shimmer {
+  background-image: linear-gradient(90deg, transparent 30%, color-mix(in oklab, var(--background) 45%, transparent) 50%, transparent 70%);
+  background-size: 200% 100%;
+  animation: clip-shimmer 1.8s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .clip-sweep { animation: none; left: 0; width: 100%; opacity: 0.5; }
+  .clip-shimmer { animation: none; }
+}

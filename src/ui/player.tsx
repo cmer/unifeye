@@ -1,5 +1,5 @@
 "use client";
-import { ArrowLeft, CalendarDays, Download, Lock, Maximize, Pause, Play, RotateCcw, RotateCw, ZoomIn, ZoomOut } from "lucide-react";
+import { ArrowLeft, CalendarDays, CircleCheck, Download, Lock, Maximize, Pause, Play, RotateCcw, RotateCw, ZoomIn, ZoomOut } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -20,7 +20,7 @@ type Ranges = { ranges: [number, number][]; precision: "exact" | "bounds" };
 type WinInfo = { startMs: number; endMs: number; leadMs: number; overlay: { at: number; from: number; len: number }[] };
 const ZONES: [string, string][] = [["local", "My time zone"], ["UTC", "UTC"], ["America/Toronto", "Toronto"], ["America/Vancouver", "Vancouver"], ["America/Chicago", "Chicago"], ["Europe/London", "London"], ["Europe/Paris", "Paris"], ["Australia/Sydney", "Sydney"]];
 const ghost = "text-white hover:bg-white/15 hover:text-white";
-type Job = { id: string; status: string; error: string | null };
+type Job = { id: string; status: string; error: string | null; progress?: number; etaMs?: number | null; fileName?: string | null; bytes?: number | null };
 /**
  * A clip being chosen: its two ends, the stretch of time the timeline shows meanwhile, the end being
  * dragged, and whether the viewer has zoomed the timeline themselves (then it stops fitting itself to the selection).
@@ -404,27 +404,68 @@ export function Player({ cameraId }: { cameraId: string }) {
   );
 }
 
-/** Progress and download for a clip that has already been requested. Closing after a failure returns to the selection. */
+/** Hands a finished clip to the browser's downloads, as clicking a link to it would. The server sends it as an attachment, so the page stays. */
+const saveFile = (id: string) => { const a = document.createElement("a"); a.href = mediaUrl(`/api/exports/${id}/download`); a.download = ""; document.body.append(a); a.click(); a.remove(); };
+const fmtBytes = (n: number) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n >= 1e6 ? `${Math.round(n / 1e6)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`);
+
+/** "About 4 min left" for a rough estimate. */
+const fmtLeft = (ms: number) => { const m = Math.round(ms / 60_000); return ms < 45_000 ? "Less than a minute left" : m < 60 ? `About ${Math.max(1, m)} min left` : `About ${fmtLen(Math.round(ms / 300_000) * 300_000)} left`; };
+
+/**
+ * Progress and download for a clip that has already been requested. Closing after a failure returns to the selection.
+ * Until the first piece of a long clip arrives (and for a short clip, which is one piece) nothing can be measured, so
+ * the bar sweeps; after that it fills, with an estimate of the time left. When the clip is ready the download starts by
+ * itself, and the dialog stays to say so, with a way to download it again.
+ */
 function ClipDialog({ name, startMs, endMs, first, onClose }: { name: string; startMs: number; endMs: number; first: Job; onClose: (saved: boolean) => void }) {
   const { tz } = useApp();
   const [job, setJob] = useState<Job>(first);
+  // The server's estimate of the time left. It is extrapolated, so it may only rise by a real margin; small upward wobbles are ignored.
+  const [left, setLeft] = useState<number | null>(null);
   useEffect(() => {
     if (job.status !== "running") return;
-    const i = setInterval(() => api<Job>(`/exports/${job.id}`).then(setJob).catch(() => setJob({ ...job, status: "failed", error: "This clip is no longer available." })), 700);
+    const i = setInterval(() => {
+      api<Job>(`/exports/${job.id}`).then((j) => {
+        const e = j.etaMs ?? null;
+        setLeft((l) => (e == null ? null : l != null && e > l && e - l < 20_000 ? l : e));
+        if (j.status !== "running") clearInterval(i);
+        if (j.status === "ready") saveFile(j.id);
+        setJob(j);
+      }).catch(() => { clearInterval(i); setJob((x) => ({ ...x, status: "failed", error: "This clip is no longer available." })); });
+    }, 1000);
     return () => clearInterval(i);
-  }, [job]);
+  }, [job.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const close = () => { if (job.status === "running") void api(`/exports/${job.id}`, { method: "DELETE" }).catch(() => {}); onClose(job.status === "ready"); };
+  const ready = job.status === "ready", pct = job.progress ?? 0, measured = job.status === "running" && pct > 0 && pct < 95;
+  const note = pct >= 95 ? "Putting the pieces together…" : left != null ? fmtLeft(left) : pct > 0 ? "Estimating time left…" : endMs - startMs > 5 * 60_000 ? "Waiting for the recorder. Time left appears once the first part arrives." : "Waiting for the recorder…";
   return (
     <Dialog open onOpenChange={(o) => !o && close()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{job.status === "running" ? "Preparing clip…" : job.status === "ready" ? "Clip ready" : "Couldn't save clip"}</DialogTitle>
-          <DialogDescription>{job.status === "running" || job.status === "ready" ? `${name} · ${fmtDay(startMs, tz)}, ${fmtTime(startMs, tz)} · ${fmtLen(endMs - startMs)}` : job.error ?? "Something went wrong. Try again."}</DialogDescription>
+          <DialogTitle className={ready ? "flex items-center gap-2" : undefined}>{ready && <CircleCheck className="size-5 text-green-600 dark:text-green-500" />}{job.status === "running" ? "Preparing clip…" : ready ? "Download started" : "Couldn't save clip"}</DialogTitle>
+          <DialogDescription>{job.status === "running" ? `${name} · ${fmtDay(startMs, tz)}, ${fmtTime(startMs, tz)} · ${fmtLen(endMs - startMs)}` : ready ? "Your browser is saving it to your Downloads folder." : job.error ?? "Something went wrong. Try again."}</DialogDescription>
         </DialogHeader>
-        {job.status === "running" && <div className="h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full w-1/3 animate-pulse rounded-full bg-primary" /></div>}
+        {ready && (
+          <>
+            <div className="flex min-w-0 items-center gap-3 rounded-lg bg-muted p-2.5">
+              <span className="grid size-9 shrink-0 place-items-center rounded-md bg-primary text-[10px] font-semibold text-primary-foreground">MP4</span>
+              <div className="min-w-0 text-sm"><div className="truncate font-medium" title={job.fileName ?? undefined}>{job.fileName ?? `${name}.mp4`}</div><div className="text-xs text-muted-foreground">{fmtLen(endMs - startMs)}{job.bytes ? ` · ${fmtBytes(job.bytes)}` : ""}</div></div>
+            </div>
+            <p className="text-sm text-muted-foreground">Didn&rsquo;t start? <button type="button" className="font-medium text-foreground underline underline-offset-2" onClick={() => saveFile(job.id)}>Download again</button></p>
+          </>
+        )}
+        {job.status === "running" && (
+          <div className="grid gap-2">
+            <div role="progressbar" aria-label="Clip progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={measured ? pct : undefined} className="relative h-1.5 overflow-hidden rounded-full bg-muted">
+              {measured
+                ? <div className="clip-shimmer h-full rounded-full bg-primary transition-[width] duration-700 ease-out" style={{ width: `${pct}%` }} />
+                : <div className="clip-sweep absolute inset-y-0 w-2/5 rounded-full bg-primary" />}
+            </div>
+            <div className="flex justify-between text-xs text-muted-foreground tabular-nums" aria-live="polite"><span>{note}</span>{measured && <span>{pct}%</span>}</div>
+          </div>
+        )}
         <DialogFooter>
-          <Button variant="outline" onClick={close}>{job.status === "running" ? "Cancel" : job.status === "ready" ? "Done" : "Back"}</Button>
-          {job.status === "ready" && <a href={mediaUrl(`/api/exports/${job.id}/download`)} className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground"><Download className="size-4" />Download</a>}
+          <Button variant={ready ? "default" : "outline"} onClick={close}>{job.status === "running" ? "Cancel" : ready ? "Done" : "Back"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -9,7 +9,7 @@ import { subjectOf, type Actor } from "../authz/actor";
 import type { Policy } from "../authz/policy";
 import { config } from "../config";
 import { schema, type Db } from "../db";
-import { audioEnvelope, probe } from "../protect/ffmpeg";
+import { audioEnvelope, joinParts, probe, type MediaInfo } from "../protect/ffmpeg";
 import { NoRecordingError, type ProtectAdapter } from "../protect/types";
 import { badRequest, HttpError, log, newId, notFound } from "../util";
 import { alignSpans, type Span } from "./align";
@@ -18,6 +18,8 @@ import { alignSpans, type Span } from "./align";
 export interface WindowInfo { startMs: number; endMs: number; leadMs: number; overlay: Span[] }
 export interface PlaybackWindow { info: WindowInfo; base: string; high: string | null }
 
+/** Clips longer than this are fetched from the recorder in pieces of this length (see `exportPieces`). */
+const PIECE = 5 * 60_000;
 /** How long a finished clip stays downloadable. */
 const EXPORT_KEEP = 10 * 60_000;
 /** The longest a clip may take to prepare before it is dropped: generous, since the recorder builds long clips slowly. */
@@ -51,6 +53,8 @@ export async function fileResponse(path: string, req: Request, type: string, ext
 export class Recordings {
   private inflight = new Map<string, { p: Promise<PlaybackWindow>; ac: AbortController; waiters: number }>();
   private jobs = new Map<string, AbortController>();
+  /** Estimated time left for running clip jobs, as of `at`. */
+  private etas = new Map<string, { ms: number; at: number }>();
   constructor(private db: Db, private policy: Policy, private access: Access, private adapter: () => ProtectAdapter) {}
 
   private dir(sub: "playback" | "exports") { return join(config().MEDIA_CACHE_DIR, sub); }
@@ -160,7 +164,7 @@ export class Recordings {
     const running = this.db.select({ id: schema.exportJobs.id }).from(schema.exportJobs).where(and(eq(schema.exportJobs.sessionId, a.sessionId), eq(schema.exportJobs.status, "running"))).all();
     if (running.filter((j) => this.jobs.has(j.id)).length >= 2) throw new HttpError(429, "too_many_exports", "Two clips are already being prepared. Wait for one to finish.");
     const id = newId(), t = Date.now(), file = join(this.dir("exports"), `${id}.mp4`), g = this.access.grant(a, cameraId);
-    this.db.insert(schema.exportJobs).values({ id, sessionId: g.sessionId, subjectId: g.subjectId, previewId: g.previewId ?? null, cameraId: g.cameraId, startMs, endMs, status: "running", progress: 10, filePath: file, createdAt: t, expiresAt: t + EXPORT_KEEP + prepTime(endMs - startMs) }).run();
+    this.db.insert(schema.exportJobs).values({ id, sessionId: g.sessionId, subjectId: g.subjectId, previewId: g.previewId ?? null, cameraId: g.cameraId, startMs, endMs, status: "running", progress: 0, filePath: file, createdAt: t, expiresAt: t + EXPORT_KEEP + prepTime(endMs - startMs) }).run();
     audit(this.db, { actorId: a.userId, previewSubjectId: a.preview?.subjectId, action: "clip.export", targetType: "camera", targetId: cameraId, requestId: a.requestId, ip: a.ip, detail: { startMs, endMs } });
     const ac = new AbortController();
     this.jobs.set(id, ac);
@@ -168,14 +172,67 @@ export class Recordings {
     void (async () => {
       try {
         await mkdir(this.dir("exports"), { recursive: true, mode: 0o700 });
-        await this.adapter().exportClip(cam.protectId, startMs, endMs, file, { quality: "focus", signal: ac.signal });
+        await this.exportPieces(cam.protectId, startMs, endMs, file, ac.signal, (f, ms) => { set({ progress: Math.round(f * 95) }); this.etas.set(id, { ms, at: Date.now() }); });
         set({ status: "ready", progress: 100, expiresAt: Date.now() + EXPORT_KEEP });
       } catch (e) {
         await rm(file, { force: true });
+        if (!ac.signal.aborted && !(e instanceof NoRecordingError || (e as Error)?.name === "NoRecordingError")) log("warn", "clip export failed", { cameraId, startMs, endMs, error: e });
         set({ status: ac.signal.aborted ? "cancelled" : "failed", error: e instanceof NoRecordingError ? "Nothing was recorded during that time." : "Something went wrong. Try again." });
-      } finally { this.jobs.delete(id); }
+      } finally { this.jobs.delete(id); this.etas.delete(id); }
     })();
     return { id };
+  }
+  /**
+   * Exports a clip. A clip up to `PIECE` long is one recorder export. A longer one is exported in
+   * pieces, `CLIP_EXPORT_PARALLEL` at a time, then joined without re-encoding. The recorder builds a
+   * whole export before sending the first byte, so pieces are what make progress measurable, and
+   * running a few at once shortens the wait. Each piece starts on the keyframe before its start
+   * (`leadMs`, as for playback windows), so the overlap is cut from the end of the piece before it.
+   * A piece with nothing recorded is left out. `onProgress` gets the fraction of pieces done and a
+   * rough time left: the average piece so far, times the pieces left, shared among the workers.
+   */
+  private async exportPieces(protectId: string, startMs: number, endMs: number, file: string, signal: AbortSignal, onProgress: (f: number, etaMs: number) => void) {
+    const ad = this.adapter(), n = Math.ceil((endMs - startMs) / PIECE);
+    if (n <= 1) return ad.exportClip(protectId, startMs, endMs, file, { quality: "focus", signal });
+    const parts = Array.from({ length: n }, (_, i) => ({ a: startMs + i * PIECE, b: Math.min(endMs, startMs + (i + 1) * PIECE), path: `${file}.${i}.part`, info: null as MediaInfo | null }));
+    const local = new AbortController(), stop = () => local.abort();
+    signal.addEventListener("abort", stop, { once: true });
+    const width = Math.min(n, config().CLIP_EXPORT_PARALLEL);
+    let next = 0, done = 0, spent = 0;
+    const worker = async () => {
+      while (next < n && !local.signal.aborted) {
+        const p = parts[next++], t = Date.now();
+        try {
+          await ad.exportClip(protectId, p.a, p.b, p.path, { quality: "focus", signal: local.signal });
+          p.info = await probe(p.path, local.signal);
+        } catch (e) {
+          if (!(e instanceof NoRecordingError || (e as Error)?.name === "NoRecordingError")) { local.abort(); throw e; }
+        }
+        done++; spent += Date.now() - t;
+        onProgress(done / n, Math.round(((spent / done) * (n - done)) / width));
+      }
+    };
+    try {
+      const r = await Promise.allSettled(Array.from({ length: width }, worker));
+      signal.throwIfAborted();
+      const bad = r.find((x) => x.status === "rejected");
+      if (bad) throw bad.reason;
+      const got = parts.filter((p) => p.info);
+      if (!got.length) throw new NoRecordingError();
+      if (got.length === 1) return void (await rename(got[0].path, file));
+      await joinParts(got.map((p, i) => {
+        const nx = got[i + 1], lead = nx && nx.a === p.b ? Math.min(10_000, Math.max(0, nx.info!.duration * 1000 - (nx.b - nx.a))) : 0;
+        return { path: p.path, outpoint: lead > 50 ? p.info!.start + p.info!.duration - lead / 1000 : undefined };
+      }), file, signal);
+    } finally {
+      signal.removeEventListener("abort", stop);
+      await Promise.all(parts.map((p) => rm(p.path, { force: true })));
+    }
+  }
+  /** Rough time left for a running job, or null before it can be measured. */
+  exportEta(id: string): number | null {
+    const e = this.etas.get(id);
+    return e ? Math.max(0, e.ms - (Date.now() - e.at)) : null;
   }
   /** Job status. An id that belongs to another session or subject, or whose grant no longer holds (session, preview, camera), does not exist. */
   exportJob(a: Actor, id: string) {
@@ -213,6 +270,9 @@ export class Recordings {
   /** Periodic housekeeping: dead exports, and the playback cache kept within its age and size limits. */
   async cleanup() {
     await this.dropDeadExports();
+    // Files left behind by a restart mid-export (pieces, join lists) belong to no job.
+    const live = new Set(this.db.select({ id: schema.exportJobs.id }).from(schema.exportJobs).all().map((j) => j.id));
+    for (const f of await readdir(this.dir("exports")).catch(() => [] as string[])) if (!live.has(f.split(".")[0])) await rm(join(this.dir("exports"), f), { force: true });
     const t = Date.now();
     const dir = this.dir("playback"), max = config().MEDIA_CACHE_MAX_MB * 1024 * 1024;
     const files: { p: string; size: number; m: number }[] = [];

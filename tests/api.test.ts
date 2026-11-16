@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { existsSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleApi } from "@/server/api";
 import { config } from "@/server/config";
@@ -150,6 +150,33 @@ describe("clip export jobs", () => {
     await wait(async () => (await call(f.u.front, "GET", `/exports/${a.data.id}`)).data.status !== "running" && (await call(f.u.front, "GET", `/exports/${b.data.id}`)).data.status !== "running", 20_000);
     expect((await post(3)).status).toBe(200);
   });
+});
+
+describe("long clip exports", () => {
+  it("are fetched in pieces with progress, and joined without the overlap each piece starts with", async () => {
+    const cfg = config() as { MEDIA_CACHE_DIR: string };
+    cfg.MEDIA_CACHE_DIR = relative(process.cwd(), cfg.MEDIA_CACHE_DIR); // FFmpeg's join list must not depend on the working folder
+    const cam = f.cam["Loading Dock"], t = Date.now() - 2 * 3600e3;
+    const rec = (await call(f.u.front, "GET", `/cameras/${cam}/recordings?from=${t - 3600e3}&to=${t}`)).data.ranges as [number, number][];
+    const [a, b] = rec.find(([x, y]) => y - x >= 12 * 60_000)!, startMs = b - 11 * 60_000, endMs = b - 30_000;
+    // Like the recorder, start every export on a keyframe up to a few seconds early.
+    const real = f.adapter.exportClip.bind(f.adapter), asked: [number, number][] = [];
+    vi.spyOn(f.adapter, "exportClip").mockImplementation((id, s0, e0, dest, o) => { asked.push([s0, e0]); return real(id, Math.max(a, s0 - 2500), e0, dest, o); });
+    const { id } = (await call(f.u.front, "POST", "/exports", { body: { cameraId: cam, startMs, endMs } })).data;
+    const seen = new Set<number>();
+    let etas = 0;
+    await wait(async () => { const j = (await call(f.u.front, "GET", `/exports/${id}`)).data; seen.add(j.progress); if (j.etaMs != null) etas++; return j.status !== "running"; }, 60_000);
+    expect(asked.length).toBe(3); // 10.5 minutes in 5-minute pieces
+    expect([...seen].some((p) => p > 0 && p < 95)).toBe(true);
+    expect(etas).toBeGreaterThan(0);
+    const j = (await call(f.u.front, "GET", `/exports/${id}`)).data;
+    expect(j.status).toBe("ready");
+    expect(j.fileName).toMatch(/^Loading_Dock_.*\.mp4$/); expect(j.bytes).toBeGreaterThan(1024);
+    const file = f.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, id)).get()!.filePath!;
+    const { probe } = await import("@/server/protect/ffmpeg");
+    // Only the first piece keeps its lead; the joins drop the rest.
+    expect((await probe(file)).duration).toBeCloseTo((endMs - startMs) / 1000 + 2.5, 0);
+  }, 90_000);
 });
 
 describe("clip exports made during See as staff", () => {

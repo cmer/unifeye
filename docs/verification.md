@@ -59,6 +59,10 @@ reader. They show what the gateway decides, not how MediaMTX behaves.
   camera sync signals only when the inventory changes.
 - Clip exports: bound to session and camera; an export made during a preview is refused and its
   file deleted when that preview ends or times out; at most two prepare at once per session.
+- Long clips in pieces (`tests/api.test.ts`, "long clip exports"): a 10.5-minute clip is exported as
+  three pieces, reports progress and a time left, and, with every piece starting 2.5 s early as the
+  recorder does, joins to the requested length plus only the first piece's lead. It also runs with a
+  relative cache folder, which once broke the join.
 - UniFi export streaming, against a mocked recorder (undici `MockAgent`, `tests/unifi-export.test.ts`):
   the separate sign-in (root CSRF token, login, `TOKEN` cookie), the body streamed to disk, one
   re-sign-in after a 401, and refusals or tiny bodies reported as nothing recorded. This pins what
@@ -146,8 +150,8 @@ since the move.
 | HLS playback in a browser | Only the gateway responses were checked | Player-level issues |
 | Sound from a real UNVR in Vantage end to end | The retiming relay was checked outside Vantage only (see Verified) | HLS sound, wall-quality streams, other camera models; recordings from Protect may lack audio |
 | Sound in Safari and Firefox | Only Chromium was used | "No audio" shown wrongly, or the speaker missing; no level meter in Safari for HLS and recordings |
-| Clip export in the browser | Checked by hand in Chromium with mock cameras: zooming and panning the clip timeline, and a 2-hour clip (prepared in about 2.5 minutes, 7200 s long) | Not checked on a phone or with touch |
-| Long clips from a real UNVR | No recorder available | How long Protect takes before sending the first byte of an hour-long export (Vantage waits up to 15 minutes), whether it caps export length, and the disk space a clip needs |
+| Clip export in the browser | Checked by hand in Chromium with mock cameras: zooming and panning the clip timeline, and a 2-hour clip (prepared in about 2.5 minutes, 7200 s long). Long clips in pieces (mock mode, headless Chromium): a 21-minute clip showed the sweep, then 57% and 76% with a time left, then "Putting the pieces together", started its download by itself and came out 1260.0 s long | Not checked on a phone or with touch |
+| Long clips from a real UNVR | No recorder available | How long Protect takes before sending the first byte of an hour-long export (Vantage waits up to 15 minutes), whether it caps export length, the disk space a clip needs, whether exporting pieces in parallel is faster than one long export on your recorder, and whether the joins between pieces are seamless on real camera streams |
 | Activity live updates in the browser | Checked through the API tests only | UI wiring |
 | Revocation bound under load | Checked with three streams | Slower with many sessions |
 | MediaMTX after the relay refactor | Not re-run against a real process | A request that differs from the hand-checked one in a way the stub tests do not catch |
