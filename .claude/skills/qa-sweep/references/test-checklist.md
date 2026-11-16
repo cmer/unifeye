@@ -40,6 +40,7 @@ When you're done, return only the file path, the count by severity, and anything
 - Empty, very long, Unicode and emoji input in every name field (views, groups, tags). Whitespace-only input. Names that differ only by case.
 - A person with no cameras, a view whose cameras were all removed from the viewer, a tag filter that matches nothing, a camera that is offline, a camera the recorder no longer reports.
 - Playback: a time with nothing recorded, the join between two playback windows, the very start of retention, "now", a future time, midnight, another time zone, a daylight-saving change.
+- Timeline zoom: each level with the buttons and with `-` / `=`, dragging while zoomed in, playing past the right edge, zooming in while live, zooming near midnight, starting a clip while zoomed in.
 - Clips: the shortest and longest allowed, a range that crosses a gap, a range ending "now", typing a time on another day's boundary, cancelling mid-export, downloading twice, downloading after 10 minutes.
 - Double-clicking save, browser back after a change, refreshing mid-flow, deep links straight to a camera, a view or a time.
 - Two tabs editing the same view (the second save must be refused, not silently win), slow network, a session that expires while a wall is open.
