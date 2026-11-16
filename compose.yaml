@@ -1,6 +1,6 @@
 # Unifeye: one application instance plus MediaMTX. Start with:  docker compose up -d
 # Put an HTTPS reverse proxy in front of 127.0.0.1:3000. Only two things face the network:
-# that proxy, and the WebRTC media port 8189 (UDP and TCP).
+# that proxy, and the WebRTC media port (WEBRTC_PORT, 8189 by default, UDP and TCP).
 services:
   app:
     build: .
@@ -36,11 +36,14 @@ services:
       MTX_AUTHHTTPADDRESS: http://app:3001/mediamtx-auth?secret=${MEDIAMTX_HOOK_SECRET:?set MEDIAMTX_HOOK_SECRET}
       # The address browsers use to reach this host for WebRTC media (LAN IP or DNS name).
       MTX_WEBRTCADDITIONALHOSTS: ${WEBRTC_PUBLIC_HOST:?set WEBRTC_PUBLIC_HOST}
+      # The WebRTC media port. MediaMTX advertises the port it listens on, so the published port must match it.
+      MTX_WEBRTCLOCALUDPADDRESS: :${WEBRTC_PORT:-8189}
+      MTX_WEBRTCLOCALTCPADDRESS: :${WEBRTC_PORT:-8189}
     volumes:
       - ./docker/mediamtx.yml:/mediamtx.yml:ro
     ports:
-      - "8189:8189/udp"             # WebRTC media. The API (9997), WHEP (8889), HLS (8888) and RTSP stay internal.
-      - "8189:8189/tcp"
+      - "${WEBRTC_PORT:-8189}:${WEBRTC_PORT:-8189}/udp"   # WebRTC media. The API (9997), WHEP (8889), HLS (8888) and RTSP stay internal.
+      - "${WEBRTC_PORT:-8189}:${WEBRTC_PORT:-8189}/tcp"
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
