@@ -9,8 +9,8 @@ import { schema, type Db } from "./db";
 import { badRequest, conflict, forbidden, newId, notFound } from "./util";
 
 const S = schema;
-const tagName = z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9_]{0,39}$/, "Tags use lowercase letters, digits and underscores");
-const name = z.string().trim().min(1).max(80);
+const tagName = z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9_]{0,39}$/, "Tags can only use lowercase letters, numbers and underscores.");
+const name = z.string().trim().min(1, "Enter a name.").max(80, "Names can be up to 80 characters.");
 const viewInput = z.object({
   name,
   type: z.enum(["dynamic", "static"]),
@@ -55,7 +55,7 @@ export class Admin {
   createTag(a: Actor, raw: string) {
     this.admin(a, "tag.create");
     const n = tagName.parse(raw), id = newId();
-    try { this.db.insert(S.tags).values({ id, name: n, createdAt: Date.now() }).run(); } catch { throw conflict("That tag already exists"); }
+    try { this.db.insert(S.tags).values({ id, name: n, createdAt: Date.now() }).run(); } catch { throw conflict("That tag already exists."); }
     this.log(a, "tag.create", "tag", id, { name: n });
     this.done();
     return { id, name: n };
@@ -63,7 +63,7 @@ export class Admin {
   renameTag(a: Actor, id: string, raw: string) {
     this.admin(a, "tag.rename");
     const n = tagName.parse(raw);
-    try { if (!this.db.update(S.tags).set({ name: n }).where(eq(S.tags.id, id)).run().changes) throw notFound(); } catch (e) { if ((e as { status?: number }).status) throw e; throw conflict("That tag already exists"); }
+    try { if (!this.db.update(S.tags).set({ name: n }).where(eq(S.tags.id, id)).run().changes) throw notFound(); } catch (e) { if ((e as { status?: number }).status) throw e; throw conflict("That tag already exists."); }
     this.log(a, "tag.rename", "tag", id, { name: n });
     this.done();
   }
@@ -71,7 +71,7 @@ export class Admin {
   deleteTag(a: Actor, id: string) {
     this.admin(a, "tag.delete");
     const used = this.db.$client.prepare("select v.name from view_predicate_tags p join views v on v.id = p.view_id where p.tag_id = ?").all(id) as { name: string }[];
-    if (used.length) throw conflict(`Remove this tag from these views first: ${used.map((u) => u.name).join(", ")}`);
+    if (used.length) throw conflict(`This tag is used by ${used.map((u) => u.name).join(", ")}. Remove it from there first.`);
     if (!this.db.delete(S.tags).where(eq(S.tags.id, id)).run().changes) throw notFound();
     this.log(a, "tag.delete", "tag", id);
     this.done();
@@ -88,7 +88,7 @@ export class Admin {
   createGroup(a: Actor, raw: string) {
     this.admin(a, "group.create");
     const id = newId(), n = name.parse(raw);
-    try { this.db.insert(S.groups).values({ id, name: n, createdAt: Date.now() }).run(); } catch { throw conflict("A group with that name already exists"); }
+    try { this.db.insert(S.groups).values({ id, name: n, createdAt: Date.now() }).run(); } catch { throw conflict("A group with that name already exists."); }
     this.log(a, "group.create", "group", id, { name: n });
     this.done();
     return { id, name: n };
@@ -98,7 +98,7 @@ export class Admin {
     const set: Partial<typeof S.groups.$inferInsert> = {};
     if (patch.name != null) set.name = name.parse(patch.name);
     if (patch.defaultPriority != null) set.defaultPriority = z.number().int().min(-1000).max(1000).parse(patch.defaultPriority);
-    try { if (!this.db.update(S.groups).set({ ...set, version: sql`${S.groups.version} + 1` }).where(eq(S.groups.id, id)).run().changes) throw notFound(); } catch (e) { if ((e as { status?: number }).status) throw e; throw conflict("A group with that name already exists"); }
+    try { if (!this.db.update(S.groups).set({ ...set, version: sql`${S.groups.version} + 1` }).where(eq(S.groups.id, id)).run().changes) throw notFound(); } catch (e) { if ((e as { status?: number }).status) throw e; throw conflict("A group with that name already exists."); }
     this.log(a, "group.update", "group", id, set);
     this.done();
   }
@@ -106,7 +106,7 @@ export class Admin {
     this.admin(a, "group.delete");
     const g = this.db.select().from(S.groups).where(eq(S.groups.id, id)).get();
     if (!g) throw notFound();
-    if (g.isAllStaff) throw badRequest("The all-staff group cannot be deleted");
+    if (g.isAllStaff) throw badRequest("This group can't be deleted.");
     this.db.delete(S.groups).where(eq(S.groups.id, id)).run(); // grants, shares, defaults and memberships cascade
     this.log(a, "group.delete", "group", id, { name: g.name });
     this.done();
@@ -128,9 +128,9 @@ export class Admin {
       if (!u) throw notFound();
       const losesAdmin = u.role === "admin" && u.status === "active" && ((p.role && p.role !== "admin") || p.status === "disabled");
       if (losesAdmin) {
-        if (userId === a.userId) throw badRequest("You cannot remove your own administrator access");
+        if (userId === a.userId) throw badRequest("You can't remove your own admin access.");
         const admins = (this.db.$client.prepare("select count(*) c from users where role = 'admin' and status = 'active'").get() as { c: number }).c;
-        if (admins <= 1) throw badRequest("At least one active administrator is required");
+        if (admins <= 1) throw badRequest("There must be at least one administrator.");
       }
       tx.update(S.users).set({ ...p, updatedAt: Date.now(), version: sql`${S.users.version} + 1` }).where(eq(S.users.id, userId)).run();
       if (p.allowPrivateViews === false) tx.delete(S.defaultViews).where(and(eq(S.defaultViews.userId, userId), eq(S.defaultViews.scope, "personal"))).run();
@@ -207,7 +207,7 @@ export class Admin {
     this.checkRefs(a, v);
     this.db.transaction((tx) => {
       const n = tx.update(S.views).set({ name: v.name, type: v.type, columns: v.columns, updatedAt: Date.now(), version: sql`${S.views.version} + 1` }).where(and(eq(S.views.id, viewId), eq(S.views.version, expectedVersion))).run().changes;
-      if (!n) throw conflict("This view was changed by someone else. Reload and try again.");
+      if (!n) throw conflict("Someone else changed this view. Reload and try again.");
       this.writeMembers(tx as unknown as Db, viewId, v);
     }, { behavior: "immediate" });
     this.log(a, cur.type === v.type ? "view.update" : "view.convert", "view", viewId, { name: v.name, type: v.type });
@@ -227,7 +227,7 @@ export class Admin {
     this.admin(a, "view.share");
     const cur = this.views.get(viewId);
     if (!cur) throw notFound();
-    if (cur.visibility !== "curated") throw badRequest("Private views cannot be shared");
+    if (cur.visibility !== "curated") throw badRequest("Private views can't be shared.");
     const t = Date.now();
     this.db.transaction((tx) => {
       tx.update(S.views).set({ sharedWithAll: s.all, updatedAt: t }).where(eq(S.views.id, viewId)).run();
@@ -254,12 +254,12 @@ export class Admin {
     if (viewId) {
       const v = this.views.get(viewId);
       if (!v) throw notFound();
-      if (scope === "org" && !(v.visibility === "curated" && v.sharedWithAll)) throw badRequest("Share this view with all staff before making it the default for everyone");
+      if (scope === "org" && !(v.visibility === "curated" && v.sharedWithAll)) throw badRequest("Share this view with everyone first.");
       if (scope === "group") {
         const shared = v.visibility === "curated" && (v.sharedWithAll || !!this.db.select().from(S.viewGroupShares).where(and(eq(S.viewGroupShares.viewId, viewId), eq(S.viewGroupShares.groupId, groupId!))).get());
-        if (!shared) throw badRequest("Share this view with the group before making it their default");
+        if (!shared) throw badRequest("Share this view with the group first.");
       }
-      if (scope === "user" && !this.views.canOpen(userId!, viewId)) throw badRequest("That person cannot open this view. Share it with them first.");
+      if (scope === "user" && !this.views.canOpen(userId!, viewId)) throw badRequest("Share this view with them first.");
       if (scope === "personal") {
         const u = this.policy.activeUser(a.userId)!;
         if (u.role !== "admin" && !u.allowPrivateViews) throw forbidden();

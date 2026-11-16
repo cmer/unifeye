@@ -19,7 +19,7 @@ const MIN_CLIP = 2000;
 /** Wall-clock time, for event handlers only (never called while rendering). */
 const now = () => Date.now();
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-const fmtLen = (ms: number) => { const s = Math.round(ms / 1000), m = Math.floor(s / 60); return m ? `${m} min${s % 60 ? ` ${s % 60} s` : ""}` : `${s} s`; };
+const fmtLen = (ms: number) => { const s = Math.round(ms / 1000), m = Math.floor(s / 60); return m ? `${m} min${s % 60 ? ` ${s % 60} sec` : ""}` : `${s} sec`; };
 /** While trimming, the timeline zooms to the selection with room on both sides to extend it. */
 const viewFor = (a: number, b: number): [number, number] => { const span = Math.max(180_000, (b - a) * 2.5), mid = (a + b) / 2; return [mid - span / 2, mid + span / 2]; };
 
@@ -128,7 +128,7 @@ export function Player({ cameraId }: { cameraId: string }) {
     return () => { clearInterval(i); removeEventListener("pointermove", move); removeEventListener("keydown", key); };
   });
 
-  if (cam === "gone") return <Empty icon={<Lock />} title="Not available">This camera does not exist or is not assigned to you.<div><Button variant="outline" className="mt-4" onClick={() => nav("/")}>Back to cameras</Button></div></Empty>;
+  if (cam === "gone") return <Empty icon={<Lock />} title="Camera unavailable">You don&apos;t have access to this camera.<div><Button variant="outline" className="mt-4" onClick={() => nav("/")}>Back to cameras</Button></div></Empty>;
   if (!cam) return <div className="flex-1 bg-black" />;
 
   let a = dayStart, b = dayEnd;
@@ -148,10 +148,10 @@ export function Player({ cameraId }: { cameraId: string }) {
             onEnded={() => seek(ws + W)} onError={() => setNoRec(true)} />}
       {(noRec || (live && !cam.online)) && !down && (
         <div className="absolute inset-0 grid place-items-center bg-zinc-900 p-6 text-center text-sm text-zinc-400">
-          <div><div className="mb-1 font-medium text-zinc-50">{noRec ? `Nothing recorded at ${fmtTime(t, tz)}` : "Camera offline"}</div>{noRec ? "The camera was not recording at this time." : "No live video right now."}
+          <div><div className="mb-1 font-medium text-zinc-50">{noRec ? `No recording at ${fmtTime(t, tz)}` : "Camera offline"}</div>
             <div className="mt-4 flex justify-center gap-2">
               {noRec && nextRange && <Button variant="outline" className="border-white/30 bg-transparent text-white" onClick={() => seek(nextRange[0] + 1000)}>Skip to {fmtShort(nextRange[0], tz)}</Button>}
-              {!noRec && rec?.ranges.length ? <Button variant="outline" className="border-white/30 bg-transparent text-white" onClick={() => seek(rec.ranges[rec.ranges.length - 1][1] - 60000)}>Watch the last recording</Button> : null}
+              {!noRec && rec?.ranges.length ? <Button variant="outline" className="border-white/30 bg-transparent text-white" onClick={() => seek(rec.ranges[rec.ranges.length - 1][1] - 60000)}>Watch last recording</Button> : null}
               {noRec && <Button variant="outline" className="border-white/30 bg-transparent text-white" onClick={() => seek(Date.now())}>Go live</Button>}
             </div></div>
         </div>
@@ -184,7 +184,7 @@ export function Player({ cameraId }: { cameraId: string }) {
           onPointerCancel={() => { if (trim?.grab) dragTrim(trim.grab, trim[trim.grab], true); }}
           onPointerMove={(e) => { const ms = at(e.currentTarget, e.clientX), y = e.currentTarget.getBoundingClientRect().top; if (trim) { if (e.buttons && trim.grab) dragTrim(trim.grab, ms); } else if (e.buttons) seek(ms); if (e.pointerType === "mouse") setHover((h) => ({ x: e.clientX, y, ms, img: h && Math.abs(h.img - ms) < (b - a) / 150 ? h.img : ms })); }}
           onPointerLeave={() => setHover(null)}>
-          <div className="absolute inset-x-0 bottom-2 h-[5px] overflow-hidden rounded-full bg-white/20" title={rec?.precision === "bounds" ? "The recorder reports only the overall recorded period; gaps appear when you seek into them" : undefined}>
+          <div className="absolute inset-x-0 bottom-2 h-[5px] overflow-hidden rounded-full bg-white/20" title={rec?.precision === "bounds" ? "Some gaps in the recording may not be shown" : undefined}>
             {!down && rec?.ranges.map(([s, e], i) => e > a && s < b ? <i key={i} className={`absolute inset-y-0 ${rec.precision === "exact" ? "bg-white/80" : "bg-white/50"}`} style={{ left: pct(s), right: `calc(100% - ${pct(e)})` }} /> : null)}
           </div>
           {!down && events.filter((e) => e.startMs > a && e.startMs < b).map((e) => <i key={e.id} title={`${EVENT_LABEL[e.type] ?? e.type}, ${fmtShort(e.startMs, tz)}`} className="absolute bottom-[17px] size-1.5 -translate-x-1/2 rounded-full" style={{ left: pct(e.startMs), background: EVENT_COLOR[e.type] ?? "#a3a3a3" }} />)}
@@ -212,7 +212,7 @@ export function Player({ cameraId }: { cameraId: string }) {
           <span className="flex-1" />
           {!live && <select aria-label="Playback speed" value={speed} onChange={(e) => setSpeed(Number(e.target.value))} className="h-9 rounded-lg bg-transparent px-1 text-sm text-white outline-none hover:bg-white/15 [&>option]:text-black">{[0.5, 1, 2, 4, 8].map((x) => <option key={x} value={x}>{x}×</option>)}</select>}
           <Button variant="ghost" className={ghost} disabled={down} onClick={startTrim}><Download /><span className="max-sm:hidden">Save clip</span></Button>
-          <Button variant="ghost" size="icon" className={ghost} aria-label="Full screen" onClick={() => { const el = box.current!, v = video.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null; if (document.fullscreenElement) void document.exitFullscreen(); else if (el.requestFullscreen) el.requestFullscreen().catch(() => toast("Full screen is blocked here")); else v?.webkitEnterFullscreen?.(); }}><Maximize /></Button>
+          <Button variant="ghost" size="icon" className={ghost} aria-label="Full screen" onClick={() => { const el = box.current!, v = video.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null; if (document.fullscreenElement) void document.exitFullscreen(); else if (el.requestFullscreen) el.requestFullscreen().catch(() => toast("Full screen isn't available")); else v?.webkitEnterFullscreen?.(); }}><Maximize /></Button>
         </div>
         )}
       </div>
@@ -233,14 +233,17 @@ function ClipDialog({ name, startMs, endMs, first, onClose }: { name: string; st
   const [job, setJob] = useState<Job>(first);
   useEffect(() => {
     if (job.status !== "running") return;
-    const i = setInterval(() => api<Job>(`/exports/${job.id}`).then(setJob).catch(() => setJob({ ...job, status: "failed", error: "The clip is no longer available" })), 700);
+    const i = setInterval(() => api<Job>(`/exports/${job.id}`).then(setJob).catch(() => setJob({ ...job, status: "failed", error: "This clip is no longer available." })), 700);
     return () => clearInterval(i);
   }, [job]);
   const close = () => { if (job.status === "running") void api(`/exports/${job.id}`, { method: "DELETE" }).catch(() => {}); onClose(job.status === "ready"); };
   return (
     <Dialog open onOpenChange={(o) => !o && close()}>
       <DialogContent>
-        <DialogHeader><DialogTitle>Clip from {name}</DialogTitle><DialogDescription>{fmtDay(startMs, tz)}, {fmtTime(startMs, tz)} to {fmtTime(endMs, tz)} ({fmtLen(endMs - startMs)}). {job.status === "running" ? "Preparing your clip…" : job.status === "ready" ? "Your clip is ready. The download works only for you and expires in 10 minutes." : job.error ?? "The clip could not be prepared."}</DialogDescription></DialogHeader>
+        <DialogHeader>
+          <DialogTitle>{job.status === "running" ? "Preparing clip…" : job.status === "ready" ? "Clip ready" : "Couldn't save clip"}</DialogTitle>
+          <DialogDescription>{job.status === "running" || job.status === "ready" ? `${name} · ${fmtDay(startMs, tz)}, ${fmtTime(startMs, tz)} · ${fmtLen(endMs - startMs)}` : job.error ?? "Something went wrong. Try again."}</DialogDescription>
+        </DialogHeader>
         {job.status === "running" && <div className="h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full w-1/3 animate-pulse rounded-full bg-primary" /></div>}
         <DialogFooter>
           <Button variant="outline" onClick={close}>{job.status === "running" ? "Cancel" : job.status === "ready" ? "Done" : "Back"}</Button>

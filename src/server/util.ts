@@ -27,13 +27,27 @@ export function decrypt(blob: string, keyB64: string): string {
   return Buffer.concat([d.update(Buffer.from(ct, "base64url")), d.final()]).toString("utf8");
 }
 
+/** What people see when an error carries only a code. */
+const MESSAGES: Record<string, string> = {
+  forbidden: "You don't have permission to do that.",
+  preview_read_only: "Changes are turned off while viewing as someone else.",
+  preview_not_allowed: "You can't view as this person.",
+  bad_origin: "Something went wrong. Reload and try again.",
+  bad_csrf_token: "Something went wrong. Reload and try again.",
+  nvr_unavailable: "Can't reach the recorder.",
+  relay_unavailable: "Video is unavailable right now.",
+  relay_error: "Video is unavailable right now.",
+  no_live_stream: "No live video.",
+  invalid_request: "Something went wrong. Try again.",
+  sso_not_configured: "Sign-in isn't set up yet.",
+};
 export class HttpError extends Error {
   constructor(public status: number, public code: string, message?: string) {
-    super(message ?? code);
+    super(message ?? MESSAGES[code] ?? code);
   }
 }
 /** Used for anything a caller may not see. Deliberately identical to "does not exist". */
-export const notFound = () => new HttpError(404, "not_found", "Not found");
+export const notFound = () => new HttpError(404, "not_found", "This is no longer available.");
 export const forbidden = (code = "forbidden") => new HttpError(403, code);
 export const badRequest = (message: string) => new HttpError(400, "bad_request", message);
 export const conflict = (message: string) => new HttpError(409, "conflict", message);

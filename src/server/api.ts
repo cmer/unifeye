@@ -40,7 +40,7 @@ function rateLimit(ip: string, cls: keyof typeof LIMITS) {
   const t = Date.now(), k = `${cls}:${ip}`;
   let b = buckets.get(k);
   if (!b || t > b.reset) buckets.set(k, (b = { n: 0, reset: t + 60_000 }));
-  if (++b.n > LIMITS[cls]) throw new HttpError(429, "rate_limited", "Too many requests");
+  if (++b.n > LIMITS[cls]) throw new HttpError(429, "rate_limited", "Too many requests. Try again in a moment.");
   if (buckets.size > 10_000) for (const [key, v] of buckets) if (t > v.reset) buckets.delete(key);
 }
 
