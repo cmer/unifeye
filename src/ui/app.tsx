@@ -176,5 +176,5 @@ export function Empty({ icon, title, children }: { icon: React.ReactNode; title:
 }
 /** A native select styled like the other inputs: reliable on phones and with keyboards. */
 export function Select({ className = "", ...p }: React.ComponentProps<"select">) {
-  return <select {...p} className={`h-9 max-w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50 dark:bg-input/30 ${className}`} />;
+  return <select {...p} className={`select-chevron h-9 max-w-full rounded-lg border border-input bg-background pr-8 pl-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50 dark:bg-input/30 ${className}`} />;
 }
