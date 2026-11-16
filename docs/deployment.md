@@ -8,7 +8,7 @@ not available where they were written). Treat the first deployment as a test.
 Vantage signs in through any OpenID Connect provider that supports the Authorization Code flow with
 PKCE (Keycloak, Authentik, Zitadel, Authelia, Entra ID, Okta and so on). It does not embed one.
 
-Step-by-step setup for Zitadel, Keycloak and Google Workspace is in
+Step-by-step setup for Zitadel, Keycloak, Microsoft Entra ID and Google Workspace is in
 [identity-providers.md](identity-providers.md). For any other provider, create a client (often
 called an application) for Vantage:
 

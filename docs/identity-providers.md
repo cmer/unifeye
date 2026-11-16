@@ -1,10 +1,11 @@
 # Setting up sign-in
 
 Vantage signs people in through an OpenID Connect provider. This page has step-by-step setup for
-three common ones:
+four common ones:
 
 - [Zitadel](#zitadel)
 - [Keycloak](#keycloak)
+- [Microsoft Entra ID](#microsoft-entra-id) (formerly Azure AD)
 - [Google Workspace](#google-workspace)
 
 Any other OIDC provider works too. Follow [What every provider needs](#what-every-provider-needs)
@@ -201,6 +202,97 @@ Keycloak versions put `/auth` before `/realms` in the issuer; copy the exact `is
 
 ---
 
+## Microsoft Entra ID
+
+These steps use the [Microsoft Entra admin center](https://entra.microsoft.com/). You need to be
+able to register applications and manage enterprise applications in the tenant.
+
+### Limits
+
+- **Signing out of Microsoft doesn't end Vantage sessions right away.** Entra doesn't send
+  back-channel logout. Disabled accounts and revoked sessions are still noticed through the
+  refresh-token check, within `OIDC_RECHECK_SECONDS`.
+- **The client secret expires.** Entra secrets last at most two years. When one expires, nobody can
+  sign in until you create a new secret and update `OIDC_CLIENT_SECRET`. Put the renewal in a
+  calendar.
+
+### 1. Register the application
+
+1. Go to **Identity > Applications > App registrations > New registration**.
+2. Name: `Vantage`. Supported account types: **Accounts in this organizational directory only**
+   (single tenant).
+3. Redirect URI: platform **Web**, value `https://vantage.example.com/api/auth/callback`. Use
+   **Web**, not **Single-page application**: Vantage exchanges the code on the server, which Entra
+   refuses for single-page application redirects.
+4. Register, then copy the **Application (client) ID** and **Directory (tenant) ID** from the
+   overview page.
+5. Under **Authentication**, add a second redirect URI: `https://vantage.example.com/signed-out`.
+   Entra only sends people back after sign-out to an address registered here. Leave the
+   implicit-grant boxes unchecked.
+6. Under **Certificates & secrets > Client secrets**, create a secret and copy its **Value** (not
+   its ID). It's shown only once.
+
+### 2. Claims
+
+Under **Token configuration**, choose **Add optional claim**, token type **ID**, and add `email`.
+Without it, the ID token often has no email address. Entra only fills it for users who have one
+set.
+
+### 3. Choose who can sign in
+
+Use an app role. Members of your tenant who weren't given the role can't sign in.
+
+1. In the app registration, open **App roles > Create app role**:
+   - Display name: `Vantage user`
+   - Allowed member types: **Users/Groups**
+   - Value: `Vantage.User`
+2. Go to **Identity > Applications > Enterprise applications**, open **Vantage**, and under
+   **Users and groups** assign the `Vantage user` role to the people who should have access.
+   Assigning a group instead of individual people needs an Entra ID P1 or P2 licence.
+3. Under the enterprise application's **Properties**, set **Assignment required?** to **Yes**.
+   Entra then refuses unassigned people before they reach Vantage.
+
+```env
+OIDC_ADMIT_CLAIM=roles
+OIDC_ADMIT_VALUES=Vantage.User
+```
+
+Entra only includes `roles` in the ID token for people who were given a role, so everyone else is
+refused.
+
+Admitting on the `groups` claim also works but needs more care. Entra puts group object IDs (not
+names) in the ID token, and leaves the list out entirely when someone is in more than about 200
+groups. Vantage then refuses that person. If you use groups, under **Token configuration > Add
+groups claim** choose **Groups assigned to the application** to keep the list short, and put the
+group's object ID in `OIDC_ADMIT_VALUES`.
+
+### 4. Settings
+
+```env
+OIDC_ISSUER=https://login.microsoftonline.com/<tenant ID>/v2.0
+OIDC_CLIENT_ID=<application (client) ID>
+OIDC_CLIENT_SECRET=<secret value>
+OIDC_SCOPES=openid profile email offline_access
+OIDC_ADMIT_CLAIM=roles
+OIDC_ADMIT_VALUES=Vantage.User
+BOOTSTRAP_ADMIN_ISSUER=https://login.microsoftonline.com/<tenant ID>/v2.0
+BOOTSTRAP_ADMIN_SUBJECT=<subject>
+```
+
+Use the tenant ID in the issuer, not `common` or `organizations`; those don't have a fixed issuer.
+
+The subject is **not** the user's object ID shown in the admin center. Entra gives each application
+its own `sub` for a user. Use the steps in [The first administrator](#the-first-administrator) to
+find it.
+
+Refresh tokens: with `offline_access`, Entra issues a refresh token that Vantage uses every
+`OIDC_RECHECK_SECONDS`. Disabling a user, deleting them, or choosing **Revoke sessions** on their
+page makes Entra refuse it, and Vantage then ends that person's sessions. A Conditional Access policy
+that requires the person to sign in again (for example after a sign-in frequency limit) also makes
+the check fail. In that case they're signed out of Vantage and simply sign in again.
+
+---
+
 ## Google Workspace
 
 Google sign-in works, with a few differences from the other two.
@@ -293,12 +385,16 @@ its full path (`/vantage`), or a provider-specific scope is missing from `OIDC_S
 `<OIDC_ISSUER>/.well-known/openid-configuration`. Check that the container can reach that address
 and that `OIDC_ISSUER` matches the `issuer` in that document exactly (watch for a trailing slash).
 
+**Entra: sign-in fails with error AADSTS9002327.** The redirect URI was registered under
+**Single-page application**. Move it to the **Web** platform.
+
 **"Sign-in could not be completed."** The provider sent people back but the token didn't check out.
 The app log (`docker compose logs app`) has a `sign-in refused` line with the reason. Common ones: wrong client ID, a client secret set or missing, a
 redirect URI that doesn't match exactly, or a clock that is off by more than 30 seconds.
 
-**People appear without a name.** `name` isn't in the ID token. Turn on the provider's option to put
-profile claims in the ID token (Zitadel: **User Info inside ID Token**).
+**People appear without a name or email.** `name` or `email` isn't in the ID token. Turn on the
+provider's option to put profile claims in the ID token (Zitadel: **User Info inside ID Token**;
+Entra: add the `email` optional claim).
 
 **The first administrator wasn't created.** The issuer or subject doesn't match exactly. Compare them
 with the output of `node cli.mjs users`.

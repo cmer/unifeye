@@ -19,7 +19,7 @@ or Protect users.
 
 - [docs/architecture.md](docs/architecture.md): how it fits together, the permission model, view and landing rules, media enforcement.
 - [docs/deployment.md](docs/deployment.md): registering Vantage with your identity provider, configuration reference, networking, backups, restore, upgrades.
-- [docs/identity-providers.md](docs/identity-providers.md): step-by-step sign-in setup for Zitadel, Keycloak and Google Workspace.
+- [docs/identity-providers.md](docs/identity-providers.md): step-by-step sign-in setup for Zitadel, Keycloak, Microsoft Entra ID and Google Workspace.
 - [docs/verification.md](docs/verification.md): what has been verified and what has not, tested versions, and the steps to check a real UNVR and a real identity provider.
 - [prototype/protect-viewer-mockup.html](prototype/protect-viewer-mockup.html): the standalone clickable prototype. Open it in a browser; everything in it is simulated.
 
