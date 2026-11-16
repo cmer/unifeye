@@ -29,7 +29,7 @@ export async function fileResponse(path: string, req: Request, type: string, ext
  * Playback never downloads hours of video. Time is cut into fixed windows (PLAYBACK_WINDOW_SECONDS,
  * default 60 s, aligned to the epoch). A seek to time T fetches only the window containing T from
  * the recorder as a short MP4, caches it on disk, and the player starts at offset T - windowStart.
- * The player requests the next window when one ends. Clips start on a keyframe, so the first frame
+ * The player buffers the next window while the current one plays and swaps it in when it ends. Clips start on a keyframe, so the first frame
  * can be up to one keyframe interval early; the response carries the window's real start and end so
  * the player can map media time to wall-clock time. The cache is bounded in size and age.
  * An obsolete seek cancels its export when nobody else is waiting for that window.

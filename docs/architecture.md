@@ -249,7 +249,9 @@ foreign or expired token fails the request; it never falls back to the administr
 
 Time is cut into fixed windows (`PLAYBACK_WINDOW_SECONDS`, default 60, aligned to the epoch). A seek
 loads only the window containing the chosen moment as a short MP4 and starts at the right offset;
-the next window loads when one ends. Windows are cached on disk within a size and age limit. A seek
+while a window plays, the player buffers the next one in a hidden video element and swaps it in when
+the current one ends, so playback continues without a black gap (the next window is buffered only
+once it is fully recorded; near live, the old load-on-end path still applies). Windows are cached on disk within a size and age limit. A seek
 that is abandoned cancels its export if nobody else is waiting for it. Clips start on a keyframe, so
 the first frame can be up to one keyframe interval early. Clicking an event starts
 `EVENT_PREROLL_SECONDS` (default 5) before it.

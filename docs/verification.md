@@ -90,6 +90,9 @@ since the move.
   a segment request without a session returns 401.
 - Recorded playback: a seek two hours back loaded one 60-second window and played from the right
   offset.
+- Window handoff, mock mode only (headless Chromium, 10-second windows): across four boundaries the
+  visible video never dropped below "current frame available", and the next window started from
+  0 s straight away. Not checked against a real recorder with adaptive recording.
 - Each screen (wall, player, activity, manage views, admin) rendered in light and dark mode at
   1440 px wide, and the wall at 390 px wide (one column, no sideways scrolling) in a desktop
   browser's narrow window. This is not a test on a real phone.
