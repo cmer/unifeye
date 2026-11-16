@@ -113,13 +113,15 @@ export function Player({ cameraId }: { cameraId: string }) {
   useEffect(() => { const v = video.current; if (!v || live) return; if (playing) void v.play().catch(() => {}); else v.pause(); }, [playing, live, src]);
   const nextRange = rec?.ranges.find(([a]) => a > t);
 
+  const back = () => (history.length > 1 ? history.back() : nav("/"));
   const toggle = () => { if (live) { seek(Date.now() - 6000, false); setPlaying(false); } else setPlaying((p) => !p); };
   useEffect(() => {
     const move = () => { lastMove.current = Date.now(); setIdle(false); };
     const key = (e: KeyboardEvent) => {
       move();
       if (trim) { if (e.key === "Escape" && !job) setTrim(null); return; }
-      if ((e.target as HTMLElement).closest("input,select,textarea,[role=dialog]")) return;
+      if (e.defaultPrevented || (e.target as HTMLElement).closest("input,select,textarea,[role=dialog]")) return;
+      if (e.key === "Escape") { if (jump) setJump(false); else if (!document.fullscreenElement) back(); return; }
       if (e.key === " ") { e.preventDefault(); toggle(); } else if (e.key === "ArrowLeft") seek(t - 10000); else if (e.key === "ArrowRight") seek(t + 10000);
     };
     if (!lastMove.current) lastMove.current = Date.now();
@@ -157,7 +159,7 @@ export function Player({ cameraId }: { cameraId: string }) {
         </div>
       )}
       <div className={`absolute inset-x-0 top-0 flex items-center gap-2.5 bg-gradient-to-b from-black/70 to-transparent px-4 pt-3.5 pb-10 transition-opacity ${idle ? "opacity-0" : ""}`}>
-        <Button variant="ghost" size="icon" className={ghost} aria-label="Back to cameras" onClick={() => (history.length > 1 ? history.back() : nav("/"))}><ArrowLeft /></Button>
+        <Button variant="ghost" size="icon" className={ghost} aria-label="Back to cameras" onClick={back}><ArrowLeft /></Button>
         <b className="truncate text-[15px] font-semibold">{cam.name}</b>
         <span className="flex items-center gap-1.5 text-xs text-zinc-300">{live ? <><i className="size-1.5 rounded-full bg-red-500" />Live</> : "Recorded"}</span>
         {recording.has(cameraId) && <RecMark />}
