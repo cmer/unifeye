@@ -8,7 +8,9 @@ not available where they were written). Treat the first deployment as a test.
 Vantage signs in through any OpenID Connect provider that supports the Authorization Code flow with
 PKCE (Keycloak, Authentik, Zitadel, Authelia, Entra ID, Okta and so on). It does not embed one.
 
-Create a client (often called an application) for Vantage:
+Step-by-step setup for Zitadel, Keycloak and Google Workspace is in
+[identity-providers.md](identity-providers.md). For any other provider, create a client (often
+called an application) for Vantage:
 
 1. Type: web application, Authorization Code flow with PKCE (S256). A public client is enough; for a
    confidential client, also set `OIDC_CLIENT_SECRET`.
@@ -62,7 +64,7 @@ Check the exact claim names against an ID token from your provider before going 
 Back-channel logout tells Vantage when a provider session ends, but most providers do not send it
 when a user is disabled or deleted. Vantage therefore exercises each session's refresh token every
 `OIDC_RECHECK_SECONDS`: a rejected token revokes the session. If the provider issues no refresh
-token, that check cannot run and a disabled user keeps access until back-channel logout or the
+token (some need extra request parameters, set with `OIDC_AUTH_PARAMS`), that check cannot run and a disabled user keeps access until back-channel logout or the
 session's own limits end it.
 
 ## 2. Prepare Protect
@@ -137,6 +139,8 @@ relay, last backup). Neither exposes configuration or secrets.
   renamed, mode 0600. Daily backups older than the retention period are removed.
 - A backup is also taken automatically before any migration of an existing database.
 - Manual: `docker compose exec app node cli.mjs backup`
+- `docker compose exec app node cli.mjs users` lists everyone who has signed in, with their issuer
+  and subject.
 - Do not copy `vantage.sqlite` on its own while the app runs; recent changes live in the `-wal`
   file and the copy can be incomplete.
 - Backups contain user, session and permission data. Copy them off the host and protect them.

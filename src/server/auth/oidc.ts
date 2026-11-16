@@ -75,7 +75,7 @@ export class Oidc {
     this.db.insert(schema.loginTransactions).values({ id: hashToken(cookie), state, nonce, codeVerifier, returnTo: safeReturnTo(returnTo), createdAt: t, expiresAt: t + TXN_TTL_MS }).run();
     const scopes = new Set(c.OIDC_SCOPES.split(/\s+/).filter(Boolean));
     scopes.add("openid");
-    const url = oidc.buildAuthorizationUrl(cfg, { redirect_uri: this.redirectUri(), scope: [...scopes].join(" "), state, nonce, code_challenge: await oidc.calculatePKCECodeChallenge(codeVerifier), code_challenge_method: "S256", response_type: "code" });
+    const url = oidc.buildAuthorizationUrl(cfg, { ...Object.fromEntries(c.OIDC_AUTH_PARAMS), redirect_uri: this.redirectUri(), scope: [...scopes].join(" "), state, nonce, code_challenge: await oidc.calculatePKCECodeChallenge(codeVerifier), code_challenge_method: "S256", response_type: "code" });
     return { url: url.toString(), cookie };
   }
 
@@ -89,6 +89,7 @@ export class Oidc {
     const c = config();
     const fail = (reason: string, detail?: Record<string, unknown>): never => {
       audit(this.db, { action: "auth.login", outcome: "denied", ip: ctx.ip, detail: { reason, ...detail } });
+      log("warn", "sign-in refused", { reason, ...detail }); // so a misconfigured provider can be diagnosed without signing in
       throw new AdmissionError(reason);
     };
     if (!txnCookie) fail("no_transaction");

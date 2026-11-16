@@ -45,6 +45,14 @@ const schema = z.object({
   OIDC_ADMIT_CLAIM: z.string().optional(),
   /** Accepted values for OIDC_ADMIT_CLAIM. When empty, the claim only has to be present and non-empty. */
   OIDC_ADMIT_VALUES: list,
+  /**
+   * Extra parameters for the authorization request, as a query string. Google needs
+   * `access_type=offline&prompt=consent` to issue a refresh token. Protocol parameters are refused.
+   */
+  OIDC_AUTH_PARAMS: z
+    .string()
+    .optional()
+    .transform((v) => [...new URLSearchParams((v ?? "").replace(/^\?/, "")).entries()].filter(([k]) => k)),
   /** Admit everyone the provider authenticates. Only for providers that already restrict who can use this client. */
   OIDC_ADMIT_ANY: bool(false),
   /** Test-only: permit an http:// issuer. Refused when NODE_ENV=production. */
@@ -90,6 +98,8 @@ const schema = z.object({
 });
 
 export type Config = z.infer<typeof schema>;
+/** Set by Vantage itself on every authorization request; overriding them would weaken the flow. */
+const RESERVED_AUTH_PARAMS = new Set(["client_id", "redirect_uri", "response_type", "response_mode", "scope", "state", "nonce", "code_challenge", "code_challenge_method", "request", "request_uri"]);
 let cached: Config | undefined;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -111,6 +121,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       if (!c[k]) problems.push(`${k} is required when VANTAGE_MODE=real`);
   if (c.TOKEN_ENC_KEY && Buffer.from(c.TOKEN_ENC_KEY, "base64").length !== 32)
     problems.push("TOKEN_ENC_KEY must be base64 of exactly 32 bytes");
+  for (const [k] of c.OIDC_AUTH_PARAMS)
+    if (RESERVED_AUTH_PARAMS.has(k)) problems.push(`OIDC_AUTH_PARAMS cannot set ${k}`);
   if (c.OIDC_ADMIT_CLAIM && c.OIDC_ADMIT_ANY) problems.push("OIDC_ADMIT_CLAIM and OIDC_ADMIT_ANY cannot both be set");
   if (c.OIDC_ADMIT_VALUES.length && !c.OIDC_ADMIT_CLAIM) problems.push("OIDC_ADMIT_VALUES needs OIDC_ADMIT_CLAIM");
   if (!!c.BOOTSTRAP_ADMIN_ISSUER !== !!c.BOOTSTRAP_ADMIN_SUBJECT)

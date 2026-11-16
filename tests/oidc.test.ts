@@ -78,6 +78,16 @@ describe("OIDC login", () => {
     expect(b.url.searchParams.get("scope")).toBe("openid profile email offline_access");
     expect(b.state.length).toBeGreaterThan(20); expect(b.nonce.length).toBeGreaterThan(20);
   });
+  it("adds configured extra parameters to the sign-in request but never lets them replace protocol ones", async () => {
+    setConfigForTests(env({ OIDC_AUTH_PARAMS: "access_type=offline&prompt=consent" }));
+    oidc = new Oidc(f.db, f.policy, f.sessions);
+    const b = await begin();
+    expect(b.url.searchParams.get("access_type")).toBe("offline");
+    expect(b.url.searchParams.get("prompt")).toBe("consent");
+    expect(b.url.searchParams.get("code_challenge_method")).toBe("S256");
+    for (const k of ["redirect_uri", "state", "nonce", "code_challenge_method", "scope"])
+      expect(() => env({ OIDC_AUTH_PARAMS: `${k}=x` })).toThrowError(new RegExp(`cannot set ${k}`));
+  });
   it("provisions a first-time user with zero access, keyed by issuer + subject", async () => {
     const r = await login({ sub: "new-1", name: "Nia New", email: "nia@example.test" });
     expect(idp.pkce).toMatch(/^[\w-]{43,}$/); // the verifier went to the token endpoint, server to server
