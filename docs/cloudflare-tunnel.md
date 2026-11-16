@@ -27,7 +27,8 @@ tile or every page.
 Compared with WebRTC, HLS:
 
 - runs a few seconds behind live instead of under a second,
-- carries camera audio (WebRTC in Vantage is silent),
+- carries camera audio in AAC, which WebRTC cannot (WebRTC has sound only from cameras that also
+  send Opus),
 - sends all of its video through Cloudflare.
 
 ## Choose how live video reaches people
@@ -171,7 +172,8 @@ and Cloudflare does not cache it. Do not add a "Cache Everything" rule for this 
 1. From a phone on mobile data, open `https://vantage.example.com` and sign in.
 2. Open a view with live tiles. The first time, tiles show a still image for about 4 seconds, then
    play. Open another view: tiles start without the wait.
-3. On the office network, tiles should play almost at once (WebRTC), with no audio.
+3. On the office network, tiles should play almost at once (WebRTC). Hover over a tile and click
+   its speaker to check sound.
 4. `curl -i https://vantage.example.com/api/internal/mediamtx-auth` should be blocked by Cloudflare
    (403) rather than answered by Vantage.
 5. Sign out at your identity provider, then reload Vantage in another tab. You should be signed out

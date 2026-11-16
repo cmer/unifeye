@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { api, ApiError, type Camera } from "./api";
 import { Empty, fail, RecMark, SidebarOpener, useApp, useRecording } from "./app";
 import { LiveVideo } from "./live";
+import { SoundButton, useSound } from "./sound";
 import { useSidebar } from "@/components/ui/sidebar";
 
 interface ViewData { id: string; name: string; type: string; columns: number; cameras: Camera[] }
@@ -26,6 +27,9 @@ export function Wall({ viewId }: { viewId?: string }) {
   const [gone, setGone] = useState(false);
   const [panel, setPanel] = useState(false);
   const [visible, setVisible] = useState<string[]>([]);
+  /** Which streaming tiles carry sound (missing or null while unknown), and the one camera playing it. */
+  const [audio, setAudio] = useState<Record<string, boolean | null>>({});
+  const sound = useSound();
   const root = useRef<HTMLDivElement>(null);
   const tags = useMemo(() => (loc.query.get("tags") ?? "").split(",").filter(Boolean), [loc.query]);
   const q = loc.query.get("q") ?? "";
@@ -85,13 +89,16 @@ export function Wall({ viewId }: { viewId?: string }) {
   else body = (
     <div className={`grid grid-cols-1 gap-0.5 ${GRID[cols]}`}>
       {shown.map((c) => (
-        <button key={c.id} data-cam={c.id} onClick={() => nav(`/camera/${c.id}`)} aria-label={`Open ${c.name}`} className="group relative aspect-video overflow-hidden bg-black text-left text-white outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-inset">
-          {c.missing ? <div className="absolute inset-0 grid place-items-center bg-zinc-900 p-4 text-center text-sm text-zinc-400"><div className="font-medium text-zinc-50">Camera removed</div></div>
-            : <LiveVideo cameraId={c.id} quality="wall" active={streaming.has(c.id) && me.recorder !== "down"} online={c.online && me.recorder !== "down"} onGone={() => { setTick((n) => n + 1); void reload(); }} />}
-          <span className="absolute top-2.5 left-2.5 flex max-w-[calc(100%-4.5rem)] items-center gap-1.5 truncate rounded-md bg-black/65 px-2 py-0.5 text-xs font-medium"><i className={`size-1.5 shrink-0 rounded-full ${c.missing ? "bg-zinc-500" : c.online ? "bg-green-500" : "bg-red-500"}`} />{c.name}</span>
-          {recording.has(c.id) && <RecMark className="absolute top-2.5 right-2.5" />}
-          <span className="pointer-events-none absolute inset-0 ring-2 ring-white/0 transition ring-inset group-hover:ring-white" />
-        </button>
+        <div key={c.id} data-cam={c.id} className="group relative aspect-video overflow-hidden bg-black text-white">
+          <button onClick={() => nav(`/camera/${c.id}`)} aria-label={`Open ${c.name}`} className="peer absolute inset-0 text-left outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-inset">
+            {c.missing ? <div className="absolute inset-0 grid place-items-center bg-zinc-900 p-4 text-center text-sm text-zinc-400"><div className="font-medium text-zinc-50">Camera removed</div></div>
+              : <LiveVideo cameraId={c.id} quality="wall" active={streaming.has(c.id) && me.recorder !== "down"} online={c.online && me.recorder !== "down"} sound={sound === c.id} onAudio={(h) => setAudio((a) => (a[c.id] === h ? a : { ...a, [c.id]: h }))} onGone={() => { setTick((n) => n + 1); void reload(); }} />}
+            <span className="absolute top-2.5 left-2.5 flex max-w-[calc(100%-4.5rem)] items-center gap-1.5 truncate rounded-md bg-black/65 px-2 py-0.5 text-xs font-medium"><i className={`size-1.5 shrink-0 rounded-full ${c.missing ? "bg-zinc-500" : c.online ? "bg-green-500" : "bg-red-500"}`} />{c.name}</span>
+            {recording.has(c.id) && <RecMark className="absolute top-2.5 right-2.5" />}
+          </button>
+          <span className={`pointer-events-none absolute inset-0 ring-2 transition ring-inset ${sound === c.id && audio[c.id] ? "ring-green-400" : "ring-white/0 group-hover:ring-white"}`} />
+          {!c.missing && <span className="absolute right-2 bottom-2"><SoundButton cameraId={c.id} has={audio[c.id] ?? null} className="size-7 rounded-md bg-black/65 opacity-0 group-hover:opacity-100 peer-focus-visible:opacity-100 focus-visible:opacity-100 hover:bg-black/80 [&_svg]:size-3.5" onClassName="bg-white text-black opacity-100 hover:bg-white/90" /></span>}
+        </div>
       ))}
     </div>
   );

@@ -19,7 +19,7 @@ should be assumed to work.
 
 ## Verified
 
-**Automated tests (`pnpm test`, 118 tests):**
+**Automated tests (`pnpm test`, 127 tests):**
 
 The media tests run against an in-memory relay that asks the real auth hook before admitting a
 reader. They show what the gateway decides, not how MediaMTX behaves.
@@ -96,6 +96,12 @@ since the move.
 - Each screen (wall, player, activity, manage views, admin) rendered in light and dark mode at
   1440 px wide, and the wall at 390 px wide (one column, no sideways scrolling) in a desktop
   browser's narrow window. This is not a test on a real phone.
+- Sound, mock mode only (headless Chromium, mock cameras sending AAC and Opus like Protect, three
+  without a microphone): over WebRTC, HLS and recorded playback, cameras with sound offered the
+  speaker and played unmuted with the level meter moving, and cameras without showed "No audio".
+  Turning sound on for one wall tile turned it off on the other; the M key toggled it in the player.
+  Not heard through speakers, and not checked in Safari or Firefox, whose audio detection takes a
+  different path.
 
 ## Not verified
 
@@ -110,6 +116,8 @@ since the move.
 | Browser test suite | Not written | Screens were checked by hand in one desktop browser |
 | Phones and tablets | No device testing | Layout or touch problems |
 | HLS playback in a browser | Only the gateway responses were checked | Player-level issues |
+| Sound from a real UNVR | Its streams were probed (one camera sends Opus and AAC, one sends none) but not played in Vantage | A camera model without Opus is silent over WebRTC; recordings from Protect may lack audio |
+| Sound in Safari and Firefox | Only Chromium was used | "No audio" shown wrongly, or the speaker missing; no level meter in Safari for HLS and recordings |
 | Clip export in the browser, activity live updates in the browser | Checked through the API tests only | UI wiring |
 | Revocation bound under load | Checked with three streams | Slower with many sessions |
 | MediaMTX after the relay refactor | Not re-run against a real process | A request that differs from the hand-checked one in a way the stub tests do not catch |
