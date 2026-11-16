@@ -62,20 +62,20 @@ async function begin() {
 const cb = (state: string, code = "c1") => new URL(`http://localhost:3000/api/auth/callback?code=${code}&state=${state}`);
 async function login(claims: Record<string, unknown>) {
   const b = await begin();
-  idp.claims = { nonce: b.nonce, "urn:zitadel:iam:user:resourceowner:id": "org-1", ...claims };
+  idp.claims = { nonce: b.nonce, groups: ["vantage"], ...claims };
   return oidc.complete(cb(b.state), b.cookie, { ip: "198.51.100.7" });
 }
 const reason = async (p: Promise<unknown>) => p.then(() => "ok", (e) => (e as { reason?: string }).reason ?? String(e));
 
-describe("Zitadel OIDC login", () => {
-  it("uses Authorization Code with PKCE S256, state and nonce, and asks for the organization claim", async () => {
+describe("OIDC login", () => {
+  it("uses Authorization Code with PKCE S256, state and nonce, and only the configured scopes", async () => {
     const b = await begin();
     expect(b.url.origin + b.url.pathname).toBe(`${issuer}/authorize`);
     expect(b.url.searchParams.get("response_type")).toBe("code");
     expect(b.url.searchParams.get("code_challenge_method")).toBe("S256");
     expect(b.url.searchParams.get("code_challenge")).toMatch(/^[\w-]{43}$/);
     expect(b.url.searchParams.get("redirect_uri")).toBe("http://localhost:3000/api/auth/callback");
-    expect(b.url.searchParams.get("scope")).toContain("urn:zitadel:iam:org:id:org-1");
+    expect(b.url.searchParams.get("scope")).toBe("openid profile email offline_access");
     expect(b.state.length).toBeGreaterThan(20); expect(b.nonce.length).toBeGreaterThan(20);
   });
   it("provisions a first-time user with zero access, keyed by issuer + subject", async () => {
@@ -98,7 +98,7 @@ describe("Zitadel OIDC login", () => {
   });
   it("rejects a replayed callback, an unknown transaction and a wrong state", async () => {
     const b = await begin();
-    idp.claims = { nonce: b.nonce, sub: "s", "urn:zitadel:iam:user:resourceowner:id": "org-1" };
+    idp.claims = { nonce: b.nonce, sub: "s", groups: ["vantage"] };
     await oidc.complete(cb(b.state), b.cookie, {});
     expect(await reason(oidc.complete(cb(b.state), b.cookie, {}))).toBe("transaction_replayed_or_unknown");
     expect(await reason(oidc.complete(cb(b.state), "not-a-cookie", {}))).toBe("transaction_replayed_or_unknown");
@@ -107,7 +107,7 @@ describe("Zitadel OIDC login", () => {
     expect(await reason(oidc.complete(cb("attacker-state"), c.cookie, {}))).toBe("token_validation_failed");
   });
   it("rejects a nonce mismatch, wrong issuer, wrong audience, bad signature and an expired token", async () => {
-    const now = Math.floor(Date.now() / 1000), base = { sub: "s", "urn:zitadel:iam:user:resourceowner:id": "org-1" };
+    const now = Math.floor(Date.now() / 1000), base = { sub: "s", groups: ["vantage"] };
     const attempt = async (claims: (nonce: string) => Record<string, unknown>, key?: KP) => { const b = await begin(); idp.claims = claims(b.nonce); idp.signWith = key; const r = await reason(oidc.complete(cb(b.state), b.cookie, {})); idp.signWith = undefined; return r; };
     expect(await attempt(() => ({ ...base, nonce: "someone-elses" }))).toBe("token_validation_failed");
     expect(await attempt((n) => ({ ...base, nonce: n, iss: "https://evil.example" }))).toBe("token_validation_failed");
@@ -117,14 +117,27 @@ describe("Zitadel OIDC login", () => {
     expect(await attempt((n) => ({ ...base, nonce: n }))).toBe("ok");
     expect(f.db.select().from(schema.auditLog).all().filter((r) => r.action === "auth.login" && r.outcome === "denied").length).toBe(5);
   });
-  it("admits only the configured organization (and project role when configured)", async () => {
-    expect(await reason(login({ sub: "x", "urn:zitadel:iam:user:resourceowner:id": "org-other" }))).toBe("organization_not_allowed");
-    expect(await reason(login({ sub: "x", "urn:zitadel:iam:user:resourceowner:id": undefined }))).toBe("organization_not_allowed");
+  it("admits only users whose admission claim carries an accepted value", async () => {
+    expect(await reason(login({ sub: "x", groups: ["other"] }))).toBe("not_admitted");
+    expect(await reason(login({ sub: "x", groups: undefined }))).toBe("not_admitted");
+    expect(await reason(login({ sub: "x", groups: "vantage-ish" }))).toBe("not_admitted");
     expect(f.db.select().from(schema.users).all().some((u) => u.subject === "x")).toBe(false); // nothing provisioned
-    setConfigForTests(env({ OIDC_PROJECT_ID: "p1" }));
-    oidc = new Oidc(f.db, f.policy, f.sessions);
-    expect(await reason(login({ sub: "y" }))).toBe("no_project_role");
-    expect(await reason(login({ sub: "y", "urn:zitadel:iam:org:project:p1:roles": { viewer: { "org-1": "x" } } }))).toBe("ok");
+    expect(await reason(login({ sub: "y", groups: "vantage" }))).toBe("ok"); // a single string value
+    expect(await reason(login({ sub: "y", groups: ["a", "vantage"] }))).toBe("ok");
+  });
+  it("reads object-shaped and nested claims, and can require presence only", async () => {
+    const use = (over: Record<string, string>) => { setConfigForTests(env(over)); oidc = new Oidc(f.db, f.policy, f.sessions); };
+    use({ OIDC_ADMIT_CLAIM: "roles", OIDC_ADMIT_VALUES: "viewer" });
+    expect(await reason(login({ sub: "o", roles: { viewer: { "org-1": "x" } } }))).toBe("ok"); // keys are the values
+    expect(await reason(login({ sub: "o", roles: { editor: {} } }))).toBe("not_admitted");
+    use({ OIDC_ADMIT_CLAIM: "realm_access.roles", OIDC_ADMIT_VALUES: "vantage" });
+    expect(await reason(login({ sub: "n", realm_access: { roles: ["vantage"] } }))).toBe("ok");
+    expect(await reason(login({ sub: "n", realm_access: { roles: ["other"] } }))).toBe("not_admitted");
+    use({ OIDC_ADMIT_CLAIM: "https://example.test/roles", OIDC_ADMIT_VALUES: "" });
+    expect(await reason(login({ sub: "p", "https://example.test/roles": ["anything"] }))).toBe("ok"); // exact name with dots
+    expect(await reason(login({ sub: "p", "https://example.test/roles": [] }))).toBe("not_admitted");
+    use({ OIDC_ADMIT_CLAIM: "", OIDC_ADMIT_VALUES: "" });
+    expect(await reason(login({ sub: "q", groups: undefined }))).toBe("ok"); // no rule configured (development)
   });
   it("bootstraps the first administrator once, by exact issuer and subject only", async () => {
     setConfigForTests(env({ BOOTSTRAP_ADMIN_ISSUER: issuer, BOOTSTRAP_ADMIN_SUBJECT: "boot-1" }));
@@ -142,7 +155,7 @@ describe("Zitadel OIDC login", () => {
   it("refuses a disabled account and rotates the session on every sign-in", async () => {
     const first = await login({ sub: "rot" });
     const b = await begin();
-    idp.claims = { nonce: b.nonce, sub: "rot", "urn:zitadel:iam:user:resourceowner:id": "org-1" };
+    idp.claims = { nonce: b.nonce, sub: "rot", groups: ["vantage"] };
     const second = await oidc.complete(cb(b.state), b.cookie, { previousSessionToken: first.token });
     expect(second.token).not.toBe(first.token);
     expect(f.sessions.load(first.token)).toBeUndefined();
@@ -153,7 +166,7 @@ describe("Zitadel OIDC login", () => {
   it("only redirects to same-site paths after login", async () => {
     for (const bad of ["https://evil.example", "//evil.example", "/\\evil", "/api/auth/logout"]) {
       const b = await oidc.begin(bad);
-      const st = new URL(b.url); idp.claims = { nonce: st.searchParams.get("nonce"), sub: "r", "urn:zitadel:iam:user:resourceowner:id": "org-1" };
+      const st = new URL(b.url); idp.claims = { nonce: st.searchParams.get("nonce"), sub: "r", groups: ["vantage"] };
       expect((await oidc.complete(cb(st.searchParams.get("state")!), b.cookie, {})).returnTo).toBe("/");
     }
   });
@@ -205,7 +218,7 @@ describe("sessions and provider lifecycle", () => {
     expect(await post(await lt({ sid: undefined }))).toBe(200);
     expect(f.sessions.load(r2.token)).toBeUndefined();
   });
-  it("reconciliation revokes a session when Zitadel rejects its refresh token (deactivated, locked or deleted user)", async () => {
+  it("reconciliation revokes a session when the provider rejects its refresh token (deactivated, locked or deleted user)", async () => {
     const r = await login({ sub: "life" });
     expect((await oidc.reconcile()).checked).toBe(0); // not due yet
     f.db.update(schema.sessions).set({ lastValidatedAt: Date.now() - 301_000 }).run();
@@ -238,7 +251,10 @@ describe("configuration guards", () => {
     expect(() => loadConfig(prod)).not.toThrow();
     expect(() => loadConfig({ ...prod, OIDC_ALLOW_INSECURE_ISSUER: "1" })).toThrowError(/not allowed in production/);
     expect(() => loadConfig({ ...prod, OIDC_ISSUER: "http://id.example" })).toThrowError(/https/);
-    expect(() => loadConfig({ ...prod, OIDC_ALLOWED_ORG_IDS: "" })).toThrowError(/OIDC_ALLOWED_ORG_IDS/);
+    expect(() => loadConfig({ ...prod, OIDC_ADMIT_CLAIM: "" })).toThrowError(/OIDC_ADMIT_CLAIM is required/);
+    expect(() => loadConfig({ ...prod, OIDC_ADMIT_CLAIM: "", OIDC_ADMIT_VALUES: "", OIDC_ADMIT_ANY: "1" })).not.toThrow();
+    expect(() => loadConfig({ ...prod, OIDC_ADMIT_ANY: "1" })).toThrowError(/cannot both be set/);
+    expect(() => loadConfig({ ...prod, OIDC_ADMIT_CLAIM: "", OIDC_ADMIT_ANY: "1" })).toThrowError(/needs OIDC_ADMIT_CLAIM/);
     expect(() => loadConfig({ ...prod, PROTECT_TLS_INSECURE: "1" })).toThrowError(/PROTECT_TLS_INSECURE/);
     expect(() => loadConfig({ ...prod, VANTAGE_MODE: "mock" })).not.toThrow(); // mock cameras still require SSO
     expect(() => loadConfig({ ...prod, VANTAGE_MODE: "mock", OIDC_CLIENT_ID: "" })).toThrowError(/OIDC_CLIENT_ID/);

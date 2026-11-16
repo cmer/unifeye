@@ -9,7 +9,7 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 
-const PORT = Number(process.env.TEST_OIDC_PORT ?? 9911), ISS = `http://localhost:${PORT}`, PUB = process.env.TEST_OIDC_PUBLIC_URL ?? ISS, CLIENT = process.env.OIDC_CLIENT_ID ?? "vantage-dev", ORG = "org-dev";
+const PORT = Number(process.env.TEST_OIDC_PORT ?? 9911), ISS = `http://localhost:${PORT}`, PUB = process.env.TEST_OIDC_PUBLIC_URL ?? ISS, CLIENT = process.env.OIDC_CLIENT_ID ?? "vantage-dev", GROUP = "vantage";
 const PEOPLE = [["dev-admin", "Avery Chen"], ["dev-upper", "Morgan Reyes"], ["dev-front", "Sam Okafor"], ["dev-security", "Jordan Blake"], ["dev-newhire", "Riley Park"]];
 const codes = new Map<string, { sub: string; nonce: string; challenge: string }>();
 
@@ -39,11 +39,11 @@ const main = async () => {
       codes.delete(p.get("code") ?? "");
       if (!c || createHash("sha256").update(p.get("code_verifier") ?? "").digest("base64url") !== c.challenge) return json(400, { error: "invalid_grant" });
       const now = Math.floor(Date.now() / 1000), name = PEOPLE.find(([s]) => s === c.sub)?.[1] ?? c.sub;
-      const id_token = await new SignJWT({ nonce: c.nonce, name, email: `${c.sub}@example.test`, sid: randomUUID(), "urn:zitadel:iam:user:resourceowner:id": ORG }).setProtectedHeader({ alg: "RS256", kid: "dev" }).setIssuer(ISS).setAudience(CLIENT).setSubject(c.sub).setIssuedAt(now).setExpirationTime(now + 300).sign(privateKey);
+      const id_token = await new SignJWT({ nonce: c.nonce, name, email: `${c.sub}@example.test`, sid: randomUUID(), groups: [GROUP] }).setProtectedHeader({ alg: "RS256", kid: "dev" }).setIssuer(ISS).setAudience(CLIENT).setSubject(c.sub).setIssuedAt(now).setExpirationTime(now + 300).sign(privateKey);
       return json(200, { access_token: randomUUID(), token_type: "Bearer", refresh_token: `rt-${c.sub}`, id_token });
     }
     if (url.pathname === "/end_session") { res.writeHead(302, { location: url.searchParams.get("post_logout_redirect_uri") ?? "/" }); return res.end(); }
     json(404, {});
-  }).listen(PORT, () => console.log(`test OIDC provider on ${ISS} (client ${CLIENT}, org ${ORG}, bootstrap subject dev-admin)`));
+  }).listen(PORT, () => console.log(`test OIDC provider on ${ISS} (client ${CLIENT}, group ${GROUP}, bootstrap subject dev-admin)`));
 };
 void main();

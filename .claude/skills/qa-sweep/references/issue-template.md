@@ -39,4 +39,4 @@ Rules:
 - One issue per root cause. The same cause seen on three screens is one issue listing three places.
 - Name people, cameras and views as the demo data names them, so anyone can reproduce it.
 - Never paste cookies, tickets, tokens or values from `.env*`.
-- Never describe behavior of a real UNVR or real Zitadel: sweeps run in mock mode only.
+- Never describe behavior of a real UNVR or a real identity provider: sweeps run in mock mode only.

@@ -23,9 +23,9 @@ The testers also read `references/test-checklist.md`. You don't need to read it.
 
 ## What this sweep can and cannot test
 
-Sweeps run in **mock mode**: simulated cameras, a throwaway test sign-in provider and a real MediaMTX. There is no UNVR and no Zitadel here.
+Sweeps run in **mock mode**: simulated cameras, a throwaway test sign-in provider and a real MediaMTX. There is no UNVR and no real identity provider here.
 
-- Never point a sweep at a real recorder or a real identity provider, and never file a finding that claims real-recorder or real-Zitadel behavior. Those stay listed as not verified in `docs/verification.md`.
+- Never point a sweep at a real recorder or a real identity provider, and never file a finding that claims real-recorder or real-identity-provider behavior. Those stay listed as not verified in `docs/verification.md`.
 - A defect in the mock adapter or the test sign-in provider is a P3 at most, unless it hides a defect in the app.
 - Vantage must never change anything on the recorder. A code path that could write to Protect is a P0 even though the mock cannot show the damage.
 
@@ -146,7 +146,7 @@ Once the fixes have merged, dispatch one **regression tester** on fresh `main`. 
 
 Post the report as a comment on the run issue, and give the same report as your final message:
 
-1. **Coverage:** each batch with the roles, widths and themes tested. List anything nobody could test, and why. Always list "real UNVR" and "real Zitadel" here.
+1. **Coverage:** each batch with the roles, widths and themes tested. List anything nobody could test, and why. Always list "real UNVR" and "real identity provider" here.
 2. **Issues:** every issue this run filed, sorted by severity, as: severity, linked title, status (fixed in PR / open / needs review / needs-info).
 3. **Needs your review:** a full link per item (`https://github.com/cmer/vantage/issues/<n>`), one line each, saying what decision is needed. Most important first.
 4. **Rejected findings:** the count, with a link to the run-issue comment that lists them.

@@ -14,12 +14,12 @@ should be assumed to work.
 | unifi-protect | 5.4.2 | Compiled against its types only |
 | MediaMTX | 1.21.4 (macOS binary) | Run locally with `docker/mediamtx.yml` |
 | UniFi Protect / UNVR Pro | none | Not available |
-| Zitadel | none | Not available |
+| OIDC provider | none (only the test provider) | Not available |
 | Docker image, Compose | none | Docker was not running |
 
 ## Verified
 
-**Automated tests (`pnpm test`, 116 tests):**
+**Automated tests (`pnpm test`, 118 tests):**
 
 The media tests run against an in-memory relay that asks the real auth hook before admitting a
 reader. They show what the gateway decides, not how MediaMTX behaves.
@@ -101,7 +101,7 @@ since the move.
 | Real UNVR: login, camera discovery, snapshots, events, thumbnails, video export, RTSPS relay | No recorder available | Private endpoint shapes or required privileges differ on your Protect version |
 | "Recording now" indicator on a real UNVR | No recorder available | Relies on the camera `isRecording` field and realtime camera updates; a wrong assumption shows a stale or missing REC mark, never extra access |
 | Recording gaps on a real UNVR | No known endpoint | Timeline shows only the overall recorded period |
-| Real Zitadel: login, admission claims, logout, back-channel logout, deactivation detection | No instance available | Claim names, PKCE-plus-refresh behaviour or error codes differ |
+| A real OIDC provider: login, admission claim, logout, back-channel logout, deactivation detection | No instance available | Claim placement, refresh-token or back-channel behaviour, or error codes differ by provider |
 | Docker image and Compose stack | Docker not running | Build errors, native module missing from the standalone output, MediaMTX environment overrides, volume ownership |
 | Persistence across container recreation | Needs Compose | Covered only by the file-level restore test |
 | Browser test suite | Not written | Screens were checked by hand in one desktop browser |
@@ -128,14 +128,15 @@ With `.env` pointing at the recorder and the app running, signed in as an admini
 
 Record the Protect version and the role the Vantage user needed in the table above.
 
-## Checking a real Zitadel
+## Checking a real identity provider
 
 1. Sign in as the bootstrap administrator; Admin > History shows "Became the first administrator".
-2. Sign in as a user from another organization: you land on the signed-out page with "not set up".
-3. Sign in as a new user from the allowed organization: no cameras, role Staff.
-4. Sign out in Vantage: you are returned to the signed-out page and Zitadel's session ends.
-5. With a camera playing, terminate that user's session in Zitadel: video stops and the next click
-   asks for sign-in. Note how long it took.
-6. With a camera playing, deactivate the user in Zitadel: the stream stops within
+2. Sign in as a user whose admission claim does not match: you land on the signed-out page with
+   "not set up".
+3. Sign in as a new user whose claim matches: no cameras, role Staff.
+4. Sign out in Vantage: you are returned to the signed-out page and the provider's session ends.
+5. If the provider supports back-channel logout: with a camera playing, end that user's session at
+   the provider. Video stops and the next click asks for sign-in. Note how long it took.
+6. With a camera playing, disable the user at the provider: the stream stops within
    `OIDC_RECHECK_SECONDS` plus `REVOCATION_SWEEP_SECONDS`. Note the time.
 7. Reactivate the user and confirm they must sign in again.

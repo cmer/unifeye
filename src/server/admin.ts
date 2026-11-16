@@ -119,7 +119,7 @@ export class Admin {
     this.done();
   }
 
-  // ---- users (application access only; identities live in Zitadel) -------
+  // ---- users (application access only; identities live in the identity provider) -------
   updateUser(a: Actor, userId: string, patch: { role?: "admin" | "staff"; status?: "active" | "disabled"; allowPrivateViews?: boolean }) {
     this.admin(a, "user.update");
     const p = z.object({ role: z.enum(["admin", "staff"]).optional(), status: z.enum(["active", "disabled"]).optional(), allowPrivateViews: z.boolean().optional() }).parse(patch);

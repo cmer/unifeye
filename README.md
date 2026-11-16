@@ -4,7 +4,7 @@
 
 A read-only viewer for UniFi Protect cameras on a UNVR Pro. Administrators organize cameras with
 tags, build saved views, decide who sees which camera and share views with people and groups.
-Staff sign in with Zitadel and land on the cameras relevant to their job.
+Staff sign in through your OpenID Connect provider and land on the cameras relevant to their job.
 
 Vantage never changes anything on the recorder: no camera settings, recordings, retention, events
 or Protect users.
@@ -12,14 +12,14 @@ or Protect users.
 | | |
 | --- | --- |
 | Stack | Node.js, TypeScript, Next.js 16, React 19, shadcn/ui, SQLite + Drizzle, MediaMTX |
-| Sign-in | Zitadel OIDC only. No local accounts or passwords exist. |
+| Sign-in | OpenID Connect only, with any standards-compliant provider. No local accounts or passwords exist. |
 | Deployment | One Docker Compose stack: the app and MediaMTX, SQLite on a volume |
 
 ## Where things are
 
 - [docs/architecture.md](docs/architecture.md): how it fits together, the permission model, view and landing rules, media enforcement.
-- [docs/deployment.md](docs/deployment.md): Zitadel registration, configuration reference, networking, backups, restore, upgrades.
-- [docs/verification.md](docs/verification.md): what has been verified and what has not, tested versions, and the steps to check a real UNVR and a real Zitadel.
+- [docs/deployment.md](docs/deployment.md): registering Vantage with your identity provider, configuration reference, networking, backups, restore, upgrades.
+- [docs/verification.md](docs/verification.md): what has been verified and what has not, tested versions, and the steps to check a real UNVR and a real identity provider.
 - [prototype/protect-viewer-mockup.html](prototype/protect-viewer-mockup.html): the standalone clickable prototype. Open it in a browser; everything in it is simulated.
 
 ## Status
@@ -28,7 +28,7 @@ Automated tests cover permissions, views, sign-in, preview, media tickets, migra
 against a mock recorder and an isolated test identity provider. Live video, the HLS fallback and
 revocation of a playing stream were also exercised against a real MediaMTX 1.21.4 process.
 
-**Not yet verified: a real UNVR, a real Zitadel instance, and the Docker image and Compose stack.**
+**Not yet verified: a real UNVR, a real identity provider, and the Docker image and Compose stack.**
 See [docs/verification.md](docs/verification.md) before relying on this in production.
 
 ## Run it locally with simulated cameras
