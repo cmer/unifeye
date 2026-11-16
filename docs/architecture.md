@@ -214,6 +214,13 @@ Video starts muted, and sound plays only after a viewer clicks the speaker (or p
 player), so browsers' autoplay rules never block a stream. One camera plays sound at a time across
 the wall and the player (`src/ui/sound.tsx`); turning one on turns the previous one off.
 
+Whether the viewer wants sound is remembered in the browser (local storage): turning a speaker on
+or off sets it. Opening a camera while it is on moves the sound to that camera, so a viewer turns
+sound on once rather than for every stream; jumping around the timeline keeps it. If the browser
+still refuses to play with sound (typically right after a reload, before any click), the video plays
+muted and the sound comes back on the viewer's next click or key press. Only that refusal mutes; a
+play interrupted by a seek does not.
+
 Whether a stream has sound is decided in the browser once it plays:
 
 - WebRTC: MediaMTX carries Opus, G.711 and LPCM, not AAC. For a stream without any of those it
