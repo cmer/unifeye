@@ -336,7 +336,7 @@ function openViewer(id,t){S.route='viewer';S.pop=null;S.v={cam:id,live:t==null,t
 function render(){
  const sc=$('.scroll'),st=sc?sc.scrollTop:0,u=user(S.actor),e=user(eff());applyTheme();
  let pane;
- if(S.expired)pane=`<div class="scroll">${empty('lock','Your session has expired','Sign in again to continue. No video is shown while you are signed out.','<button class="btn pri" data-a="resume">Sign in with Zitadel (simulated)</button>')}</div>`;
+ if(S.expired)pane=`<div class="scroll">${empty('lock','Your session has expired','Sign in again to continue. No video is shown while you are signed out.','<button class="btn pri" data-a="resume">Sign in (simulated)</button>')}</div>`;
  else if(!e.active)pane=`<div class="scroll">${empty('lock','Account turned off','An administrator has turned off access for this account.')}</div>`;
  else pane={wall,viewer,events,views,admin}[S.route]();
  $('#app').innerHTML=`${sidebar()}<div class="pane">
@@ -477,7 +477,7 @@ function defaultsTab(){const uid=eff(),ad=isAdmin(),u=user(uid),opt=(cur,l)=>`<o
 /* ---------- admin ---------- */
 function admin(){const T=[['users','People'],['groups','Groups'],['access','Camera access'],['tags','Tags'],['preview','See as staff'],['audit','History']];
  return`<div class="scroll"><div class="pg">${pgHead('Admin')}<div class="tabs">${T.map(([k,l])=>`<button class="${S.atab===k?'on':''}" data-a="atab" data-t="${k}">${l}</button>`).join('')}</div>${{
- users:()=>`<p class="note" style="margin-bottom:12px">People show up here after their first sign-in, with no cameras. Passwords and sign-in security are managed in Zitadel.</p><div class="tw"><table><tr><th>Person</th><th>Role</th><th>Groups</th><th class="c">Cameras</th><th class="c">Own views</th><th class="c">Active</th><th></th></tr>${DB.users.map(u=>`<tr><td>${esc(u.name)}<small>${esc(u.label)}</small></td>
+ users:()=>`<p class="note" style="margin-bottom:12px">People show up here after their first sign-in, with no cameras. Passwords and sign-in security are managed by your sign-in provider.</p><div class="tw"><table><tr><th>Person</th><th>Role</th><th>Groups</th><th class="c">Cameras</th><th class="c">Own views</th><th class="c">Active</th><th></th></tr>${DB.users.map(u=>`<tr><td>${esc(u.name)}<small>${esc(u.label)}</small></td>
   <td><select data-c="urole" data-id="${u.id}" ${u.id===S.actor?'disabled title="You cannot change your own role"':''} aria-label="Role"><option value="staff" ${u.role==='staff'?'selected':''}>Staff</option><option value="admin" ${u.role==='admin'?'selected':''}>Admin</option></select></td>
   <td>${DB.groups.filter(g=>g.members.includes(u.id)).map(g=>`<span class="badge">${esc(g.name)}</span>`).join(' ')||'<span class="sub">None yet</span>'}</td>
   <td class="c">${authCams(u.id).length}</td><td class="c"><input type="checkbox" class="sw" data-c="upriv" data-id="${u.id}" ${u.priv?'checked':''} aria-label="May create own views"></td><td class="c"><input type="checkbox" class="sw" data-c="uact" data-id="${u.id}" ${u.active?'checked':''} ${u.id===S.actor?'disabled':''} aria-label="Active"></td>

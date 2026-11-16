@@ -8,7 +8,6 @@ import { schema, type Db } from "../db";
 import { decrypt, hashToken, HttpError, log, newId, randomToken } from "../util";
 import type { Sessions, SessionRow } from "./session";
 
-const ORG_CLAIM = "urn:zitadel:iam:user:resourceowner:id";
 const LOGOUT_EVENT = "http://schemas.openid.net/event/backchannel-logout";
 export const LOGIN_TXN_COOKIE = "vantage_login";
 const TXN_TTL_MS = 10 * 60_000;
@@ -24,7 +23,20 @@ export function safeReturnTo(v: string | null | undefined): string {
 }
 
 /**
- * Zitadel OIDC: the only way to sign in. Authorization Code + PKCE (S256) with a server-side
+ * The values an admission claim carries: a string, an array of strings, or an object whose keys
+ * are the values (the shape some providers use for roles).
+ */
+function claimValues(claims: Record<string, unknown>, name: string): string[] {
+  let v: unknown = claims[name];
+  if (v === undefined && name.includes(".")) v = name.split(".").reduce<unknown>((o, k) => (o && typeof o === "object" ? (o as Record<string, unknown>)[k] : undefined), claims);
+  if (typeof v === "string") return v ? [v] : [];
+  if (Array.isArray(v)) return v.filter((x): x is string => typeof x === "string" && x !== "");
+  if (v && typeof v === "object") return Object.keys(v);
+  return [];
+}
+
+/**
+ * OpenID Connect: the only way to sign in. Works with any standards-compliant provider. Authorization Code + PKCE (S256) with a server-side
  * exchange. Endpoints and signing keys come from discovery on the configured issuer.
  * There is no local account, password or fallback path anywhere in this application.
  */
@@ -63,15 +75,12 @@ export class Oidc {
     this.db.insert(schema.loginTransactions).values({ id: hashToken(cookie), state, nonce, codeVerifier, returnTo: safeReturnTo(returnTo), createdAt: t, expiresAt: t + TXN_TTL_MS }).run();
     const scopes = new Set(c.OIDC_SCOPES.split(/\s+/).filter(Boolean));
     scopes.add("openid");
-    scopes.add("urn:zitadel:iam:user:resourceowner"); // asserts the user's organization in the ID token
-    if (c.OIDC_ALLOWED_ORG_IDS.length === 1) scopes.add(`urn:zitadel:iam:org:id:${c.OIDC_ALLOWED_ORG_IDS[0]}`); // Zitadel also enforces it
-    if (c.OIDC_PROJECT_ID) scopes.add("urn:zitadel:iam:org:projects:roles");
-    const url = oidc.buildAuthorizationUrl(cfg, { redirect_uri: this.redirectUri(), scope: [...scopes].join(" "), state, nonce, code_challenge: await oidc.calculatePKCECodeChallenge(codeVerifier), code_challenge_method: "S256", response_type: "code" });
+    const url = oidc.buildAuthorizationUrl(cfg, { ...Object.fromEntries(c.OIDC_AUTH_PARAMS), redirect_uri: this.redirectUri(), scope: [...scopes].join(" "), state, nonce, code_challenge: await oidc.calculatePKCECodeChallenge(codeVerifier), code_challenge_method: "S256", response_type: "code" });
     return { url: url.toString(), cookie };
   }
 
   /**
-   * Step 2: the redirect back from Zitadel. Order matters:
+   * Step 2: the redirect back from the provider. Order matters:
    *  consume the transaction first (so a replayed callback always fails), then exchange the code
    *  server-side with PKCE, state and nonce checks, then apply admission rules, then map the
    *  exact (issuer, subject) pair to a profile, and only then create a rotated session.
@@ -80,6 +89,7 @@ export class Oidc {
     const c = config();
     const fail = (reason: string, detail?: Record<string, unknown>): never => {
       audit(this.db, { action: "auth.login", outcome: "denied", ip: ctx.ip, detail: { reason, ...detail } });
+      log("warn", "sign-in refused", { reason, ...detail }); // so a misconfigured provider can be diagnosed without signing in
       throw new AdmissionError(reason);
     };
     if (!txnCookie) fail("no_transaction");
@@ -109,13 +119,12 @@ export class Oidc {
     if (claims.iss !== cfg.serverMetadata().issuer || claims.iss !== c.OIDC_ISSUER!.replace(/\/$/, "") && claims.iss !== c.OIDC_ISSUER) fail("unexpected_issuer");
     if (!claims.sub) fail("no_subject");
 
-    // Admission: authenticating at the issuer is not enough. The user must belong to an allowed
-    // organization and, when a project is configured, hold at least one role in it.
-    const org = claims[ORG_CLAIM];
-    if (c.OIDC_ALLOWED_ORG_IDS.length && (typeof org !== "string" || !c.OIDC_ALLOWED_ORG_IDS.includes(org))) fail("organization_not_allowed", { sub: claims.sub });
-    if (c.OIDC_PROJECT_ID) {
-      const roles = claims[`urn:zitadel:iam:org:project:${c.OIDC_PROJECT_ID}:roles`];
-      if (!roles || typeof roles !== "object" || !Object.keys(roles).length) fail("no_project_role", { sub: claims.sub });
+    // Admission: authenticating at the issuer is not enough. When a claim is configured, the ID
+    // token must carry it, with one of the accepted values if any are listed.
+    if (c.OIDC_ADMIT_CLAIM) {
+      const have = claimValues(claims, c.OIDC_ADMIT_CLAIM);
+      const ok = c.OIDC_ADMIT_VALUES.length ? have.some((v) => c.OIDC_ADMIT_VALUES.includes(v)) : have.length > 0;
+      if (!ok) fail("not_admitted", { sub: claims.sub, claim: c.OIDC_ADMIT_CLAIM });
     }
 
     const iss = claims.iss, sub = claims.sub;
@@ -155,7 +164,7 @@ export class Oidc {
     return { token, session, user, returnTo: safeReturnTo(txn!.returnTo) };
   }
 
-  /** Ends the Vantage session immediately and returns Zitadel's end-session URL for the browser. */
+  /** Ends the Vantage session immediately and returns the provider's end-session URL for the browser. */
   async logout(session: SessionRow): Promise<string> {
     const c = config();
     let hint: string | undefined;
@@ -212,10 +221,11 @@ export class Oidc {
 
   /**
    * Lifecycle reconciliation. Back-channel logout covers session termination and sign-out, but
-   * Zitadel does not send it when a user is deactivated, locked or deleted. Each session therefore
-   * holds a refresh token (encrypted, used for nothing else) that is exercised on a schedule:
-   *  - Zitadel rejects it  -> the session is revoked (detected within OIDC_RECHECK_SECONDS).
-   *  - Zitadel unreachable -> nothing is extended; after OIDC_MAX_STALE_SECONDS the session is suspended.
+   * providers generally do not send it when a user is deactivated, locked or deleted. Each session
+   * therefore holds a refresh token (encrypted, used for nothing else) that is exercised on a schedule:
+   *  - provider rejects it  -> the session is revoked (detected within OIDC_RECHECK_SECONDS).
+   *  - provider unreachable -> nothing is extended; after OIDC_MAX_STALE_SECONDS the session is suspended.
+   * A session that received no refresh token is not re-checked; it ends on back-channel logout or its own limits.
    */
   async reconcile(): Promise<{ checked: number; revoked: number; unreachable: number }> {
     const c = config(), out = { checked: 0, revoked: 0, unreachable: 0 };

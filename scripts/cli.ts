@@ -4,9 +4,10 @@
  *   backup             write a verified, consistent backup to BACKUP_DIR
  *   verify <file>      integrity-check a backup and print its schema version
  *   restore <file> [--force]   restore a backup into DATABASE_PATH (stop the app first)
+ *   users              list people who have signed in, with the issuer and subject that identify them
  */
 import { loadConfig } from "../src/server/config";
-import { openDb } from "../src/server/db";
+import { openDb, schema } from "../src/server/db";
 import { backupDatabase, pruneBackups, verifyDatabaseFile } from "../src/server/db/backup";
 import { runMigrations } from "../src/server/db/migrate";
 import { restoreDatabase } from "../src/server/ops/restore";
@@ -20,6 +21,11 @@ const main = async () => {
   else if (cmd === "backup") { const db = openDb(c.DATABASE_PATH); console.log(JSON.stringify(await backupDatabase(db, c.BACKUP_DIR, "manual"))); pruneBackups(c.BACKUP_DIR, c.BACKUP_RETENTION_DAYS); db.$client.close(); }
   else if (cmd === "verify" && args[0]) console.log(JSON.stringify({ ok: true, ...verifyDatabaseFile(args[0]) }));
   else if (cmd === "restore" && args[0]) console.log(JSON.stringify(await restoreDatabase(args[0], c.DATABASE_PATH, { force: args.includes("--force") })));
-  else { console.error("usage: vantage migrate | backup | verify <file> | restore <file> [--force]"); process.exit(2); }
+  else if (cmd === "users") {
+    const db = openDb(c.DATABASE_PATH);
+    for (const u of db.select().from(schema.users).all()) console.log([u.role, u.status, u.email ?? "-", u.name || "-", u.issuer, u.subject].join("\t"));
+    db.$client.close();
+  }
+  else { console.error("usage: vantage migrate | backup | verify <file> | restore <file> [--force] | users"); process.exit(2); }
 };
 main().catch((e) => { console.error(String(e?.message ?? e)); process.exit(1); });

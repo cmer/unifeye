@@ -38,10 +38,23 @@ const schema = z.object({
   /** Optional. When unset the client is public and relies on PKCE alone. */
   OIDC_CLIENT_SECRET: z.string().optional(),
   OIDC_SCOPES: z.string().default("openid profile email offline_access"),
-  /** Zitadel organization IDs whose users may be admitted. Required in production. */
-  OIDC_ALLOWED_ORG_IDS: list,
-  /** When set, the ID token must carry at least one role for this Zitadel project. */
-  OIDC_PROJECT_ID: z.string().optional(),
+  /**
+   * Admission rule: the ID token claim to check (for example `groups` or `roles`). A dotted path
+   * such as `realm_access.roles` is followed when no claim has that exact name.
+   */
+  OIDC_ADMIT_CLAIM: z.string().optional(),
+  /** Accepted values for OIDC_ADMIT_CLAIM. When empty, the claim only has to be present and non-empty. */
+  OIDC_ADMIT_VALUES: list,
+  /**
+   * Extra parameters for the authorization request, as a query string. Google needs
+   * `access_type=offline&prompt=consent` to issue a refresh token. Protocol parameters are refused.
+   */
+  OIDC_AUTH_PARAMS: z
+    .string()
+    .optional()
+    .transform((v) => [...new URLSearchParams((v ?? "").replace(/^\?/, "")).entries()].filter(([k]) => k)),
+  /** Admit everyone the provider authenticates. Only for providers that already restrict who can use this client. */
+  OIDC_ADMIT_ANY: bool(false),
   /** Test-only: permit an http:// issuer. Refused when NODE_ENV=production. */
   OIDC_ALLOW_INSECURE_ISSUER: bool(false),
   BOOTSTRAP_ADMIN_ISSUER: z.string().optional(),
@@ -51,7 +64,7 @@ const schema = z.object({
 
   SESSION_IDLE_MINUTES: int(720, 1),
   SESSION_ABSOLUTE_HOURS: int(168, 1),
-  /** How often each session is re-validated with Zitadel (refresh grant). */
+  /** How often each session is re-validated with the identity provider (refresh grant). */
   OIDC_RECHECK_SECONDS: int(300, 30),
   /** A session that could not be re-validated for this long is suspended. */
   OIDC_MAX_STALE_SECONDS: int(1800, 60),
@@ -85,6 +98,8 @@ const schema = z.object({
 });
 
 export type Config = z.infer<typeof schema>;
+/** Set by Vantage itself on every authorization request; overriding them would weaken the flow. */
+const RESERVED_AUTH_PARAMS = new Set(["client_id", "redirect_uri", "response_type", "response_mode", "scope", "state", "nonce", "code_challenge", "code_challenge_method", "request", "request_uri"]);
 let cached: Config | undefined;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -95,7 +110,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (prod) {
     for (const k of ["OIDC_ISSUER", "OIDC_CLIENT_ID", "TOKEN_ENC_KEY", "MEDIAMTX_HOOK_SECRET", "MEDIAMTX_API_SECRET"] as const)
       if (!c[k]) problems.push(`${k} is required in production`);
-    if (!c.OIDC_ALLOWED_ORG_IDS.length) problems.push("OIDC_ALLOWED_ORG_IDS is required in production");
+    if (!c.OIDC_ADMIT_CLAIM && !c.OIDC_ADMIT_ANY) problems.push("OIDC_ADMIT_CLAIM is required in production (or set OIDC_ADMIT_ANY=1 if the provider already restricts who can sign in)");
     if (c.OIDC_ISSUER && !c.OIDC_ISSUER.startsWith("https://")) problems.push("OIDC_ISSUER must use https");
     if (c.OIDC_ALLOW_INSECURE_ISSUER) problems.push("OIDC_ALLOW_INSECURE_ISSUER is not allowed in production");
     if (c.PROTECT_TLS_INSECURE) problems.push("PROTECT_TLS_INSECURE is not allowed in production");
@@ -106,6 +121,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       if (!c[k]) problems.push(`${k} is required when VANTAGE_MODE=real`);
   if (c.TOKEN_ENC_KEY && Buffer.from(c.TOKEN_ENC_KEY, "base64").length !== 32)
     problems.push("TOKEN_ENC_KEY must be base64 of exactly 32 bytes");
+  for (const [k] of c.OIDC_AUTH_PARAMS)
+    if (RESERVED_AUTH_PARAMS.has(k)) problems.push(`OIDC_AUTH_PARAMS cannot set ${k}`);
+  if (c.OIDC_ADMIT_CLAIM && c.OIDC_ADMIT_ANY) problems.push("OIDC_ADMIT_CLAIM and OIDC_ADMIT_ANY cannot both be set");
+  if (c.OIDC_ADMIT_VALUES.length && !c.OIDC_ADMIT_CLAIM) problems.push("OIDC_ADMIT_VALUES needs OIDC_ADMIT_CLAIM");
   if (!!c.BOOTSTRAP_ADMIN_ISSUER !== !!c.BOOTSTRAP_ADMIN_SUBJECT)
     problems.push("BOOTSTRAP_ADMIN_ISSUER and BOOTSTRAP_ADMIN_SUBJECT must be set together");
   if (problems.length) throw new Error("Invalid configuration:\n- " + problems.join("\n- "));

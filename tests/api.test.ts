@@ -43,7 +43,7 @@ describe("authentication boundary", () => {
   });
   it("has no local login, registration or password routes, and no credential tables", async () => {
     for (const p of ["/auth/register", "/auth/password", "/auth/reset", "/auth/local", "/login"]) for (const m of ["GET", "POST"]) expect((await call(null, m, p)).status).toBe(404);
-    expect((await call(null, "POST", "/auth/login", { body: { username: "a", password: "b" } })).status).toBe(404); // login is a GET redirect to Zitadel only
+    expect((await call(null, "POST", "/auth/login", { body: { username: "a", password: "b" } })).status).toBe(404); // login is a GET redirect to the identity provider only
     const ddl = (f.db.$client.prepare("select sql from sqlite_master where sql is not null").all() as { sql: string }[]).map((r) => r.sql).join("\n").toLowerCase();
     expect(ddl).not.toMatch(/password|credential|recovery|totp/);
   });

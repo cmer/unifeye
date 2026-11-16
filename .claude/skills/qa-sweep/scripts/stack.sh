@@ -26,7 +26,7 @@ mtx_bin() {
 
 stop; mkdir -p "$dir"; : > "$dir/pids"
 [[ -d node_modules ]] || pnpm install --frozen-lockfile >/dev/null
-export VANTAGE_MODE=mock SEED_DEMO=1 APP_URL="$url" OIDC_ISSUER="http://localhost:$idp" OIDC_ALLOW_INSECURE_ISSUER=1 OIDC_CLIENT_ID=vantage-dev OIDC_ALLOWED_ORG_IDS=org-dev
+export VANTAGE_MODE=mock SEED_DEMO=1 APP_URL="$url" OIDC_ISSUER="http://localhost:$idp" OIDC_ALLOW_INSECURE_ISSUER=1 OIDC_CLIENT_ID=vantage-dev OIDC_ADMIT_CLAIM=groups OIDC_ADMIT_VALUES=vantage
 export BOOTSTRAP_ADMIN_ISSUER="http://localhost:$idp" BOOTSTRAP_ADMIN_SUBJECT=dev-admin TOKEN_ENC_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= MEDIAMTX_HOOK_SECRET=qa-hook MEDIAMTX_API_SECRET=qa-api
 export DATABASE_PATH="$dir/data/vantage.sqlite" BACKUP_DIR="$dir/data/backups" MEDIA_CACHE_DIR="$dir/data/cache"
 export MEDIAMTX_API_URL="http://127.0.0.1:$api" MEDIAMTX_HLS_URL="http://127.0.0.1:$hls" MEDIAMTX_WHEP_URL="http://127.0.0.1:$whep" TEST_OIDC_PORT=$idp

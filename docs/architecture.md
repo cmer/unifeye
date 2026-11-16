@@ -9,7 +9,7 @@ flowchart LR
   B -. WebRTC media, UDP/TCP 8189 .-> M[MediaMTX]
   A -- control API, WHEP, HLS (internal) --> M
   M -- auth hook for every reader --> A
-  A -- OIDC: discovery, token, JWKS --> Z[Zitadel]
+  A -- OIDC: discovery, token, JWKS --> Z[OIDC provider]
   Z -- back-channel logout --> A
   A -- read-only HTTPS + WebSocket --> N[UNVR Pro / Protect]
   M -- RTSPS pull, on demand --> N
@@ -23,7 +23,7 @@ HLS and RTSP listeners are internal. Protect credentials and RTSPS URLs never le
 | Data | Owner | What Vantage does |
 | --- | --- | --- |
 | Cameras, names, capabilities, live video, recordings, events | UniFi Protect | Reads and relays. Stores only a stable reference `(nvr id, Protect camera id)` and a disposable metadata cache. |
-| Identity, credentials, MFA, recovery | Zitadel | Authenticates through OIDC. |
+| Identity, credentials, MFA, recovery | OIDC provider | Authenticates through OIDC. |
 | Profiles, roles, groups, tags, grants, views, sharing, defaults, sessions, preferences, audit | Vantage (SQLite) | Authoritative. |
 
 No video, snapshot or recording is stored in SQLite. Playback windows and clips live in a
@@ -38,7 +38,7 @@ size- and age-bounded directory.
 | `src/server/authz/views.ts` | Saved views, sanitized resolution, landing precedence. |
 | `src/server/authz/preview.ts` | "See as staff". |
 | `src/server/admin.ts` | Every change to Vantage data: validation, transaction, audit, cache invalidation. |
-| `src/server/auth/` | Zitadel OIDC, sessions, back-channel logout, lifecycle re-validation. |
+| `src/server/auth/` | OIDC sign-in, sessions, back-channel logout, lifecycle re-validation. |
 | `src/server/protect/` | Adapter contract, the real `unifi-protect` adapter, the mock adapter. |
 | `src/server/media/` | Media gateway and revocation sweep (`gateway.ts`), the relay interface (`relay.ts`) and its MediaMTX adapter (`mediamtx.ts`), playback windows, clip export. |
 | `src/server/testing/` | Test fixture and the in-memory relay used by the automated tests. |
@@ -81,7 +81,7 @@ exports store theirs in `export_jobs`; the others keep it in memory.
 `Access` (`src/server/authz/access.ts`) is the only place that decides whether a grant still holds:
 
 - the session is live: not revoked, inside its idle and absolute limits, its user active, and
-  re-validated with Zitadel recently enough;
+  re-validated with the provider recently enough;
 - the preview, if there was one, is live: not ended or timed out, the administrator still an
   administrator, the subject still active staff;
 - the subject can still see the camera according to the policy.
@@ -102,7 +102,7 @@ preview expiries, which fires the signal, and sweeps the relay regardless. The c
 every 30 seconds and signals only when the inventory changed; a new name or recorder metadata
 refreshes the description cache without a signal, because neither is an input to any decision.
 
-A session suspended because Zitadel could not be reached is not ended and produces no signal. Its
+A session suspended because the provider could not be reached is not ended and produces no signal. Its
 requests fail at once and the timer's relay sweep stops its streams; an open event feed closes at
 the next event or signal.
 
@@ -149,8 +149,9 @@ empty with a way to other views; nothing is borrowed to fill it.
 - The ID token is checked by `openid-client` and its signature is verified again explicitly against
   the issuer's JWKS, because the library skips the signature check for tokens that arrive directly
   from the token endpoint.
-- Admission: the `urn:zitadel:iam:user:resourceowner:id` claim must be in `OIDC_ALLOWED_ORG_IDS`.
-  With `OIDC_PROJECT_ID` set, the user must also hold a role in that project.
+- Admission: the ID token claim named by `OIDC_ADMIT_CLAIM` must carry one of
+  `OIDC_ADMIT_VALUES` (or just be non-empty when no values are listed). Production requires a
+  claim unless `OIDC_ADMIT_ANY` is set.
 - Identity is the exact `(issuer, subject)` pair. Email is a display attribute and is never used to
   find or link a profile.
 - First sign-in creates a profile with no cameras and no administrator rights.
@@ -167,8 +168,8 @@ empty with a way to other views; nothing is borrowed to fill it.
 | Event | Mechanism | Delay until Vantage knows |
 | --- | --- | --- |
 | Sign out in Vantage | Session revoked directly | Immediate |
-| Zitadel session ended or user signed out | Back-channel logout | Zitadel's delivery time (retries up to 5 minutes) |
-| User deactivated, locked or deleted in Zitadel | Refresh-token check on a schedule; Zitadel does not send back-channel logout for these | Up to `OIDC_RECHECK_SECONDS` (default 5 minutes) |
+| Provider session ended or user signed out | Back-channel logout, if the provider sends it | The provider's delivery time |
+| User disabled or deleted at the provider | Refresh-token check on a schedule; providers usually send no back-channel logout for these | Up to `OIDC_RECHECK_SECONDS` (default 5 minutes) |
 | Disabled in Vantage, grant or group change | Policy invalidation | Immediate |
 | "See as staff" exited or no longer allowed | Preview ended directly | Immediate |
 | Session or preview time limit passes | Noticed by the next request, or by the timer | Up to `REVOCATION_SWEEP_SECONDS` |
@@ -176,9 +177,9 @@ empty with a way to other views; nothing is borrowed to fill it.
 Every row ends in the access signal described under [Standing access](#standing-access). Once
 Vantage knows, pages and API calls fail at once and playing media stops within
 `REVOCATION_SWEEP_SECONDS` (default 10, maximum 30). Clip downloads and the event feed stop on the
-same signal. If Zitadel is unreachable, no one can sign in,
+same signal. If the provider is unreachable, no one can sign in,
 existing sessions are not extended, and a session that could not be re-validated for
-`OIDC_MAX_STALE_SECONDS` is suspended until Zitadel answers again.
+`OIDC_MAX_STALE_SECONDS` is suspended until the provider answers again.
 
 ## Media enforcement
 

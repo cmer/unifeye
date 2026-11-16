@@ -10,7 +10,7 @@ export const SESSION_COOKIE = "vantage_session";
 /**
  * Server-managed sessions for SSO identities. The cookie holds an opaque random token; only its
  * SHA-256 is stored. A session is usable only while: not revoked, inside its idle and absolute
- * lifetimes, its user is active, and it was re-validated with Zitadel recently enough.
+ * lifetimes, its user is active, and it was re-validated with the identity provider recently enough.
  */
 export class Sessions {
   private ended = new Set<() => void>();
@@ -29,7 +29,7 @@ export class Sessions {
     if (!s || s.revokedAt) return "gone";
     if (t >= s.idleExpiresAt || t >= s.absoluteExpiresAt) return "expired";
     if (!this.policy.activeUser(s.userId)) return "user_inactive";
-    // Provider re-validation overdue (Zitadel unreachable for too long): suspend, do not extend.
+    // Provider re-validation overdue (provider unreachable for too long): suspend, do not extend.
     if (s.refreshTokenEnc && t - s.lastValidatedAt > config().OIDC_MAX_STALE_SECONDS * 1000) return "suspended";
     return "live";
   }

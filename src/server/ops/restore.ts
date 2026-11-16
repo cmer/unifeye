@@ -9,7 +9,7 @@ import { runMigrations } from "../db/migrate";
  *  2. An existing database is moved aside (never deleted) unless the target is empty.
  *  3. Stale WAL files are removed, then the restored copy is opened and checked against this build.
  *  4. Every session, preview and pending download is invalidated: people sign in again through
- *     Zitadel, and no media capability from before the restore survives.
+ *     the identity provider, and no media capability from before the restore survives.
  * Secrets and configuration (.env) are not in the backup and must be restored separately.
  */
 export async function restoreDatabase(backupFile: string, dbPath: string, opts: { force?: boolean; migrationsFolder?: string } = {}) {

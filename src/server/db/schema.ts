@@ -4,7 +4,7 @@ import { check, index, integer, primaryKey, sqliteTable, text, uniqueIndex } fro
 /**
  * Vantage owns everything in this file. Protect stays authoritative for cameras, video and events;
  * the `cameras` table holds only stable references plus a disposable metadata cache.
- * There are deliberately no credential or password tables: Zitadel is the only way to sign in.
+ * There are deliberately no credential or password tables: OIDC is the only way to sign in.
  */
 const id = () => text("id").primaryKey();
 const ts = (name: string) => integer(name, { mode: "number" }); // UTC milliseconds
@@ -34,7 +34,7 @@ export const sessions = sqliteTable(
     id: id(),
     tokenHash: text("token_hash").notNull(), // sha-256 of the opaque cookie value
     userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-    providerSid: text("provider_sid"), // Zitadel `sid`, for back-channel logout
+    providerSid: text("provider_sid"), // provider `sid`, for back-channel logout
     idTokenEnc: text("id_token_enc"), // encrypted; used only as id_token_hint at logout
     refreshTokenEnc: text("refresh_token_enc"), // encrypted; used only for lifecycle re-validation
     csrfSecret: text("csrf_secret").notNull(),

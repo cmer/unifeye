@@ -101,7 +101,7 @@ export async function handleApi(req: Request): Promise<Response> {
   return res;
 }
 
-// ---- authentication (Zitadel OIDC only; there is no other login route) -------
+// ---- authentication (OIDC only; there is no other login route) -------
 route("GET", "/auth/login", { public: true, rate: "auth" }, async ({ s, url }) => {
   try {
     const { url: to, cookie: txn } = await s.oidc.begin(url.searchParams.get("returnTo"));
@@ -120,7 +120,7 @@ route("GET", "/auth/callback", { public: true, rate: "auth" }, async ({ s, req, 
   } catch (e) {
     const reason = (e as { reason?: unknown })?.reason;
     if (typeof reason !== "string") log("warn", "login callback failed", { error: e });
-    const code = typeof reason === "string" ? (["organization_not_allowed", "no_project_role", "user_disabled"].includes(reason) ? "not_admitted" : "login_failed") : "sso_unavailable";
+    const code = typeof reason === "string" ? (["not_admitted", "user_disabled"].includes(reason) ? "not_admitted" : "login_failed") : "sso_unavailable";
     return redirect(`/signed-out?error=${code}`, [clear]);
   }
 });

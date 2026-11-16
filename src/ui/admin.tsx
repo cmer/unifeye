@@ -11,9 +11,9 @@ import { fail, Page, PageHeader, Select, useApp } from "./app";
 import { Card, landingReason, Pill, Row, type Overview } from "./manage-views";
 
 const TH = "px-3 py-2.5 text-left text-xs font-medium whitespace-nowrap text-muted-foreground", TD = "border-t px-3 py-2.5 align-middle";
-const ACTION: Record<string, string> = { "auth.login": "Signed in", "auth.logout": "Signed out", "auth.backchannel_logout": "Signed out by Zitadel", "auth.provider_revoked": "Access ended by Zitadel", "user.provisioned": "First sign-in", "admin.bootstrap": "Became the first administrator", "user.update": "Changed a person", "group.create": "Added a group", "group.update": "Changed a group", "group.delete": "Deleted a group", "group.member.add": "Added to a group", "group.member.remove": "Removed from a group", "grant.add": "Gave camera access", "grant.revoke": "Removed camera access", "tag.create": "Added a tag", "tag.rename": "Renamed a tag", "tag.delete": "Removed a tag", "camera.tag": "Tagged a camera", "camera.untag": "Untagged a camera", "view.create": "Created a view", "view.update": "Changed a view", "view.convert": "Changed a view's type", "view.delete": "Deleted a view", "view.share": "Changed sharing", "default.set": "Set a starting view", "preview.start": "Started viewing as", "preview.exit": "Stopped viewing as", "preview.end": "Viewing as ended", "preview.mutation": "Tried to make a change while viewing as", "preview.use": "Used an expired view-as session", "clip.export": "Saved a clip", "admin.access": "Tried to open Admin", "system.start": "Vantage started" };
+const ACTION: Record<string, string> = { "auth.login": "Signed in", "auth.logout": "Signed out", "auth.backchannel_logout": "Signed out by the sign-in provider", "auth.provider_revoked": "Access ended by the sign-in provider", "user.provisioned": "First sign-in", "admin.bootstrap": "Became the first administrator", "user.update": "Changed a person", "group.create": "Added a group", "group.update": "Changed a group", "group.delete": "Deleted a group", "group.member.add": "Added to a group", "group.member.remove": "Removed from a group", "grant.add": "Gave camera access", "grant.revoke": "Removed camera access", "tag.create": "Added a tag", "tag.rename": "Renamed a tag", "tag.delete": "Removed a tag", "camera.tag": "Tagged a camera", "camera.untag": "Untagged a camera", "view.create": "Created a view", "view.update": "Changed a view", "view.convert": "Changed a view's type", "view.delete": "Deleted a view", "view.share": "Changed sharing", "default.set": "Set a starting view", "preview.start": "Started viewing as", "preview.exit": "Stopped viewing as", "preview.end": "Viewing as ended", "preview.mutation": "Tried to make a change while viewing as", "preview.use": "Used an expired view-as session", "clip.export": "Saved a clip", "admin.access": "Tried to open Admin", "system.start": "Vantage started" };
 
-/** Vantage's own data only: people's access, groups, camera grants and tags. Nothing here changes the recorder or Zitadel. */
+/** Vantage's own data only: people's access, groups, camera grants and tags. Nothing here changes the recorder or the identity provider. */
 export function Admin() {
   const { tz, reload } = useApp();
   const [tab, setTab] = useState("people");
@@ -38,7 +38,7 @@ export function Admin() {
 
       {tab === "people" && (
         <>
-          <p className="mb-3 text-sm text-muted-foreground">People appear here after they first sign in. Passwords are managed in Zitadel.</p>
+          <p className="mb-3 text-sm text-muted-foreground">People appear here after they first sign in. Passwords are managed by your sign-in provider.</p>
           <div className="overflow-auto rounded-xl border"><table className="w-full text-sm"><thead><tr><th className={TH}>Person</th><th className={TH}>Role</th><th className={TH}>Groups</th><th className={TH}>Cameras</th><th className={TH}>Can create views</th><th className={TH}>Active</th><th className={TH} /></tr></thead><tbody>
             {ov.users.map((u) => (
               <tr key={u.id}><td className={TD}>{nameOf(u)}<div className="text-xs text-muted-foreground">{u.email}</div></td>
