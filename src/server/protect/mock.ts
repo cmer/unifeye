@@ -105,6 +105,8 @@ export class MockProtectAdapter implements ProtectAdapter {
   private offset(ms: number): string[] {
     return process.env.MOCK_PATTERN === "clock" ? ["-ss", String(Math.floor(ms / 1000) % 60)] : [];
   }
+  /** Quiet pink noise, like a room microphone, so the sound controls and the level meter have something to show. */
+  private static readonly ROOM = "anoisesrc=c=pink:a=0.08:r=48000";
   async snapshot(id: string, opts: { width?: number; atMs?: number; signal?: AbortSignal } = {}): Promise<Buffer> {
     this.guard();
     const c = this.cam(id), w = Math.min(Math.max(opts.width ?? 640, 160), 1280), h = Math.round((w * 9) / 16 / 2) * 2;
@@ -117,7 +119,9 @@ export class MockProtectAdapter implements ProtectAdapter {
     const c = this.cam(id);
     if (!c.online || !this.opts.rtspPublishUrl) return null;
     const [w, h, fps] = quality === "focus" ? [1280, 720, 15] : [640, 360, 10];
-    return { kind: "command", command: `ffmpeg -hide_banner -loglevel error -re -f lavfi -i ${this.source(c, w, h, fps)} -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g ${fps * 2} -bf 0 -f rtsp -rtsp_transport tcp ${this.opts.rtspPublishUrl("$MTX_PATH")}` };
+    // Like Protect, a camera with a microphone sends its sound twice: AAC (for HLS) and Opus (for WebRTC).
+    const audio = c.mic ? `-re -f lavfi -i ${MockProtectAdapter.ROOM} -map 0:v -map 1:a -map 1:a -c:a:0 aac -b:a:0 32k -c:a:1 libopus -b:a:1 32k` : "";
+    return { kind: "command", command: `ffmpeg -hide_banner -loglevel error -re -f lavfi -i ${this.source(c, w, h, fps)} ${audio} -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g ${fps * 2} -bf 0 -f rtsp -rtsp_transport tcp ${this.opts.rtspPublishUrl("$MTX_PATH")}`.replace(/ {2,}/g, " ") };
   }
   async exportClip(id: string, startMs: number, endMs: number, destPath: string, opts: { quality?: "wall" | "focus"; signal?: AbortSignal } = {}) {
     this.guard();
@@ -126,7 +130,8 @@ export class MockProtectAdapter implements ProtectAdapter {
     if (this.adaptive.has(id)) return this.adaptiveClip(c, r[0][0] - 2000, r[r.length - 1][1], destPath, opts);
     // Like a real recorder, the clip covers what exists inside the window. Keyframe every second.
     const [a, b] = [r[0][0], r[r.length - 1][1]], [w, h] = opts.quality === "focus" ? [1280, 720] : [640, 360];
-    await ffmpeg(["-f", "lavfi", ...this.offset(a), "-t", ((b - a) / 1000).toFixed(3), "-i", this.source(c, w, h, 10), "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "10", "-movflags", "+faststart", "-y", "-f", "mp4", destPath], opts.signal);
+    const len = ((b - a) / 1000).toFixed(3), audio = c.mic ? ["-f", "lavfi", "-t", len, "-i", MockProtectAdapter.ROOM, "-c:a", "aac", "-b:a", "32k"] : [];
+    await ffmpeg(["-f", "lavfi", ...this.offset(a), "-t", len, "-i", this.source(c, w, h, 10), ...audio, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "10", "-movflags", "+faststart", "-y", "-f", "mp4", destPath], opts.signal);
   }
 
   /** Motion stretches inside [a, b) for an adaptive camera: seconds 12 to 21 of every half minute. */

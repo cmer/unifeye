@@ -9,6 +9,7 @@ import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitl
 import { api, dateInput, dayBounds, EVENT_COLOR, EVENT_LABEL, fmtDay, fmtShort, fmtTime, mediaUrl, timeInput, zonedParts, zonedToUtc, type ActivityEvent, type Camera } from "./api";
 import { Empty, fail, RecMark, Select, useApp, useRecording } from "./app";
 import { LiveVideo, type Transport } from "./live";
+import { applySound, claimSound, play, setSound, SoundButton, useSound, watchAudio } from "./sound";
 
 type Ranges = { ranges: [number, number][]; precision: "exact" | "bounds" };
 /**
@@ -70,6 +71,12 @@ export function Player({ cameraId }: { cameraId: string }) {
   const [infos, setInfos] = useState<Record<string, WinInfo | "none">>({});
   const infoReq = useRef(new Map<string, AbortController>()), handed = useRef(""), frame = useRef<() => void>(() => {});
   const hiVideo = useRef<HTMLVideoElement>(null);
+  /** Whether the live stream and the recording carry sound (null while unknown), and the element the level meter listens to. */
+  const [liveAudio, setLiveAudio] = useState<boolean | null>(null), [recAudio, setRecAudio] = useState<boolean | null>(null);
+  const [liveEl, setLiveEl] = useState<HTMLVideoElement | null>(null), [recEl, setRecEl] = useState<HTMLVideoElement | null>(null);
+  const soundOn = useSound() === cameraId;
+  // Opening a camera while sound is on (it was playing for another one) brings the sound along.
+  useEffect(() => claimSound(cameraId), [cameraId]);
   const video = useRef<HTMLVideoElement>(null), nextVideo = useRef<HTMLVideoElement>(null), box = useRef<HTMLDivElement>(null), tl = useRef<HTMLDivElement>(null), lastMove = useRef(0), lastTrimSeek = useRef(0);
 
   useEffect(() => { api<{ cameras: Camera[] }>("/cameras").then((r) => setCam(r.cameras.find((c) => c.id === cameraId) ?? "gone")).catch(fail); }, [cameraId, me.preview?.subject.id]);
@@ -185,7 +192,11 @@ export function Player({ cameraId }: { cameraId: string }) {
   }; });
   useEffect(() => { if (live) return; let id = 0; const tick = () => { frame.current(); id = requestAnimationFrame(tick); }; id = requestAnimationFrame(tick); return () => cancelAnimationFrame(id); }, [live]);
   useEffect(() => { const v = video.current; if (v) v.playbackRate = speed; }, [speed, src]);
-  useEffect(() => { const v = video.current; if (!v || live) return; if (playing) void v.play().catch(() => {}); else v.pause(); }, [playing, live, src]);
+  useEffect(() => { const v = video.current; if (!v || live) return; if (playing) play(v); else v.pause(); }, [playing, live, src]);
+  // Each recorded window is its own element: find out whether it has sound, and apply the sound setting to it.
+  useEffect(() => { const v = video.current; if (!v || live) return; setRecEl(v); return watchAudio(v, setRecAudio); }, [live, curKey, ready]);
+  useEffect(() => { const v = video.current; if (v && !live) applySound(v, soundOn && recAudio === true); }, [soundOn, recAudio, live, curKey, ready]);
+  const hasAudio = live ? liveAudio : recAudio;
   const nextRange = rec?.ranges.find(([a]) => a > t);
 
   const zoomBy = (d: number) => {
@@ -204,6 +215,7 @@ export function Player({ cameraId }: { cameraId: string }) {
       if (e.defaultPrevented || (e.target as HTMLElement).closest("input,select,textarea,[role=dialog]")) return;
       if (e.key === "Escape") { if (jump) setJump(false); else if (!document.fullscreenElement) back(); return; }
       if (e.key === " ") { e.preventDefault(); toggle(); } else if (e.key === "ArrowLeft") seek(t - 10000); else if (e.key === "ArrowRight") seek(t + 10000);
+      else if (e.key.toLowerCase() === "m" && hasAudio) setSound(soundOn ? null : cameraId);
       else if (e.key === "-") zoomBy(-1); else if (e.key === "=" || e.key === "+") zoomBy(1);
     };
     if (!lastMove.current) lastMove.current = Date.now();
@@ -234,9 +246,9 @@ export function Player({ cameraId }: { cameraId: string }) {
 
   return (
     <div ref={box} className="relative min-h-0 flex-1 overflow-hidden bg-black text-white">
-      {live ? <LiveVideo cameraId={cameraId} quality="focus" active={!down} online={cam.online && !down} onTransport={setVia} />
+      {live ? <LiveVideo cameraId={cameraId} quality="focus" active={!down} online={cam.online && !down} onTransport={setVia} sound={soundOn} onAudio={setLiveAudio} onMedia={setLiveEl} />
         : [<video ref={video} key={curKey} src={src} playsInline muted className="absolute inset-0 size-full object-contain"
-            onLoadedMetadata={(e) => { const v = e.currentTarget; v.currentTime = Math.max(0, (target.ms - clipStart) / 1000); v.playbackRate = speed; if (playing) void v.play().catch(() => {}); }}
+            onLoadedMetadata={(e) => { const v = e.currentTarget; v.currentTime = Math.max(0, (target.ms - clipStart) / 1000); v.playbackRate = speed; if (playing) play(v); }}
             onTimeUpdate={(e) => { setT(clipStart + e.currentTarget.currentTime * 1000); if (armed !== ws + W && ws + 2 * W < now() - 2000) setArmed(ws + W); }}
             onEnded={advance} onError={() => setNoRec(true)} />,
           hiSrc && <video ref={hiVideo} key={`${curKey}:hi`} src={hiSrc} preload="auto" playsInline muted aria-hidden style={{ visibility: "hidden" }} className="absolute inset-0 size-full object-contain" />,
@@ -311,6 +323,7 @@ export function Player({ cameraId }: { cameraId: string }) {
           <Button variant="ghost" size="icon" className={ghost} aria-label="Zoom in" title="Zoom in (+)" disabled={zoom === ZOOMS.length - 1} onClick={() => zoomBy(1)}><ZoomIn /></Button>
           {!live && <select aria-label="Playback speed" value={speed} onChange={(e) => setSpeed(Number(e.target.value))} className="h-9 rounded-lg bg-transparent px-1 text-sm text-white outline-none hover:bg-white/15 [&>option]:text-black">{[0.5, 1, 2, 4, 8].map((x) => <option key={x} value={x}>{x}×</option>)}</select>}
           <Button variant="ghost" className={ghost} disabled={down} onClick={startTrim}><Download /><span className="max-sm:hidden">Save clip</span></Button>
+          <SoundButton cameraId={cameraId} has={hasAudio} media={live ? liveEl : recEl} recorded={!live} />
           <Button variant="ghost" size="icon" className={ghost} aria-label="Full screen" onClick={() => { const el = box.current!, v = video.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null; if (document.fullscreenElement) void document.exitFullscreen(); else if (el.requestFullscreen) el.requestFullscreen().catch(() => toast("Full screen isn't available")); else v?.webkitEnterFullscreen?.(); }}><Maximize /></Button>
         </div>
         )}

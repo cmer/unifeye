@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, mediaUrl, previewToken } from "./api";
+import { applySound, watchAudio } from "./sound";
 
 type State = "idle" | "connecting" | "playing" | "unavailable" | "error";
 
@@ -34,8 +35,15 @@ const skipWebrtc = () => {
 /** How live video is reaching the browser: WebRTC (real-time) or the HLS fallback (a few seconds behind). */
 export type Transport = "webrtc" | "hls";
 
-export function LiveVideo({ cameraId, quality, active, online, className = "", onGone, onTransport }: { cameraId: string; quality: "wall" | "focus"; active: boolean; online: boolean; className?: string; onGone?: () => void; /** Reports the transport while video is playing, null otherwise. */ onTransport?: (t: Transport | null) => void }) {
+export function LiveVideo({ cameraId, quality, active, online, className = "", onGone, onTransport, sound = false, onAudio, onMedia }: {
+  cameraId: string; quality: "wall" | "focus"; active: boolean; online: boolean; className?: string; onGone?: () => void;
+  /** Reports the transport while video is playing, null otherwise. */ onTransport?: (t: Transport | null) => void;
+  /** Play this camera's sound. Off by default; see `sound.tsx`. */ sound?: boolean;
+  /** Reports whether the playing stream carries sound, null while unknown or not playing. */ onAudio?: (has: boolean | null) => void;
+  /** The video element, for the level meter. */ onMedia?: (el: HTMLVideoElement | null) => void;
+}) {
   const video = useRef<HTMLVideoElement>(null);
+  const [audio, setAudio] = useState<boolean | null>(null);
   const [raw, setState] = useState<State>("idle");
   const [attempt, setAttempt] = useState(0);
   const [still, setStill] = useState(0);
@@ -51,7 +59,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
   useEffect(() => {
     if (!active || !online) return;
     const el = video.current!;
-    let closed = false, pc: RTCPeerConnection | undefined, resource: string | null = null, hls: { destroy(): void } | undefined, timer: ReturnType<typeof setTimeout> | undefined;
+    let closed = false, unwatch: (() => void) | undefined, pc: RTCPeerConnection | undefined, resource: string | null = null, hls: { destroy(): void } | undefined, timer: ReturnType<typeof setTimeout> | undefined, timer2: ReturnType<typeof setTimeout> | undefined;
     const retry = () => { if (closed) return; setState("connecting"); timer = setTimeout(() => setAttempt((n) => n + 1), Math.min(3000 * (attempt + 1), 15000)); };
     const viaHls = async () => {
       if (closed) return;
@@ -67,14 +75,19 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
           if (closed || !Hls.isSupported()) return setState("error");
           const h = new Hls({ lowLatencyMode: true, xhrSetup: (xhr) => { const t = previewToken(); if (t) xhr.setRequestHeader("x-vantage-preview", t); } });
           h.on(Hls.Events.ERROR, (_e, d) => { if (d.fatal) { h.destroy(); if (attempt < 4) retry(); else setState("error"); } });
+          // The playlist names its codecs, so whether there is sound is known before anything plays.
+          h.on(Hls.Events.MANIFEST_PARSED, (_e, d) => { if (!closed) setAudio(d.audioTracks.length > 0 || d.levels.some((l) => !!l.audioCodec)); });
           h.loadSource(src); h.attachMedia(el); hls = h;
         }
+        if (!hls) unwatch = watchAudio(el, (has) => { if (!closed) setAudio(has); });
         el.onplaying = () => { if (!closed) { setVia("hls"); setState("playing"); } };
         void el.play().catch(() => {});
       } catch { setState("error"); }
     };
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reflects the connection this effect is opening
     setState("connecting");
+    setAudio(null);
+    el.muted = true; // every connection starts muted, so autoplay is always allowed; the sound effect below unmutes once playing
     if (webrtcSkipped()) { void viaHls(); return cleanup; }
     // Media never arrived: this network cannot reach the WebRTC port. Switch transport and remember it.
     const unreachable = () => {
@@ -93,10 +106,20 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
         pc = new RTCPeerConnection();
         pc.addTransceiver("video", { direction: "recvonly" });
         pc.addTransceiver("audio", { direction: "recvonly" });
-        pc.ontrack = (e) => { if (!closed && el.srcObject !== e.streams[0]) el.srcObject = e.streams[0]; };
+        // A camera without sound WebRTC can carry still gets an audio track: MediaMTX answers with a
+        // silent placeholder that never sends a packet. So sound counts only once packets arrive
+        // (the track unmutes); still muted a few seconds after connecting means no audio.
+        let audioTrack: MediaStreamTrack | undefined;
+        const decideAudio = () => {
+          if (!audioTrack) return setAudio(false);
+          if (!audioTrack.muted) return setAudio(true);
+          audioTrack.onunmute = () => { if (!closed) setAudio(true); };
+          timer2 = setTimeout(() => { if (!closed && audioTrack!.muted) setAudio(false); }, 3000);
+        };
+        pc.ontrack = (e) => { if (e.track.kind === "audio") audioTrack = e.track; if (!closed && el.srcObject !== e.streams[0]) el.srcObject = e.streams[0]; };
         pc.onconnectionstatechange = () => {
           if (closed || !pc) return;
-          if (pc.connectionState === "connected") { connected = true; clearTimeout(timer); setVia("webrtc"); setState("playing"); }
+          if (pc.connectionState === "connected") { connected = true; clearTimeout(timer); setVia("webrtc"); decideAudio(); setState("playing"); }
           else if (pc.connectionState === "failed" && !connected) unreachable();
           // Also fires when the server ends the stream because access was removed; the retry then gets a clean "not available".
           else if (pc.connectionState === "failed" || pc.connectionState === "disconnected" || pc.connectionState === "closed") retry();
@@ -122,7 +145,8 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
     })();
     function cleanup() {
       closed = true;
-      clearTimeout(timer);
+      unwatch?.();
+      clearTimeout(timer); clearTimeout(timer2);
       pc?.close();
       hls?.destroy();
       if (resource) void api(resource.replace(/^\/api/, ""), { method: "DELETE" }).catch(() => {});
@@ -135,10 +159,16 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
   const shown = state === "playing" ? via : null;
   useEffect(() => { onTransport?.(shown); }, [shown]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => onTransport?.(null), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const hasAudio = state === "playing" ? audio : null;
+  useEffect(() => { onAudio?.(hasAudio); }, [hasAudio]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => onAudio?.(null), []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (video.current) applySound(video.current, sound && hasAudio === true); }, [sound, hasAudio]);
+  useEffect(() => { onMedia?.(video.current); return () => onMedia?.(null); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const fit = quality === "focus" ? "object-contain" : "object-cover"; // enlarged view letterboxes so the whole frame is always visible
   return (
     <div className={`absolute inset-0 bg-black ${className}`}>
-      {online && <img alt="" src={mediaUrl(`/api/cameras/${cameraId}/snapshot?w=${quality === "focus" ? 1280 : 640}&n=${still}`)} className="absolute inset-0 size-full object-cover" onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} onLoad={(e) => { e.currentTarget.style.visibility = "visible"; }} />}
-      <video ref={video} autoPlay muted playsInline className={`absolute inset-0 size-full object-cover transition-opacity ${state === "playing" ? "opacity-100" : "opacity-0"}`} />
+      {online && <img alt="" src={mediaUrl(`/api/cameras/${cameraId}/snapshot?w=${quality === "focus" ? 1280 : 640}&n=${still}`)} className={`absolute inset-0 size-full ${fit}`} onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} onLoad={(e) => { e.currentTarget.style.visibility = "visible"; }} />}
+      <video ref={video} autoPlay muted playsInline className={`absolute inset-0 size-full ${fit} transition-opacity ${state === "playing" ? "opacity-100" : "opacity-0"}`} />
       {(!online || state === "unavailable" || state === "error") && (
         <div className="absolute inset-0 grid place-items-center bg-zinc-900 p-4 text-center text-sm text-zinc-400">
           <div><div className="font-medium text-zinc-50">{!online ? "Camera offline" : state === "unavailable" ? "No live video" : "Can't connect"}</div>{state === "error" && online && "Check your connection."}</div>
