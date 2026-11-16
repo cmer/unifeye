@@ -162,8 +162,8 @@ export function Player({ cameraId }: { cameraId: string }) {
         <Button variant="ghost" size="icon" className={ghost} aria-label="Back to cameras" onClick={() => (history.length > 1 ? history.back() : nav("/"))}><ArrowLeft /></Button>
         <b className="truncate text-[15px] font-semibold">{cam.name}</b>
         {live ? <LiveLabel via={via} /> : <span className="text-xs text-zinc-300">Recorded</span>}
-        {recording.has(cameraId) && <RecMark />}
         <span className="flex-1" />
+        {recording.has(cameraId) && <RecMark />}
         <Button variant="outline" className="border-white/30 bg-transparent text-white hover:bg-white/15 hover:text-white" onClick={() => setJump((j) => !j)}><CalendarDays />{fmtDay(t, tz)}</Button>
         {!live && <Button variant="outline" className="border-white/30 bg-transparent text-white hover:bg-white/15 hover:text-white" onClick={() => seek(Date.now())}>Go live</Button>}
       </div>
