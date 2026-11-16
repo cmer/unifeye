@@ -1,5 +1,6 @@
 import { desc, lt } from "drizzle-orm";
 import { ZodError } from "zod";
+import { stat } from "node:fs/promises";
 import { audit } from "./audit";
 import { LOGIN_TXN_COOKIE } from "./auth/oidc";
 import { SESSION_COOKIE, type SessionRow } from "./auth/session";
@@ -248,7 +249,10 @@ route("GET", "/events/:id/thumbnail", { rate: "media" }, async ({ s, actor, p, r
 // ---- clip export -----------------------------------------------------------------
 const jobDto = (j: { id: string; status: string; progress: number; error: string | null; expiresAt: number }) => ({ id: j.id, status: j.status, progress: j.progress, error: j.error, expiresAt: j.expiresAt });
 route("POST", "/exports", { rate: "media" }, async ({ s, actor, json: body }) => { const b = await body<{ cameraId: string; startMs: number; endMs: number }>(); return s.recordings.createExport(actor, String(b.cameraId), Number(b.startMs), Number(b.endMs)); });
-route("GET", "/exports/:id", {}, ({ s, actor, p }) => jobDto(s.recordings.exportJob(actor, p.id)));
+route("GET", "/exports/:id", {}, async ({ s, actor, p }) => {
+  const j = s.recordings.exportJob(actor, p.id), file = j.status === "ready" ? s.recordings.downloadPath(actor, j.id) : null;
+  return { ...jobDto(j), etaMs: j.status === "running" && j.progress < 95 ? s.recordings.exportEta(j.id) : null, fileName: file?.name ?? null, bytes: file ? ((await stat(file.file).catch(() => null))?.size ?? null) : null };
+});
 route("DELETE", "/exports/:id", {}, ({ s, actor, p }) => { s.recordings.cancelExport(actor, p.id); });
 route("GET", "/exports/:id/download", { rate: "media" }, ({ s, actor, p, req }) => { const d = s.recordings.downloadPath(actor, p.id); return fileResponse(d.file, req, "video/mp4", { "content-disposition": `attachment; filename="${d.name}"` }); });
 

@@ -328,6 +328,16 @@ sign-in of the same Protect account, because the library's transport holds whole
 memory. A clip job may run for ten minutes plus the clip's length before it is dropped; once ready it
 stays downloadable for ten minutes. Each session prepares at most two clips at a time.
 
+The recorder builds a whole export before it sends the first byte, so one request gives no progress.
+A clip longer than five minutes is therefore exported in five-minute pieces,
+`CLIP_EXPORT_PARALLEL` at a time (default 3), and joined with an FFmpeg stream copy
+(`exportPieces` in `src/server/media/recordings.ts`). Each piece starts on the keyframe before its
+start, so the overlap is cut from the end of the piece before it, using the same lead calculation as
+playback windows. A piece with nothing recorded is left out. The job reports the share of pieces
+done, and the status route adds a rough time left (average piece time, times the pieces left, divided
+by the parallel count). When the job is ready the browser starts the download on its own, and the
+dialog stays open with a way to download it again.
+
 Times are UTC in storage and transport and shown in a selectable zone. Day boundaries follow the
 zone, so a day is 23, 24 or 25 hours long around daylight-saving changes.
 
