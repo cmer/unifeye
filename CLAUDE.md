@@ -81,6 +81,18 @@ All environment variables are declared and validated in `src/server/config.ts` (
 
 React 19 client components in `src/ui/`, shadcn/ui primitives in `src/components/ui/` (built on `@base-ui/react`), Tailwind 4, `next-themes` for dark and light.
 
+### Writing user-facing copy
+
+People who use Vantage are not technical. Write every label, message, error and empty state the way Apple writes its interface text:
+
+- Keep it short. One idea per sentence; cut any word the reader doesn't need.
+- Use plain, everyday words. No jargon or internal terms: say "recorder", never "UNVR", "RTSP", "WHEP", "HLS", "OIDC", "ticket" or "grant".
+- Tell people what is happening or what they can do, not how the system works.
+- Use a calm, friendly tone. Don't blame the user or alarm them.
+- If something fails, say what went wrong and what to try next, in plain words.
+
+For example, "Waiting for the recorder…" is better than "Waiting for the recorder. Time left appears once the first part arrives."
+
 ## Tests
 
 Vitest, all in `tests/`. `makeFixture()` in `src/server/testing/fixture.ts` builds the full service graph on an in-memory database with the mock adapter and the in-memory relay, plus a fixed cast of users, groups and views. API tests call `handleApi` directly with a constructed `Request`; there is no HTTP server. Use the fixture's `setConfigForTests` / `setServicesForTests` hooks rather than mocking modules.
