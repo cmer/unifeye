@@ -19,6 +19,7 @@ or Protect users.
 
 - [docs/architecture.md](docs/architecture.md): how it fits together, the permission model, view and landing rules, media enforcement.
 - [docs/deployment.md](docs/deployment.md): where to run it, registering Unifeye with your identity provider, configuration reference, networking, backups, restore, upgrades.
+- [LLM/INSTALL.md](LLM/INSTALL.md): instructions for an AI coding agent to install and configure Unifeye on a server over SSH, asking you questions as it goes.
 - [docs/cloudflare-tunnel.md](docs/cloudflare-tunnel.md): running behind Cloudflare Tunnel, and what that means for live video.
 - [docs/identity-providers.md](docs/identity-providers.md): step-by-step sign-in setup for Zitadel, Keycloak, Microsoft Entra ID and Google Workspace.
 - [docs/verification.md](docs/verification.md): what has been verified and what has not, tested versions, and the steps to check a real UNVR and a real identity provider.
@@ -32,6 +33,17 @@ revocation of a playing stream were also exercised against a real MediaMTX 1.21.
 
 **Not yet verified: a real UNVR, a real identity provider, and the Docker image and Compose stack.**
 See [docs/verification.md](docs/verification.md) before relying on this in production.
+
+## Install with an AI agent
+
+Give an AI coding agent (Claude Code, Codex and so on) SSH access to your server and tell it:
+
+> Follow LLM/INSTALL.md from github.com/cmer/unifeye and install it on 192.168.1.50.
+
+Use your server's address instead of `192.168.1.50`. The agent installs and configures everything,
+asks you questions along the way, and tells you the few steps only you can do (your sign-in
+provider, your recorder, your router). To do it by hand instead, see
+[docs/deployment.md](docs/deployment.md).
 
 ## Run it locally with simulated cameras
 
