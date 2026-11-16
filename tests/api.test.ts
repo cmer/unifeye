@@ -38,7 +38,7 @@ afterEach(() => { vi.unstubAllGlobals(); });
 describe("authentication boundary", () => {
   it("returns 401 for every data and media route without a session", async () => {
     const cam = f.cam["Front Entrance"];
-    for (const [m, p] of [["GET", "/me"], ["GET", "/cameras"], ["GET", `/cameras/${cam}/snapshot`], ["GET", `/cameras/${cam}/recordings?from=1&to=2`], ["GET", `/cameras/${cam}/playback?t=1`], ["POST", `/media/live/${cam}/whep`], ["GET", `/media/live/${cam}/hls/wall/index.m3u8`], ["GET", "/events"], ["GET", "/events/stream"], ["GET", "/events/x/thumbnail"], ["POST", "/exports"], ["GET", "/exports/x"], ["GET", "/exports/x/download"], ["GET", "/admin/overview"], ["GET", "/views/x"]] as const)
+    for (const [m, p] of [["GET", "/me"], ["GET", "/cameras"], ["GET", `/cameras/${cam}/snapshot`], ["GET", `/cameras/${cam}/recordings?from=1&to=2`], ["GET", `/cameras/${cam}/playback?t=1`], ["GET", `/cameras/${cam}/playback/info?t=1`], ["POST", `/media/live/${cam}/whep`], ["GET", `/media/live/${cam}/hls/wall/index.m3u8`], ["GET", "/events"], ["GET", "/events/stream"], ["GET", "/events/x/thumbnail"], ["POST", "/exports"], ["GET", "/exports/x"], ["GET", "/exports/x/download"], ["GET", "/admin/overview"], ["GET", "/views/x"]] as const)
       expect((await call(null, m, p)).status, `${m} ${p}`).toBe(401);
   });
   it("has no local login, registration or password routes, and no credential tables", async () => {
@@ -69,7 +69,7 @@ describe("authentication boundary", () => {
 describe("a forbidden camera is indistinguishable from a missing one, on every route", () => {
   it("covers metadata, images, recordings, playback, live setup, events and exports", async () => {
     const bad = f.cam["Server Closet"], none = "00000000-0000-4000-8000-000000000000", t = Date.now() - 3600e3;
-    const paths = (id: string): [string, string, unknown?][] => [["GET", `/cameras/${id}/snapshot`], ["GET", `/cameras/${id}/snapshot?at=${t}`], ["GET", `/cameras/${id}/recordings?from=${t - 1000}&to=${t}`], ["GET", `/cameras/${id}/playback?t=${t}`], ["POST", `/media/live/${id}/whep?q=focus`], ["GET", `/media/live/${id}/hls/wall/index.m3u8`], ["GET", `/media/live/${id}/hls/wall/seg1.mp4`], ["GET", `/events?cameraId=${id}`], ["POST", "/exports", { cameraId: id, startMs: t, endMs: t + 5000 }]];
+    const paths = (id: string): [string, string, unknown?][] => [["GET", `/cameras/${id}/snapshot`], ["GET", `/cameras/${id}/snapshot?at=${t}`], ["GET", `/cameras/${id}/recordings?from=${t - 1000}&to=${t}`], ["GET", `/cameras/${id}/playback?t=${t}`], ["GET", `/cameras/${id}/playback/info?t=${t}`], ["GET", `/cameras/${id}/playback?t=${t}&layer=high`], ["POST", `/media/live/${id}/whep?q=focus`], ["GET", `/media/live/${id}/hls/wall/index.m3u8`], ["GET", `/media/live/${id}/hls/wall/seg1.mp4`], ["GET", `/events?cameraId=${id}`], ["POST", "/exports", { cameraId: id, startMs: t, endMs: t + 5000 }]];
     const forbidden = await Promise.all(paths(bad).map(([m, p, b]) => call(f.u.front, m, p, { body: b })));
     const missing = await Promise.all(paths(none).map(([m, p, b]) => call(f.u.front, m, p, { body: b })));
     forbidden.forEach((r, i) => { expect(r.status, paths(bad)[i][1]).toBe(404); expect(r.text).toBe(missing[i].text); expect(r.text).not.toContain("Server Closet"); });

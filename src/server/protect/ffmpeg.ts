@@ -42,3 +42,18 @@ export async function retimeVideoToAudio(path: string, signal?: AbortSignal): Pr
     return true;
   } catch (e) { await rm(tmp, { force: true }); throw e; }
 }
+
+export interface MediaInfo { duration: number; width: number; audio: boolean }
+/** Container duration (seconds), video width and whether there is an audio track. */
+export async function probe(path: string, signal?: AbortSignal): Promise<MediaInfo> {
+  const r = JSON.parse((await run("ffprobe", ["-show_entries", "format=duration:stream=codec_type,width", "-of", "json", path], signal)).toString()) as { format?: { duration?: string }; streams?: { codec_type: string; width?: number }[] };
+  return { duration: Number(r.format?.duration) || 0, width: r.streams?.find((s) => s.codec_type === "video")?.width ?? 0, audio: !!r.streams?.some((s) => s.codec_type === "audio") };
+}
+
+/** Loudness of the first audio track every 10 ms (log energy at 8 kHz mono), for lining up two exports of the same recording. */
+export async function audioEnvelope(path: string, signal?: AbortSignal): Promise<Float64Array> {
+  const pcm = await run("ffmpeg", ["-i", path, "-map", "0:a:0", "-ac", "1", "-ar", "8000", "-f", "f32le", "pipe:1"], signal);
+  const bytes = Math.floor(pcm.length / 4) * 4, x = new Float32Array(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + bytes)), HOP = 80, n = Math.floor(x.length / HOP), e = new Float64Array(n);
+  for (let i = 0; i < n; i++) { let s = 0; for (let j = i * HOP; j < (i + 1) * HOP; j++) s += x[j] * x[j]; e[i] = Math.log(1e-9 + s / HOP); }
+  return e;
+}

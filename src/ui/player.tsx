@@ -11,6 +11,12 @@ import { Empty, fail, RecMark, Select, useApp, useRecording } from "./app";
 import { LiveVideo, type Transport } from "./live";
 
 type Ranges = { ranges: [number, number][]; precision: "exact" | "bounds" };
+/**
+ * A recorded window as the server describes it. The base file starts `leadMs` before the window. With
+ * adaptive recording, `overlay` lists where the high-resolution file's stretches sit in the base
+ * (seconds of media time: `len` seconds from overlay time `from` belong at base time `at`).
+ */
+type WinInfo = { startMs: number; endMs: number; leadMs: number; overlay: { at: number; from: number; len: number }[] };
 const ZONES: [string, string][] = [["local", "My time zone"], ["UTC", "UTC"], ["America/Toronto", "Toronto"], ["America/Vancouver", "Vancouver"], ["America/Chicago", "Chicago"], ["Europe/London", "London"], ["Europe/Paris", "Paris"], ["Australia/Sydney", "Sydney"]];
 const ghost = "text-white hover:bg-white/15 hover:text-white";
 type Job = { id: string; status: string; error: string | null };
@@ -60,6 +66,10 @@ export function Player({ cameraId }: { cameraId: string }) {
   const [refresh, setRefresh] = useState(0);
   /** Start of the window being buffered in the background so the next one starts without a black gap. */
   const [armed, setArmed] = useState<number | null>(null);
+  /** Window descriptions by `${window start}:${seek count}`; "none" when the window has no recording. */
+  const [infos, setInfos] = useState<Record<string, WinInfo | "none">>({});
+  const infoReq = useRef(new Map<string, AbortController>()), handed = useRef(""), frame = useRef<() => void>(() => {});
+  const hiVideo = useRef<HTMLVideoElement>(null);
   const video = useRef<HTMLVideoElement>(null), nextVideo = useRef<HTMLVideoElement>(null), box = useRef<HTMLDivElement>(null), tl = useRef<HTMLDivElement>(null), lastMove = useRef(0), lastTrimSeek = useRef(0);
 
   useEffect(() => { api<{ cameras: Camera[] }>("/cameras").then((r) => setCam(r.cameras.find((c) => c.id === cameraId) ?? "gone")).catch(fail); }, [cameraId, me.preview?.subject.id]);
@@ -116,18 +126,64 @@ export function Player({ cameraId }: { cameraId: string }) {
     try { const r = await api<{ id: string }>("/exports", { method: "POST", body: { cameraId, startMs: Math.round(trim.a), endMs: Math.round(trim.b) } }); setJob({ id: r.id, status: "running", error: null }); } catch (e) { fail(e); }
   };
 
-  // The clip for a window starts at the window start, or at the first recorded moment inside it.
-  const ws = Math.floor(target.ms / W) * W;
-  const clipStart = useMemo(() => { if (rec?.precision !== "exact") return ws; const r = rec.ranges.find(([a, b]) => b > ws && a < ws + W); return r ? Math.max(ws, r[0]) : ws; }, [rec, ws, W]);
-  const src = !live && target.ms ? mediaUrl(`/api/cameras/${cameraId}/playback?t=${ws}`) : undefined;
-  // The following window loads in a hidden element while this one plays (armed once it is fully recorded).
-  const nextSrc = src && armed === ws + W ? mediaUrl(`/api/cameras/${cameraId}/playback?t=${ws + W}`) : undefined;
-  /** At the end of a window, the buffered next one takes over in place (same key, so React keeps the element). */
+  const ws = Math.floor(target.ms / W) * W, curKey = `${ws}:${target.n}`, nextKey = `${ws + W}:${target.n}`;
+  const info = infos[curKey], nextInfo = armed === ws + W ? infos[nextKey] : undefined;
+  // Fetch the descriptions of this window and, once armed, the next. A description no longer wanted
+  // (after a seek) is cancelled, which also cancels its export on the server.
+  useEffect(() => {
+    if (live || !target.ms) return;
+    const want = new Map([[curKey, ws], ...(armed === ws + W ? [[nextKey, ws + W] as const] : [])]), reqs = infoReq.current;
+    for (const [k, ac] of reqs) if (!want.has(k)) { ac.abort(); reqs.delete(k); }
+    for (const [k, at] of want) {
+      if (reqs.has(k)) continue;
+      const ac = new AbortController();
+      reqs.set(k, ac);
+      api<WinInfo>(`/cameras/${cameraId}/playback/info?t=${at}`, { signal: ac.signal }).then((i) => setInfos((p) => ({ ...p, [k]: i })), () => { if (!ac.signal.aborted) setInfos((p) => ({ ...p, [k]: "none" })); });
+    }
+  }, [live, target.ms, curKey, nextKey, armed, ws, W, cameraId]);
+  useEffect(() => { const reqs = infoReq.current; return () => { for (const ac of reqs.values()) ac.abort(); reqs.clear(); }; }, []);
+  // Media time 0 is `leadMs` before the window (the export began on an earlier keyframe). Without a
+  // lead, the clip starts at the window start or at the first recorded moment inside it.
+  const lead = info && info !== "none" ? info.leadMs : 0, missing = !live && (noRec || info === "none");
+  const clipStart = useMemo(() => { if (lead) return ws - lead; if (rec?.precision !== "exact") return ws; const r = rec.ranges.find(([a, b]) => b > ws && a < ws + W); return r ? Math.max(ws, r[0]) : ws; }, [rec, ws, W, lead]);
+  const url = (at: number, high = false) => mediaUrl(`/api/cameras/${cameraId}/playback?t=${at}${high ? "&layer=high" : ""}`);
+  const src = !live && target.ms && info && info !== "none" ? url(ws) : undefined, hiSrc = src && info !== "none" && info?.overlay.length ? url(ws, true) : undefined;
+  // The following window loads in hidden elements while this one plays (armed once it is fully recorded).
+  const nextOk = src && nextInfo && nextInfo !== "none" ? nextInfo : null;
+  const nextSrc = nextOk ? url(ws + W) : undefined, nextHiSrc = nextOk?.overlay.length ? url(ws + W, true) : undefined;
+  /** At the end of a window, the buffered next one takes over in place (same keys, so React keeps the elements). */
   const advance = () => {
+    if (handed.current === curKey) return;
+    handed.current = curKey;
     const nx = ws + W;
     if (nextSrc && !nextVideo.current?.error && nx < now() - 5000) { setT(nx); setTarget((p) => ({ ms: nx, n: p.n })); }
     else seek(nx);
   };
+  // Every animation frame: hand over when the base reaches the window's end (it runs on past it by the
+  // next window's lead), and keep the high-resolution overlay in step with the base, shown only
+  // inside its stretches and only once it has the right frame.
+  useEffect(() => { frame.current = () => {
+    const v = video.current, h = hiVideo.current;
+    if (!v || live) return;
+    if (!v.paused && !v.seeking && v.readyState >= 2 && clipStart + v.currentTime * 1000 >= ws + W) advance();
+    if (!h) return;
+    const spans = info && info !== "none" ? info.overlay : [], m = v.currentTime, sp = spans.find((x) => m >= x.at && m < x.at + x.len);
+    let show = false;
+    if (sp && !h.error) {
+      const want = sp.from + (m - sp.at);
+      if (h.readyState >= 1 && !h.seeking && Math.abs(h.currentTime - want) > 0.25) h.currentTime = want;
+      if (h.playbackRate !== v.playbackRate) h.playbackRate = v.playbackRate;
+      if (v.paused || v.seeking) { if (!h.paused) h.pause(); } else if (h.paused) void h.play().catch(() => {});
+      show = h.readyState >= 2 && !h.seeking && Math.abs(h.currentTime - want) <= 0.25;
+    } else {
+      if (!h.paused) h.pause();
+      // Wait at the start of the next stretch so it can be shown the moment the base gets there.
+      const up = spans.find((x) => x.at > m);
+      if (up && h.readyState >= 1 && !h.seeking && Math.abs(h.currentTime - up.from) > 0.05) h.currentTime = up.from;
+    }
+    h.style.visibility = show ? "visible" : "hidden";
+  }; });
+  useEffect(() => { if (live) return; let id = 0; const tick = () => { frame.current(); id = requestAnimationFrame(tick); }; id = requestAnimationFrame(tick); return () => cancelAnimationFrame(id); }, [live]);
   useEffect(() => { const v = video.current; if (v) v.playbackRate = speed; }, [speed, src]);
   useEffect(() => { const v = video.current; if (!v || live) return; if (playing) void v.play().catch(() => {}); else v.pause(); }, [playing, live, src]);
   const nextRange = rec?.ranges.find(([a]) => a > t);
@@ -179,18 +235,22 @@ export function Player({ cameraId }: { cameraId: string }) {
   return (
     <div ref={box} className="relative min-h-0 flex-1 overflow-hidden bg-black text-white">
       {live ? <LiveVideo cameraId={cameraId} quality="focus" active={!down} online={cam.online && !down} onTransport={setVia} />
-        : [<video ref={video} key={`${ws}:${target.n}`} src={src} playsInline muted className="absolute inset-0 size-full object-contain"
+        : [<video ref={video} key={curKey} src={src} playsInline muted className="absolute inset-0 size-full object-contain"
             onLoadedMetadata={(e) => { const v = e.currentTarget; v.currentTime = Math.max(0, (target.ms - clipStart) / 1000); v.playbackRate = speed; if (playing) void v.play().catch(() => {}); }}
             onTimeUpdate={(e) => { setT(clipStart + e.currentTarget.currentTime * 1000); if (armed !== ws + W && ws + 2 * W < now() - 2000) setArmed(ws + W); }}
             onEnded={advance} onError={() => setNoRec(true)} />,
-          nextSrc && <video ref={nextVideo} key={`${ws + W}:${target.n}`} src={nextSrc} preload="auto" playsInline muted aria-hidden className="invisible absolute inset-0 size-full object-contain" />]}
-      {(noRec || (live && !cam.online)) && !down && (
+          hiSrc && <video ref={hiVideo} key={`${curKey}:hi`} src={hiSrc} preload="auto" playsInline muted aria-hidden style={{ visibility: "hidden" }} className="absolute inset-0 size-full object-contain" />,
+          nextSrc && <video ref={nextVideo} key={nextKey} src={nextSrc} preload="auto" playsInline muted aria-hidden className="invisible absolute inset-0 size-full object-contain"
+            onLoadedMetadata={(e) => { e.currentTarget.currentTime = (nextOk?.leadMs ?? 0) / 1000; }} />,
+          nextHiSrc && <video key={`${nextKey}:hi`} src={nextHiSrc} preload="auto" playsInline muted aria-hidden style={{ visibility: "hidden" }} className="absolute inset-0 size-full object-contain"
+            onLoadedMetadata={(e) => { const at = (nextOk?.leadMs ?? 0) / 1000, sp = nextOk?.overlay.find((x) => x.at + x.len > at); e.currentTarget.currentTime = sp ? sp.from + Math.max(0, at - sp.at) : 0; }} />]}
+      {(missing || (live && !cam.online)) && !down && (
         <div className="absolute inset-0 grid place-items-center bg-zinc-900 p-6 text-center text-sm text-zinc-400">
-          <div><div className="mb-1 font-medium text-zinc-50">{noRec ? `No recording at ${fmtTime(t, tz)}` : "Camera offline"}</div>
+          <div><div className="mb-1 font-medium text-zinc-50">{missing ? `No recording at ${fmtTime(t, tz)}` : "Camera offline"}</div>
             <div className="mt-4 flex justify-center gap-2">
-              {noRec && nextRange && <Button variant="outline" className="border-white/30 bg-transparent text-white" onClick={() => seek(nextRange[0] + 1000)}>Skip to {fmtShort(nextRange[0], tz)}</Button>}
-              {!noRec && rec?.ranges.length ? <Button variant="outline" className="border-white/30 bg-transparent text-white" onClick={() => seek(rec.ranges[rec.ranges.length - 1][1] - 60000)}>Watch last recording</Button> : null}
-              {noRec && <Button variant="outline" className="border-white/30 bg-transparent text-white" onClick={() => seek(Date.now())}>Go live</Button>}
+              {missing && nextRange && <Button variant="outline" className="border-white/30 bg-transparent text-white" onClick={() => seek(nextRange[0] + 1000)}>Skip to {fmtShort(nextRange[0], tz)}</Button>}
+              {!missing && rec?.ranges.length ? <Button variant="outline" className="border-white/30 bg-transparent text-white" onClick={() => seek(rec.ranges[rec.ranges.length - 1][1] - 60000)}>Watch last recording</Button> : null}
+              {missing && <Button variant="outline" className="border-white/30 bg-transparent text-white" onClick={() => seek(Date.now())}>Go live</Button>}
             </div></div>
         </div>
       )}
