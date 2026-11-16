@@ -9,7 +9,7 @@ type State = "idle" | "connecting" | "playing" | "unavailable" | "error";
 const WEBRTC_CONNECT_MS = 4000;
 /** After WebRTC media could not get through, use HLS straight away for this long before trying WebRTC again. */
 const WEBRTC_SKIP_MS = 10 * 60_000;
-const SKIP_KEY = "vantage.webrtc-unreachable-until";
+const SKIP_KEY = "unifeye.webrtc-unreachable-until";
 /**
  * WebRTC media goes to port 8189 directly, which is not reachable from every network (for example
  * through a tunnel that only carries HTTPS). Once one tile finds that out, the others, and this tab
@@ -73,7 +73,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
         else {
           const { default: Hls } = await import("hls.js");
           if (closed || !Hls.isSupported()) return setState("error");
-          const h = new Hls({ lowLatencyMode: true, xhrSetup: (xhr) => { const t = previewToken(); if (t) xhr.setRequestHeader("x-vantage-preview", t); } });
+          const h = new Hls({ lowLatencyMode: true, xhrSetup: (xhr) => { const t = previewToken(); if (t) xhr.setRequestHeader("x-unifeye-preview", t); } });
           h.on(Hls.Events.ERROR, (_e, d) => { if (d.fatal) { h.destroy(); if (attempt < 4) retry(); else setState("error"); } });
           // The playlist names its codecs, so whether there is sound is known before anything plays.
           h.on(Hls.Events.MANIFEST_PARSED, (_e, d) => { if (!closed) setAudio(d.audioTracks.length > 0 || d.levels.some((l) => !!l.audioCodec)); });

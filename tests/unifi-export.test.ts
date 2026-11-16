@@ -11,7 +11,7 @@ let agent: MockAgent, dir: string, adapter: UnifiProtectAdapter;
 
 beforeEach(async () => {
   agent = new MockAgent(); agent.disableNetConnect();
-  dir = await mkdtemp(join(tmpdir(), "vantage-export-"));
+  dir = await mkdtemp(join(tmpdir(), "unifeye-export-"));
   adapter = new UnifiProtectAdapter("nvr", { host: "nvr.test", username: "viewer", password: "pw", verifyTls: true, exportDispatcher: agent });
 });
 afterEach(async () => { await adapter.close(); await agent.close(); await rm(dir, { recursive: true, force: true }); });

@@ -57,7 +57,7 @@ function authenticate(req: Request, url: URL, s: Services, ip: string, requestId
   const user = session && s.policy.activeUser(session.userId);
   if (!session || !user) throw new HttpError(401, "unauthenticated", "Sign in required");
   const actor: Actor = { userId: user.id, role: user.role, sessionId: session.id, requestId, ip };
-  const pv = req.headers.get("x-vantage-preview") ?? url.searchParams.get("pv");
+  const pv = req.headers.get("x-unifeye-preview") ?? url.searchParams.get("pv");
   if (pv) { const p = s.previews.resolve(session.id, user.id, pv); actor.preview = { id: p.id, subjectId: p.subjectId }; }
   return { session, user, actor };
 }
@@ -151,7 +151,7 @@ route("GET", "/me", {}, ({ s, actor, user, session }) => {
     landing,
     views: s.views.accessible(subject).map((v) => { const r = s.views.resolve(v, subject); return { id: v.id, name: v.name, type: v.type, visibility: v.visibility, columns: v.columns, count: r.cameras.length, editable: !actor.preview && r.editable }; }),
     preferences: s.admin.preferences(actor),
-    mode: c.VANTAGE_MODE,
+    mode: c.UNIFEYE_MODE,
     recorder: s.adapter.health().state,
     limits: { maxStreams: c.MAX_WALL_STREAMS, windowSeconds: c.PLAYBACK_WINDOW_SECONDS, prerollSeconds: c.EVENT_PREROLL_SECONDS, clipMaxSeconds: c.CLIP_MAX_SECONDS },
   };

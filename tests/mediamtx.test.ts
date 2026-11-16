@@ -8,7 +8,7 @@ import { TEST_ENV } from "@/server/testing/fixture";
 
 /**
  * Pins the requests the MediaMTX adapter sends, against a local stub that records them. The stub is
- * not MediaMTX: these tests say what Vantage sends and how it reads the answers it expects, not
+ * not MediaMTX: these tests say what Unifeye sends and how it reads the answers it expects, not
  * that MediaMTX accepts it. That was checked by hand against MediaMTX 1.21.4.
  */
 interface Seen { method: string; url: string; headers: Record<string, string | string[] | undefined>; body: string }
@@ -16,7 +16,7 @@ let server: Server, base = "", seen: Seen[] = [], down = false;
 let answer: (req: Seen, res: ServerResponse) => void;
 const ok = (res: ServerResponse, body: unknown = {}) => { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
 const status = (code: number) => (_: Seen, res: ServerResponse) => { res.writeHead(code); res.end(); };
-const API_AUTH = "Basic " + Buffer.from("vantage-api:api").toString("base64");
+const API_AUTH = "Basic " + Buffer.from("unifeye-api:api").toString("base64");
 
 beforeAll(async () => {
   server = createServer(async (req, res) => {
@@ -60,9 +60,9 @@ describe("MediaMTX adapter: control API", () => {
     expect(JSON.parse(seen[0].body)).toEqual({ source: "rtsps://nvr/secret", sourceOnDemand: true, sourceOnDemandCloseAfter: "10s", rtspTransport: "tcp", sourceFingerprint: "AB:CD" });
     const pub = JSON.parse(seen[1].body);
     expect(pub).toMatchObject({ source: "publisher", runOnDemandRestart: true, runOnDemandCloseAfter: "10s" });
-    expect(pub.runOnDemand).toContain("-i rtsp://vantage-publisher:api@127.0.0.1:$RTSP_PORT/c_cam1_focus_src ");
+    expect(pub.runOnDemand).toContain("-i rtsp://unifeye-publisher:api@127.0.0.1:$RTSP_PORT/c_cam1_focus_src ");
     expect(pub.runOnDemand).toContain("-c:v copy -filter:a asetpts=N/SR/TB");
-    expect(pub.runOnDemand).toMatch(/rtsp:\/\/vantage-publisher:api@127\.0\.0\.1:\$RTSP_PORT\/\$MTX_PATH$/);
+    expect(pub.runOnDemand).toMatch(/rtsp:\/\/unifeye-publisher:api@127\.0\.0\.1:\$RTSP_PORT\/\$MTX_PATH$/);
     expect(pub.runOnDemand).not.toContain("rtsps://nvr/secret"); // the camera URL stays in MediaMTX's source, not in a command line
     await relay.ensureStream("c_cam1_focus", src);
     expect(seen).toHaveLength(2); // unchanged: no call

@@ -53,7 +53,7 @@ export function App() {
     // Browser-only values (address, saved sidebar state) are read once after hydration.
     /* eslint-disable react-hooks/set-state-in-effect */
     setLoc(here());
-    setOpen(localStorage.getItem("vantage.sidebar") === "1");
+    setOpen(localStorage.getItem("unifeye.sidebar") === "1");
     /* eslint-enable react-hooks/set-state-in-effect */
     const pop = () => setLoc(here());
     addEventListener("popstate", pop);
@@ -80,7 +80,7 @@ export function App() {
     : <Wall key={seg[1] ?? "all"} viewId={seg[0] === "view" ? seg[1] : undefined} />;
   return (
     <AppCtx.Provider value={ctx}>
-      <SidebarProvider open={open} onOpenChange={(o) => { setOpen(o); localStorage.setItem("vantage.sidebar", o ? "1" : "0"); }}>
+      <SidebarProvider open={open} onOpenChange={(o) => { setOpen(o); localStorage.setItem("unifeye.sidebar", o ? "1" : "0"); }}>
         <AppSidebar />
         <SidebarInset className="relative flex h-svh min-w-0 flex-col overflow-hidden">
           {ctx.me.preview && (
@@ -114,7 +114,7 @@ function AppSidebar() {
       <SidebarHeader>
         <div className="flex items-center gap-2 px-2 py-1.5">
           <span className="grid size-7 place-items-center rounded-md bg-primary text-sm font-bold text-primary-foreground">V</span>
-          <span className="font-semibold">Vantage</span>
+          <span className="font-semibold">Unifeye</span>
           {me.mode === "mock" && <span className="ml-auto rounded-full border px-2 py-0.5 text-xs text-muted-foreground" title="Cameras, recordings and activity are simulated">Demo cameras</span>}
         </div>
       </SidebarHeader>

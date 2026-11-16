@@ -52,7 +52,7 @@ reader. They show what the gateway decides, not how MediaMTX behaves.
   ticket as a Bearer token and the resource read from `location`, trickle and teardown forwarding,
   HLS redirect following with the session cookie carried per reader, and the configured-path cache
   being dropped when MediaMTX is unreachable, unhealthy or answers 404. The stub is not MediaMTX:
-  this pins what Vantage sends, not that MediaMTX accepts it.
+  this pins what Unifeye sends, not that MediaMTX accepts it.
 - Standing access: a grant stops holding, and the signal fires, when the session is revoked,
   replaced, idle-expired or past its absolute limit, the preview ends or times out, the subject is
   disabled, a grant or group membership is removed, or the camera is gone; unknown ids never hold;
@@ -66,7 +66,7 @@ reader. They show what the gateway decides, not how MediaMTX behaves.
 - UniFi export streaming, against a mocked recorder (undici `MockAgent`, `tests/unifi-export.test.ts`):
   the separate sign-in (root CSRF token, login, `TOKEN` cookie), the body streamed to disk, one
   re-sign-in after a 401, and refusals or tiny bodies reported as nothing recorded. This pins what
-  Vantage sends, not what a real UNVR answers.
+  Unifeye sends, not what a real UNVR answers.
 - Preview: subject's permissions on data and media, administrator stays the actor, all mutations and
   admin routes blocked, forged, foreign and expired contexts rejected, two tabs kept apart, both
   identities audited, subject's profile untouched.
@@ -136,7 +136,7 @@ since the move.
   Not heard through speakers, and not checked in Safari or Firefox, whose audio detection takes a
   different path.
 - Live sound from a real UNVR camera (one camera, 2560×1920 with AAC 16 kHz and Opus tracks), in
-  headless Chromium over WebRTC against MediaMTX 1.21.4, outside Vantage: pulled directly, Chrome
+  headless Chromium over WebRTC against MediaMTX 1.21.4, outside Unifeye: pulled directly, Chrome
   discarded 430 of 560 audio packets and concealed 95% of the samples (the garble-then-silence
   heard in Chrome and Safari), because Protect's audio timestamps advance in milliseconds against a
   16 or 48 kHz clock. Through the retiming FFmpeg command `mediamtx.ts` generates: 0 packets
@@ -156,10 +156,10 @@ since the move.
 | Browser test suite | Not written | Screens were checked by hand in one desktop browser |
 | Phones and tablets | No device testing | Layout or touch problems |
 | HLS playback in a browser | Only the gateway responses were checked | Player-level issues |
-| Sound from a real UNVR in Vantage end to end | The retiming relay was checked outside Vantage only (see Verified) | HLS sound, wall-quality streams, other camera models; recordings from Protect may lack audio |
+| Sound from a real UNVR in Unifeye end to end | The retiming relay was checked outside Unifeye only (see Verified) | HLS sound, wall-quality streams, other camera models; recordings from Protect may lack audio |
 | Sound in Safari and Firefox | Only Chromium was used | "No audio" shown wrongly, or the speaker missing; no level meter in Safari for HLS and recordings |
 | Clip export in the browser | Checked by hand in Chromium with mock cameras: zooming and panning the clip timeline, and a 2-hour clip (prepared in about 2.5 minutes, 7200 s long). Long clips in pieces (mock mode, headless Chromium): a 21-minute clip showed the sweep, then 57% and 76% with a time left, then "Putting the pieces together", started its download by itself and came out 1260.0 s long | Not checked on a phone or with touch |
-| Long clips from a real UNVR | One 1 h 55 min clip from one camera with adaptive recording (see Verified); fourteen of its pieces joined outside Vantage after the fix | How long Protect takes before sending the first byte of an hour-long export (Vantage waits up to 15 minutes), whether it caps export length, the disk space a clip needs, whether exporting pieces in parallel is faster than one long export on your recorder, and whether the joins between pieces are seamless on real camera streams |
+| Long clips from a real UNVR | One 1 h 55 min clip from one camera with adaptive recording (see Verified); fourteen of its pieces joined outside Unifeye after the fix | How long Protect takes before sending the first byte of an hour-long export (Unifeye waits up to 15 minutes), whether it caps export length, the disk space a clip needs, whether exporting pieces in parallel is faster than one long export on your recorder, and whether the joins between pieces are seamless on real camera streams |
 | Activity live updates in the browser | Checked through the API tests only | UI wiring |
 | Revocation bound under load | Checked with three streams | Slower with many sessions |
 | MediaMTX after the relay refactor | Not re-run against a real process | A request that differs from the hand-checked one in a way the stub tests do not catch |
@@ -179,7 +179,7 @@ With `.env` pointing at the recorder and the app running, signed in as an admini
 7. Save a 15-second clip and play the downloaded file.
 8. In Protect, confirm nothing changed: no new users, settings or streams.
 
-Record the Protect version and the role the Vantage user needed in the table above.
+Record the Protect version and the role the Unifeye user needed in the table above.
 
 ## Checking a real identity provider
 
@@ -187,7 +187,7 @@ Record the Protect version and the role the Vantage user needed in the table abo
 2. Sign in as a user whose admission claim does not match: you land on the signed-out page with
    "not set up".
 3. Sign in as a new user whose claim matches: no cameras, role Staff.
-4. Sign out in Vantage: you are returned to the signed-out page and the provider's session ends.
+4. Sign out in Unifeye: you are returned to the signed-out page and the provider's session ends.
 5. If the provider supports back-channel logout: with a camera playing, end that user's session at
    the provider. Video stops and the next click asks for sign-in. Note how long it took.
 6. With a camera playing, disable the user at the provider: the stream stops within

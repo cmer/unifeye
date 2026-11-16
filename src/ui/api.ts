@@ -1,6 +1,6 @@
 "use client";
 
-/** Thin client for the Vantage API. The server decides everything; this only carries the session. */
+/** Thin client for the Unifeye API. The server decides everything; this only carries the session. */
 export interface Camera { id: string; name: string; tags: string[]; missing: boolean; online: boolean; eventTypes: string[]; hasLive: boolean }
 export interface ViewSummary { id: string; name: string; type: "dynamic" | "static"; visibility: "private" | "curated"; columns: number; count: number; editable: boolean }
 export interface Me {
@@ -23,7 +23,7 @@ export class ApiError extends Error {
 
 let csrf = "";
 export const setCsrf = (v: string) => { csrf = v; };
-const PV = "vantage.preview";
+const PV = "unifeye.preview";
 /** The preview token lives in this tab only, so two tabs can never confuse who is being previewed. */
 export const previewToken = () => (typeof sessionStorage === "undefined" ? null : sessionStorage.getItem(PV));
 export const setPreviewToken = (t: string | null) => { if (t) sessionStorage.setItem(PV, t); else sessionStorage.removeItem(PV); };
@@ -34,7 +34,7 @@ export async function api<T = unknown>(path: string, init: { method?: string; bo
   const headers: Record<string, string> = {};
   const method = init.method ?? "GET", pv = previewToken();
   if (method !== "GET") headers["x-csrf-token"] = csrf;
-  if (pv) headers["x-vantage-preview"] = pv;
+  if (pv) headers["x-unifeye-preview"] = pv;
   if (init.body !== undefined) headers["content-type"] = "application/json";
   if (init.raw !== undefined) headers["content-type"] = "application/sdp";
   const res = await fetch(`/api${path}`, { method, headers, body: init.raw ?? (init.body === undefined ? undefined : JSON.stringify(init.body)), signal: init.signal, credentials: "same-origin" });

@@ -23,9 +23,9 @@ const list = z
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   /** `mock` serves simulated cameras; `real` talks to the UNVR. Sign-in is OIDC in both. */
-  VANTAGE_MODE: z.enum(["mock", "real"]).default("mock"),
+  UNIFEYE_MODE: z.enum(["mock", "real"]).default("mock"),
   APP_URL: z.string().url().default("http://localhost:3000"),
-  DATABASE_PATH: z.string().default("./data/vantage.sqlite"),
+  DATABASE_PATH: z.string().default("./data/unifeye.sqlite"),
   BACKUP_DIR: z.string().default("./data/backups"),
   BACKUP_RETENTION_DAYS: int(14, 1),
   BACKUP_HOUR_UTC: int(8, 0),
@@ -54,7 +54,7 @@ const schema = z.object({
     .optional()
     .transform((v) => [...new URLSearchParams((v ?? "").replace(/^\?/, "")).entries()].filter(([k]) => k)),
   /**
-   * Group sync: the ID token claim whose values put people into Vantage groups (each group lists
+   * Group sync: the ID token claim whose values put people into Unifeye groups (each group lists
    * the values it accepts). Same formats as OIDC_ADMIT_CLAIM. Defaults to OIDC_ADMIT_CLAIM.
    * Set to `none` to turn the sync off.
    */
@@ -92,9 +92,9 @@ const schema = z.object({
   MEDIAMTX_API_URL: z.string().url().default("http://127.0.0.1:9997"),
   MEDIAMTX_WHEP_URL: z.string().url().default("http://127.0.0.1:8889"),
   MEDIAMTX_HLS_URL: z.string().url().default("http://127.0.0.1:8888"),
-  /** Shared secret MediaMTX presents when calling the Vantage auth hook. */
+  /** Shared secret MediaMTX presents when calling the Unifeye auth hook. */
   MEDIAMTX_HOOK_SECRET: z.string().optional(),
-  /** Username Vantage uses for the MediaMTX control API (checked by the same hook). */
+  /** Username Unifeye uses for the MediaMTX control API (checked by the same hook). */
   MEDIAMTX_API_SECRET: z.string().optional(),
   MAX_WALL_STREAMS: int(9, 1),
   CLIP_MAX_SECONDS: int(7200, 5),
@@ -106,7 +106,7 @@ const schema = z.object({
 });
 
 export type Config = z.infer<typeof schema>;
-/** Set by Vantage itself on every authorization request; overriding them would weaken the flow. */
+/** Set by Unifeye itself on every authorization request; overriding them would weaken the flow. */
 const RESERVED_AUTH_PARAMS = new Set(["client_id", "redirect_uri", "response_type", "response_mode", "scope", "state", "nonce", "code_challenge", "code_challenge_method", "request", "request_uri"]);
 let cached: Config | undefined;
 
@@ -124,9 +124,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     if (c.PROTECT_TLS_INSECURE) problems.push("PROTECT_TLS_INSECURE is not allowed in production");
     if (!c.APP_URL.startsWith("https://")) problems.push("APP_URL must use https in production");
   }
-  if (c.VANTAGE_MODE === "real")
+  if (c.UNIFEYE_MODE === "real")
     for (const k of ["PROTECT_HOST", "PROTECT_USERNAME", "PROTECT_PASSWORD"] as const)
-      if (!c[k]) problems.push(`${k} is required when VANTAGE_MODE=real`);
+      if (!c[k]) problems.push(`${k} is required when UNIFEYE_MODE=real`);
   if (c.TOKEN_ENC_KEY && Buffer.from(c.TOKEN_ENC_KEY, "base64").length !== 32)
     problems.push("TOKEN_ENC_KEY must be base64 of exactly 32 bytes");
   for (const [k] of c.OIDC_AUTH_PARAMS)

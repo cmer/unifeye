@@ -1,12 +1,12 @@
 <img src="assets/icon.svg" width="64" height="64" alt="">
 
-# Vantage
+# Unifeye
 
 A read-only viewer for UniFi Protect cameras on a UNVR Pro. Administrators organize cameras with
 tags, build saved views, decide who sees which camera and share views with people and groups.
 Staff sign in through your OpenID Connect provider and land on the cameras relevant to their job.
 
-Vantage never changes anything on the recorder: no camera settings, recordings, retention, events
+Unifeye never changes anything on the recorder: no camera settings, recordings, retention, events
 or Protect users.
 
 | | |
@@ -18,7 +18,7 @@ or Protect users.
 ## Where things are
 
 - [docs/architecture.md](docs/architecture.md): how it fits together, the permission model, view and landing rules, media enforcement.
-- [docs/deployment.md](docs/deployment.md): where to run it, registering Vantage with your identity provider, configuration reference, networking, backups, restore, upgrades.
+- [docs/deployment.md](docs/deployment.md): where to run it, registering Unifeye with your identity provider, configuration reference, networking, backups, restore, upgrades.
 - [docs/cloudflare-tunnel.md](docs/cloudflare-tunnel.md): running behind Cloudflare Tunnel, and what that means for live video.
 - [docs/identity-providers.md](docs/identity-providers.md): step-by-step sign-in setup for Zitadel, Keycloak, Microsoft Entra ID and Google Workspace.
 - [docs/verification.md](docs/verification.md): what has been verified and what has not, tested versions, and the steps to check a real UNVR and a real identity provider.
@@ -63,8 +63,8 @@ access; they start with no cameras until you add them to a group in Admin.
 | Type-check, lint | `pnpm typecheck`, `pnpm lint` |
 | Production build | `pnpm build` |
 | New migration after a schema change | `pnpm db:generate` |
-| Apply migrations | `pnpm vantage migrate` (container: `node cli.mjs migrate`) |
-| Back up now | `pnpm vantage backup` |
-| Check a backup | `pnpm vantage verify <file>` |
-| Restore | `pnpm vantage restore <file> [--force]` |
+| Apply migrations | `pnpm unifeye migrate` (container: `node cli.mjs migrate`) |
+| Back up now | `pnpm unifeye backup` |
+| Check a backup | `pnpm unifeye verify <file>` |
+| Restore | `pnpm unifeye restore <file> [--force]` |
 | Deploy | `docker compose up -d` (see [docs/deployment.md](docs/deployment.md)) |

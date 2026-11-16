@@ -10,7 +10,7 @@ import { restoreDatabase } from "@/server/ops/restore";
 import { makeFixture } from "@/server/testing/fixture";
 import { dayBounds, timeInput, zonedToUtc } from "@/ui/api";
 
-const tmp = () => mkdtempSync(join(tmpdir(), "vantage-ops-"));
+const tmp = () => mkdtempSync(join(tmpdir(), "unifeye-ops-"));
 /** How many migrations this build ships; the schema version of a freshly installed database. */
 const SHIPPED = JSON.parse(readFileSync(join(process.cwd(), "drizzle", "meta", "_journal.json"), "utf8")).entries.length as number;
 /** The real migrations up to and including the first `count`, as an older build would have shipped them. */
@@ -112,9 +112,9 @@ describe("backup and restore", () => {
   });
   it("prunes only daily backups past retention", () => {
     const dir = tmp();
-    for (const n of ["vantage-20200101T000000Z-daily.sqlite", "vantage-20200101T000000Z-manual.sqlite", "vantage-20200101T000000Z-pre-migration.sqlite"]) writeFileSync(join(dir, n), "x");
+    for (const n of ["unifeye-20200101T000000Z-daily.sqlite", "unifeye-20200101T000000Z-manual.sqlite", "unifeye-20200101T000000Z-pre-migration.sqlite"]) writeFileSync(join(dir, n), "x");
     const old = Date.now() + 30 * 864e5;
-    expect(pruneBackups(dir, 14, old)).toEqual(["vantage-20200101T000000Z-daily.sqlite"]);
+    expect(pruneBackups(dir, 14, old)).toEqual(["unifeye-20200101T000000Z-daily.sqlite"]);
     expect(readdirSync(dir)).toHaveLength(2);
   });
   it("a plain file copy of a live WAL database can miss committed data; the backup API does not", async () => {

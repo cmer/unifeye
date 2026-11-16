@@ -1,5 +1,5 @@
 /**
- * Operations commands. In the container: `node cli.mjs <command>`; locally: `pnpm vantage <command>`.
+ * Operations commands. In the container: `node cli.mjs <command>`; locally: `pnpm unifeye <command>`.
  *   migrate            apply pending migrations (backs up first when upgrading an existing database)
  *   backup             write a verified, consistent backup to BACKUP_DIR
  *   verify <file>      integrity-check a backup and print its schema version
@@ -26,6 +26,6 @@ const main = async () => {
     for (const u of db.select().from(schema.users).all()) console.log([u.role, u.status, u.email ?? "-", u.name || "-", u.issuer, u.subject].join("\t"));
     db.$client.close();
   }
-  else { console.error("usage: vantage migrate | backup | verify <file> | restore <file> [--force] | users"); process.exit(2); }
+  else { console.error("usage: unifeye migrate | backup | verify <file> | restore <file> [--force] | users"); process.exit(2); }
 };
 main().catch((e) => { console.error(String(e?.message ?? e)); process.exit(1); });

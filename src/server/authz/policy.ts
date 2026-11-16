@@ -20,7 +20,7 @@ export interface CameraInfo {
  *  - Deny by default. A disabled or unknown user sees nothing.
  *  - Staff: union of explicit allow grants made to the user and to every group they belong to
  *    (including any group flagged "all staff"). There are no deny rules.
- *  - Admin: every camera known to Vantage. This is an explicit policy, not a side effect.
+ *  - Admin: every camera known to Unifeye. This is an explicit policy, not a side effect.
  *  - Tags and view sharing never grant access.
  *
  * Every route, background job and media boundary must go through this class. Results are cached

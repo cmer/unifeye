@@ -10,7 +10,7 @@ import { claimValues, recordProviderGroups } from "./claims";
 import type { Sessions, SessionRow } from "./session";
 
 const LOGOUT_EVENT = "http://schemas.openid.net/event/backchannel-logout";
-export const LOGIN_TXN_COOKIE = "vantage_login";
+export const LOGIN_TXN_COOKIE = "unifeye_login";
 const TXN_TTL_MS = 10 * 60_000;
 
 export class AdmissionError extends Error {
@@ -97,7 +97,7 @@ export class Oidc {
     const claims = tokens.claims();
     if (!claims || !tokens.id_token) return fail("no_id_token");
     // openid-client trusts an ID token that arrives directly from the token endpoint over TLS and
-    // does not check its signature. Vantage verifies it explicitly against the issuer's keys.
+    // does not check its signature. Unifeye verifies it explicitly against the issuer's keys.
     try {
       await jwtVerify(tokens.id_token, this.keys(cfg), { issuer: cfg.serverMetadata().issuer, audience: c.OIDC_CLIENT_ID!, clockTolerance: 30 });
     } catch (e) {
@@ -155,7 +155,7 @@ export class Oidc {
     return { token, session, user, returnTo: safeReturnTo(txn!.returnTo) };
   }
 
-  /** Ends the Vantage session immediately and returns the provider's end-session URL for the browser. */
+  /** Ends the Unifeye session immediately and returns the provider's end-session URL for the browser. */
   async logout(session: SessionRow): Promise<string> {
     const c = config();
     let hint: string | undefined;

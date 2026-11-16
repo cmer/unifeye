@@ -31,7 +31,7 @@ export interface Services {
 
 export function makeAdapter(): ProtectAdapter {
   const c = config();
-  if (c.VANTAGE_MODE === "real") return new UnifiProtectAdapter(c.PROTECT_NVR_ID, { host: c.PROTECT_HOST!, username: c.PROTECT_USERNAME!, password: c.PROTECT_PASSWORD!, verifyTls: !c.PROTECT_TLS_INSECURE, rtspsFingerprint: c.PROTECT_RTSPS_FINGERPRINT });
+  if (c.UNIFEYE_MODE === "real") return new UnifiProtectAdapter(c.PROTECT_NVR_ID, { host: c.PROTECT_HOST!, username: c.PROTECT_USERNAME!, password: c.PROTECT_PASSWORD!, verifyTls: !c.PROTECT_TLS_INSECURE, rtspsFingerprint: c.PROTECT_RTSPS_FINGERPRINT });
   // In mock mode MediaMTX runs the FFmpeg test source itself and publishes to its own loopback RTSP listener.
   return new MockProtectAdapter(c.PROTECT_NVR_ID, { rtspPublishUrl: (p) => `rtsp://${MTX_PUBLISH_USER}:${c.MEDIAMTX_API_SECRET ?? ""}@127.0.0.1:$RTSP_PORT/${p}` });
 }
@@ -50,16 +50,16 @@ export function buildServices(db: Db, adapter: ProtectAdapter, relay: Relay = ne
   return { db, policy, access, views, sessions, previews, admin, oidc, adapter, media, recordings, events, state: { startedAt: Date.now(), lastCameraSyncAt: null, lastCameraSyncError: null, timers: [] } };
 }
 
-const g = globalThis as unknown as { __vantage?: Services; __vantageStart?: Promise<void> };
+const g = globalThis as unknown as { __unifeye?: Services; __unifeyeStart?: Promise<void> };
 export function services(): Services {
-  return (g.__vantage ??= buildServices(openDefaultDb(), makeAdapter()));
+  return (g.__unifeye ??= buildServices(openDefaultDb(), makeAdapter()));
 }
-export function setServicesForTests(s: Services | undefined) { g.__vantage = s; }
+export function setServicesForTests(s: Services | undefined) { g.__unifeye = s; }
 
 /** Demo data is created only in mock mode, only when asked, only once, and only after an administrator exists. */
 export function maybeSeedDemo(s: Services) {
   const c = config();
-  if (c.VANTAGE_MODE !== "mock" || process.env.SEED_DEMO !== "1") return;
+  if (c.UNIFEYE_MODE !== "mock" || process.env.SEED_DEMO !== "1") return;
   const admin = s.db.select().from(schema.users).where(eq(schema.users.role, "admin")).get();
   if (admin && s.policy.allCamerasUnchecked().length && seedDemo(s.db, admin.id)) { s.policy.invalidate(); log("info", "demo data seeded (mock mode)"); }
 }
@@ -82,7 +82,7 @@ export async function syncNow(s: Services) {
  * the process, so the app never serves requests on a half-migrated database.
  */
 export function startRuntime(): Promise<void> {
-  return (g.__vantageStart ??= (async () => {
+  return (g.__unifeyeStart ??= (async () => {
     const c = config(), s = services();
     await runMigrations(s.db, { backupDir: c.BACKUP_DIR });
     const every = (sec: number, name: string, fn: () => unknown) => {
@@ -90,7 +90,7 @@ export function startRuntime(): Promise<void> {
       t.unref();
       s.state.timers.push(t);
     };
-    // After a restart Vantage has no record of who is watching: remove every reader (fail closed).
+    // After a restart Unifeye has no record of who is watching: remove every reader (fail closed).
     void s.media.sweep().catch(() => {});
     void syncNow(s);
     every(30, "camera sync", () => syncNow(s));
@@ -116,7 +116,7 @@ export function startRuntime(): Promise<void> {
     };
     process.once("SIGTERM", stop);
     process.once("SIGINT", stop);
-    audit(s.db, { action: "system.start", detail: { mode: c.VANTAGE_MODE } });
-    log("info", "vantage started", { mode: c.VANTAGE_MODE });
+    audit(s.db, { action: "system.start", detail: { mode: c.UNIFEYE_MODE } });
+    log("info", "unifeye started", { mode: c.UNIFEYE_MODE });
   })());
 }

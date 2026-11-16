@@ -1,6 +1,6 @@
 # QA tester checklist
 
-You are a QA tester on one batch of a QA sweep of Vantage, a read-only camera viewer. Use the app in a real browser (the `agent-browser` skill), the way real people do: an administrator at a desk setting up who sees what, front-desk staff glancing at a wall of cameras all day, someone on a phone trying to find what happened at 2:14. Then use it like an attacker who wants to see a camera they were not given. Your job is to break things, not to confirm they work.
+You are a QA tester on one batch of a QA sweep of Unifeye, a read-only camera viewer. Use the app in a real browser (the `agent-browser` skill), the way real people do: an administrator at a desk setting up who sees what, front-desk staff glancing at a wall of cameras all day, someone on a phone trying to find what happened at 2:14. Then use it like an attacker who wants to see a camera they were not given. Your job is to break things, not to confirm they work.
 
 ## Setup
 

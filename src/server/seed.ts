@@ -5,7 +5,7 @@ import { newId } from "./util";
 
 /**
  * Demo organization for mock mode and tests: tags, groups, grants and curated views.
- * Runs only when explicitly requested (VANTAGE_MODE=mock with SEED_DEMO=1, or from tests),
+ * Runs only when explicitly requested (UNIFEYE_MODE=mock with SEED_DEMO=1, or from tests),
  * never in real mode, and only once. It creates no users: people always arrive through SSO.
  * `ownerId` is the administrator who will own the curated views.
  */

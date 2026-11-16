@@ -1,6 +1,6 @@
 /**
  * A throwaway OpenID Connect provider for local development and browser tests ONLY.
- * It is a separate process, never part of the Vantage app or its container image, and Vantage
+ * It is a separate process, never part of the Unifeye app or its container image, and Unifeye
  * refuses an http:// issuer when NODE_ENV=production, so it cannot become a production login.
  *
  *   pnpm exec tsx scripts/test-oidc-provider.ts        # listens on http://localhost:9911
@@ -9,7 +9,7 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 
-const PORT = Number(process.env.TEST_OIDC_PORT ?? 9911), ISS = `http://localhost:${PORT}`, PUB = process.env.TEST_OIDC_PUBLIC_URL ?? ISS, CLIENT = process.env.OIDC_CLIENT_ID ?? "vantage-dev", GROUP = "vantage";
+const PORT = Number(process.env.TEST_OIDC_PORT ?? 9911), ISS = `http://localhost:${PORT}`, PUB = process.env.TEST_OIDC_PUBLIC_URL ?? ISS, CLIENT = process.env.OIDC_CLIENT_ID ?? "unifeye-dev", GROUP = "unifeye";
 const PEOPLE = [["dev-admin", "Avery Chen"], ["dev-upper", "Morgan Reyes"], ["dev-front", "Sam Okafor"], ["dev-security", "Jordan Blake"], ["dev-newhire", "Riley Park"]];
 const codes = new Map<string, { sub: string; nonce: string; challenge: string }>();
 

@@ -1,5 +1,5 @@
 /**
- * Everything Vantage needs from UniFi Protect, and nothing else. The contract is read-only:
+ * Everything Unifeye needs from UniFi Protect, and nothing else. The contract is read-only:
  * there is no method that changes camera settings, recordings, retention, events or Protect users.
  * `mock.ts` and `unifi.ts` both implement it, so the application never knows which one it has.
  */
@@ -13,7 +13,7 @@ export interface ProtectCamera {
   model?: string;
   /** Detection types this camera can report. Used to tell "unsupported" apart from "no results". */
   eventTypes: EventType[];
-  /** Streams that are already enabled on the camera. Vantage never enables one itself. */
+  /** Streams that are already enabled on the camera. Unifeye never enables one itself. */
   streams: { quality: "high" | "medium" | "low"; width: number; height: number; codec?: string }[];
   /** Outer bounds of what the recorder holds for this camera, when known. */
   recordingStartMs?: number;

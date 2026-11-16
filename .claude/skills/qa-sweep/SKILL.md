@@ -1,12 +1,12 @@
 ---
 name: qa-sweep
-description: Run a ruthless browser QA sweep of Vantage, or of one area of it. A lead agent maps the features, sends parallel testers to break them in a real browser, files verified bugs and UX issues on GitHub ranked by severity, fixes the clear bugs with parallel builders and separate reviewers, and leaves product and wording decisions to Carl. Use when Carl says "qa sweep", "QA the app", "bug hunt" or "test <area> like a human".
+description: Run a ruthless browser QA sweep of Unifeye, or of one area of it. A lead agent maps the features, sends parallel testers to break them in a real browser, files verified bugs and UX issues on GitHub ranked by severity, fixes the clear bugs with parallel builders and separate reviewers, and leaves product and wording decisions to Carl. Use when Carl says "qa sweep", "QA the app", "bug hunt" or "test <area> like a human".
 disable-model-invocation: true
 ---
 
 # QA sweep
 
-You are the **QA lead** for cmer/vantage, a read-only camera viewer for UniFi Protect. You coordinate subagents that find and fix bugs. You don't test, fix or review anything yourself: you plan, dispatch, check results, keep GitHub up to date and report. Assume every feature has bugs until a tester has tried to break it. If a pass finds nothing, it didn't push hard enough.
+You are the **QA lead** for cmer/unifeye, a read-only camera viewer for UniFi Protect. You coordinate subagents that find and fix bugs. You don't test, fix or review anything yourself: you plan, dispatch, check results, keep GitHub up to date and report. Assume every feature has bugs until a tester has tried to break it. If a pass finds nothing, it didn't push hard enough.
 
 **Arguments:** $ARGUMENTS
 
@@ -27,7 +27,7 @@ Sweeps run in **mock mode**: simulated cameras, a throwaway test sign-in provide
 
 - Never point a sweep at a real recorder or a real identity provider, and never file a finding that claims real-recorder or real-identity-provider behavior. Those stay listed as not verified in `docs/verification.md`.
 - A defect in the mock adapter or the test sign-in provider is a P3 at most, unless it hides a defect in the app.
-- Vantage must never change anything on the recorder. A code path that could write to Protect is a P0 even though the mock cannot show the damage.
+- Unifeye must never change anything on the recorder. A code path that could write to Protect is a P0 even though the mock cannot show the damage.
 
 ## Where state lives
 
@@ -112,7 +112,7 @@ Then you tick the batch in the run issue body.
 
 | Severity | Criteria |
 |---|---|
-| **P0-critical** | Seeing or learning about a camera, view, event, clip or person without access to it, by any route including media, thumbnails and error messages. Reaching MediaMTX, an RTSP URL, a recorder credential or another person's session from a browser. Access that keeps working more than 30 seconds after it was revoked. Sign-in bypass, staff acting as administrator, a preview that can change data. Any write to the recorder. XSS. Lost or corrupted Vantage data. |
+| **P0-critical** | Seeing or learning about a camera, view, event, clip or person without access to it, by any route including media, thumbnails and error messages. Reaching MediaMTX, an RTSP URL, a recorder credential or another person's session from a browser. Access that keeps working more than 30 seconds after it was revoked. Sign-in bypass, staff acting as administrator, a preview that can change data. Any write to the recorder. XSS. Lost or corrupted Unifeye data. |
 | **P1-high** | A main flow broken or wrong with no workaround: sign-in, the camera wall, live video, playback, saving a clip, managing access. A wrong grant or share saved. A missing audit entry for a change or a denial. Crash or blank page. |
 | **P2-medium** | Broken edge case, a workaround exists, missing validation, wrong time or time zone on screen, broken phone layout, broken light or dark theme. |
 | **P3-low** | Cosmetic, minor copy, polish, mock-only quirks. |
@@ -148,7 +148,7 @@ Post the report as a comment on the run issue, and give the same report as your 
 
 1. **Coverage:** each batch with the roles, widths and themes tested. List anything nobody could test, and why. Always list "real UNVR" and "real identity provider" here.
 2. **Issues:** every issue this run filed, sorted by severity, as: severity, linked title, status (fixed in PR / open / needs review / needs-info).
-3. **Needs your review:** a full link per item (`https://github.com/cmer/vantage/issues/<n>`), one line each, saying what decision is needed. Most important first.
+3. **Needs your review:** a full link per item (`https://github.com/cmer/unifeye/issues/<n>`), one line each, saying what decision is needed. Most important first.
 4. **Rejected findings:** the count, with a link to the run-issue comment that lists them.
 5. **Next:** what to sweep next, in one sentence.
 

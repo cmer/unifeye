@@ -21,16 +21,16 @@ const isInternal = (ip = "") => /^(127\.|::1$|::ffff:127\.|10\.|192\.168\.|172\.
  * The media boundary. Browsers never receive an RTSP URL, a Protect cookie or a MediaMTX address.
  *
  * Enforcement, in order:
- *  1. Setup: every WHEP/HLS request arrives at a Vantage route, which authenticates the session,
+ *  1. Setup: every WHEP/HLS request arrives at a Unifeye route, which authenticates the session,
  *     resolves the effective subject (the staff member during a preview) and asks Policy for the camera.
- *  2. Capability: Vantage then calls the relay itself with a random ticket bound to
+ *  2. Capability: Unifeye then calls the relay itself with a random ticket bound to
  *     session + subject + camera + path + transport, valid for 30 seconds (single use for WebRTC).
  *  3. Relay boundary: MediaMTX is configured with `authMethod: http` and asks `hook()` before
  *     serving any reader. A reader without a valid ticket is refused even if it reaches MediaMTX directly.
  *  4. Ongoing delivery: each admitted relay reader id is recorded with its grant. `sweep()` re-checks
  *     every one with `Access.holds` (session, preview, Policy) and kicks failures through the relay.
  *     It runs on every access change (`revalidate`) and every REVOCATION_SWEEP_SECONDS (default 10 s, max 30 s).
- *     Relay readers Vantage does not know are kicked too. HLS is also re-authorized per request.
+ *     Relay readers Unifeye does not know are kicked too. HLS is also re-authorized per request.
  * If anything cannot be resolved (policy error, unknown session), access is denied.
  *
  * Everything said to the relay goes through the `Relay` interface (relay.ts). This class keeps the

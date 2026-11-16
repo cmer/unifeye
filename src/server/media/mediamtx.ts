@@ -3,8 +3,8 @@ import { config } from "../config";
 import type { LiveSource } from "../protect/types";
 import { RelayUnavailable, type HlsFile, type HlsReader, type ReaderKind, type Relay, type WhepAnswer } from "./relay";
 
-export const MTX_API_USER = "vantage-api";
-export const MTX_PUBLISH_USER = "vantage-publisher";
+export const MTX_API_USER = "unifeye-api";
+export const MTX_PUBLISH_USER = "unifeye-publisher";
 /** Suffix of the internal path a retimed stream is pulled into. Only the retiming FFmpeg reads it. */
 export const SRC_SUFFIX = "_src";
 
@@ -30,7 +30,7 @@ function retimeCommand(name: string) {
  * the only place that knows MediaMTX's URL shapes, the Bearer-ticket convention, the WHEP
  * `location` format and the HLS cookie and redirect mechanics. MediaMTX is never reachable from
  * browsers: these listeners stay on the internal network, and every reader is authorized by
- * Vantage through the HTTP auth hook. Only the WebRTC media port (ICE) is published.
+ * Unifeye through the HTTP auth hook. Only the WebRTC media port (ICE) is published.
  *
  * The requests were checked by hand against MediaMTX 1.21.4 and are pinned by tests/mediamtx.test.ts.
  */

@@ -19,8 +19,8 @@ function sess(userId: string, fresh = false) {
 }
 async function call(userId: string | null, method: string, path: string, o: { body?: unknown; raw?: string; preview?: string; csrf?: boolean; headers?: Record<string, string>; session?: { token: string; csrf: string } } = {}) {
   const h: Record<string, string> = { ...o.headers };
-  if (userId) { const t = o.session ?? sess(userId); h.cookie = `vantage_session=${t.token}`; if (o.csrf !== false && method !== "GET") h["x-csrf-token"] = t.csrf; }
-  if (o.preview) h["x-vantage-preview"] = o.preview;
+  if (userId) { const t = o.session ?? sess(userId); h.cookie = `unifeye_session=${t.token}`; if (o.csrf !== false && method !== "GET") h["x-csrf-token"] = t.csrf; }
+  if (o.preview) h["x-unifeye-preview"] = o.preview;
   if (o.body !== undefined) h["content-type"] = "application/json";
   const res = await handleApi(new Request(`http://localhost:3000/api${path}`, { method, headers: h, body: o.raw ?? (o.body === undefined ? undefined : JSON.stringify(o.body)) }));
   const text = res.headers.get("content-type")?.includes("json") ? await res.clone().text() : "";
@@ -31,7 +31,7 @@ const wait = async (fn: () => Promise<boolean>, ms = 15000) => { const end = Dat
 beforeEach(() => {
   tokens.clear();
   f = makeFixture();
-  (config() as { MEDIA_CACHE_DIR: string }).MEDIA_CACHE_DIR = mkdtempSync(join(tmpdir(), "vantage-test-"));
+  (config() as { MEDIA_CACHE_DIR: string }).MEDIA_CACHE_DIR = mkdtempSync(join(tmpdir(), "unifeye-test-"));
 });
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -56,7 +56,7 @@ describe("authentication boundary", () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("provider down"); }));
     const r = await call(f.u.front, "POST", "/auth/logout");
     expect(r.status).toBe(200);
-    expect(r.res.headers.get("set-cookie")).toMatch(/vantage_session=;.*Max-Age=0/);
+    expect(r.res.headers.get("set-cookie")).toMatch(/unifeye_session=;.*Max-Age=0/);
     expect((await call(f.u.front, "GET", "/me")).status).toBe(401);
   });
   it("staff cannot reach administration, whatever they send", async () => {
@@ -232,11 +232,11 @@ describe("media tickets and active-stream revocation", () => {
     expect(hook({ path: `c_${cam}_wall`, token: "guess" })).toBe(false);
     expect(hook({ path: `c_${cam}_wall`, token: "" })).toBe(false); // direct, unauthenticated access to MediaMTX
     expect(f.s.media.hook("hook", { action: "read", protocol: "rtsp", path: `c_${cam}_wall`, id: "r1" })).toBe(false); // raw RTSP readers are never allowed
-    expect(f.s.media.hook("wrong", { action: "api", user: "vantage-api", password: "api" })).toBe(false);
-    expect(f.s.media.hook("hook", { action: "api", user: "vantage-api", password: "api" })).toBe(true);
-    expect(f.s.media.hook("hook", { action: "publish", user: "vantage-publisher", password: "api", ip: "203.0.113.9" })).toBe(false);
+    expect(f.s.media.hook("wrong", { action: "api", user: "unifeye-api", password: "api" })).toBe(false);
+    expect(f.s.media.hook("hook", { action: "api", user: "unifeye-api", password: "api" })).toBe(true);
+    expect(f.s.media.hook("hook", { action: "publish", user: "unifeye-publisher", password: "api", ip: "203.0.113.9" })).toBe(false);
     // The relay's own FFmpeg, on loopback: may publish a camera path, and read only the internal `_src` path over RTSP.
-    const relayHook = (b: object) => f.s.media.hook("hook", { user: "vantage-publisher", password: "api", ip: "127.0.0.1", ...b });
+    const relayHook = (b: object) => f.s.media.hook("hook", { user: "unifeye-publisher", password: "api", ip: "127.0.0.1", ...b });
     expect(relayHook({ action: "publish", path: `c_${cam}_wall` })).toBe(true);
     expect(relayHook({ action: "publish", path: `c_${cam}_wall_src` })).toBe(false);
     expect(relayHook({ action: "read", protocol: "rtsp", path: `c_${cam}_wall_src` })).toBe(true);
@@ -293,7 +293,7 @@ describe("media tickets and active-stream revocation", () => {
     const unknown = f.relay.intruder("webrtc");
     f.admin.setGrant(f.actor(f.u.admin), { userId: f.u.front }, f.cam["Loading Dock"], false);
     await kicked(dock);
-    await kicked(unknown); // readers Vantage did not admit are removed
+    await kicked(unknown); // readers Unifeye did not admit are removed
     expect(f.relay.kicked).not.toContain(entrance); expect(f.relay.kicked).not.toContain(lounge);
     f.admin.updateUser(f.actor(f.u.admin), f.u.upper, { status: "disabled" });
     await kicked(lounge);
@@ -372,7 +372,7 @@ describe("media tickets and active-stream revocation", () => {
     await kicked(hlsLounge);
     expect(f.relay.kicked).not.toContain(hlsEntrance); expect(f.relay.kicked).not.toContain(rtcEntrance);
   });
-  it("kicks a reader the relay admitted without Vantage, on either transport", async () => {
+  it("kicks a reader the relay admitted without Unifeye, on either transport", async () => {
     await whep(f.u.front, "Front Entrance");
     const a = f.relay.intruder("hls"), b = f.relay.intruder("webrtc");
     expect(await f.s.media.sweep()).toEqual({ kicked: 2 });

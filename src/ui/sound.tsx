@@ -13,7 +13,7 @@ import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitl
  * When the browser refuses to play with sound (no recent click, e.g. after a reload), the camera
  * plays muted and gets its sound back on the viewer's next click or key press anywhere on the page.
  */
-const KEY = "vantage.sound";
+const KEY = "unifeye.sound";
 let current: string | null = null;
 let wanted = (() => { try { return localStorage.getItem(KEY) === "on"; } catch { return false; } })();
 /** The camera that lost its sound to the browser's autoplay rules, waiting for the next gesture. */

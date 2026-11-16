@@ -6,7 +6,7 @@ export const HLS_PLAYLIST = "#EXTM3U\n#EXT-X-VERSION:9\n#EXT-X-TARGETDURATION:2\
 export const HLS_SEGMENT = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]);
 
 /**
- * An in-memory media relay for tests. It behaves like MediaMTX as far as Vantage can observe:
+ * An in-memory media relay for tests. It behaves like MediaMTX as far as Unifeye can observe:
  *  - it admits no reader on its own: every WHEP offer and every HLS request asks the auth hook
  *    (the function behind /api/internal/mediamtx-auth) with the ticket it was given, and refuses
  *    when the hook refuses;
@@ -34,7 +34,7 @@ export class MemoryRelay implements Relay {
   // ---- test controls ----
   /** Ids of attached readers of one kind, oldest first. */
   ids(kind: ReaderKind) { return [...this.sessions].filter(([, s]) => s.kind === kind).map(([id]) => id); }
-  /** A reader that got in without Vantage admitting it (it never went through the hook). */
+  /** A reader that got in without Unifeye admitting it (it never went through the hook). */
   intruder(kind: ReaderKind, stream = "c_unknown_wall") { const id = `intruder-${++this.seq}`; this.sessions.set(id, { kind, stream }); return id; }
   /** Makes `readers()` wait until the returned function is called, to hold a sweep mid-flight. */
   holdListing() { let release = () => {}; this.held = new Promise((r) => { release = () => { this.held = null; r(); }; }); return release; }

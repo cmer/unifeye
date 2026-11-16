@@ -5,7 +5,7 @@ import type { Policy } from "../authz/policy";
 import { encrypt, hashToken, newId, randomToken } from "../util";
 
 export type SessionRow = typeof schema.sessions.$inferSelect;
-export const SESSION_COOKIE = "vantage_session";
+export const SESSION_COOKIE = "unifeye_session";
 
 /**
  * Server-managed sessions for SSO identities. The cookie holds an opaque random token; only its

@@ -12,7 +12,7 @@ export default async function SignedOut({ searchParams }: { searchParams: Promis
     <main className="grid h-full place-items-center p-6">
       <div className="w-full max-w-sm text-center">
         <div className="mx-auto mb-5 grid size-10 place-items-center rounded-lg bg-primary text-lg font-bold text-primary-foreground">V</div>
-        <h1 className="text-xl font-semibold">Vantage</h1>
+        <h1 className="text-xl font-semibold">Unifeye</h1>
         <p className="mt-2 text-sm text-muted-foreground">{(error && MESSAGES[error]) || "You're signed out."}</p>
         {/* A plain link on purpose: this is an API redirect to the identity provider's sign-in page, not a page route. */}
         {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
