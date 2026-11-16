@@ -111,7 +111,10 @@ relay, last backup). Neither exposes configuration or secrets.
   protected by `MEDIAMTX_HOOK_SECRET`.
 - Forward the client address in `X-Forwarded-For` (rate limiting uses the first address).
 - Open port **8189 UDP and TCP** from viewers to the host, and set `WEBRTC_PUBLIC_HOST` to the
-  address they use. If neither is reachable, video falls back to HLS through the HTTPS proxy.
+  address they use (a comma-separated list is allowed, for example a LAN IP and a public name). A
+  viewer who cannot reach it gets HLS through the HTTPS proxy after about 4 seconds, and that tab
+  uses HLS directly for the next 10 minutes.
+- Cloudflare Tunnel can take the place of the reverse proxy: see [cloudflare-tunnel.md](cloudflare-tunnel.md).
 - Nothing else is published. Do not publish 8554, 8888, 8889 or 9997.
 
 ## 5. Configuration reference

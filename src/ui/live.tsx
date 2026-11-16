@@ -4,9 +4,30 @@ import { api, ApiError, mediaUrl, previewToken } from "./api";
 
 type State = "idle" | "connecting" | "playing" | "unavailable" | "error";
 
+/** How long WebRTC may take to connect once signalling is done. On a reachable network it takes well under a second. */
+const WEBRTC_CONNECT_MS = 4000;
+/** After WebRTC media could not get through, use HLS straight away for this long before trying WebRTC again. */
+const WEBRTC_SKIP_MS = 10 * 60_000;
+const SKIP_KEY = "vantage.webrtc-unreachable-until";
+/**
+ * WebRTC media goes to port 8189 directly, which is not reachable from every network (for example
+ * through a tunnel that only carries HTTPS). Once one tile finds that out, the others, and this tab
+ * after a reload, skip straight to HLS instead of each waiting for the same timeout.
+ */
+let skipUntil = 0;
+const webrtcSkipped = () => {
+  if (!skipUntil) try { skipUntil = Number(sessionStorage.getItem(SKIP_KEY)) || 0; } catch { /* storage unavailable */ }
+  return Date.now() < skipUntil;
+};
+const skipWebrtc = () => {
+  skipUntil = Date.now() + WEBRTC_SKIP_MS;
+  try { sessionStorage.setItem(SKIP_KEY, String(skipUntil)); } catch { /* storage unavailable */ }
+};
+
 /**
  * Live video for one camera. WebRTC (WHEP) first, for low latency; if that cannot connect, HLS
- * through the same authorized gateway. While `active` is false nothing is connected and the last
+ * through the same authorized gateway. A failed WebRTC connection is remembered for a while (see
+ * `skipWebrtc`) so the next tiles go to HLS directly. While `active` is false nothing is connected and the last
  * still image is shown, which is how the wall keeps the number of open streams bounded.
  * Everything is torn down when the tile leaves the screen or the page changes.
  */
@@ -32,7 +53,11 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
       if (closed) return;
       const src = mediaUrl(`/api/media/live/${cameraId}/hls/${quality}/index.m3u8`);
       try {
-        if (el.canPlayType("application/vnd.apple.mpegurl")) el.src = src;
+        if (el.canPlayType("application/vnd.apple.mpegurl")) {
+          // The browser's own HLS player (Safari, recent Chrome): same retry rule as hls.js below.
+          el.onerror = () => { if (closed) return; el.onerror = null; if (attempt < 4) retry(); else setState("error"); };
+          el.src = src;
+        }
         else {
           const { default: Hls } = await import("hls.js");
           if (closed || !Hls.isSupported()) return setState("error");
@@ -46,6 +71,19 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
     };
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reflects the connection this effect is opening
     setState("connecting");
+    if (webrtcSkipped()) { void viaHls(); return cleanup; }
+    // Media never arrived: this network cannot reach the WebRTC port. Switch transport and remember it.
+    const unreachable = () => {
+      if (closed || !pc) return;
+      clearTimeout(timer); pc.close(); pc = undefined;
+      el.srcObject = null; // a media stream outranks `src`: left attached, it would hide the HLS video
+      skipWebrtc();
+      // Release the WebRTC session first: until then it still counts against this session's stream limit.
+      const r = resource; resource = null;
+      if (r) void api(r.replace(/^\/api/, ""), { method: "DELETE" }).catch(() => {}).finally(() => void viaHls());
+      else void viaHls();
+    };
+    let connected = false;
     (async () => {
       try {
         pc = new RTCPeerConnection();
@@ -54,9 +92,10 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
         pc.ontrack = (e) => { if (!closed && el.srcObject !== e.streams[0]) el.srcObject = e.streams[0]; };
         pc.onconnectionstatechange = () => {
           if (closed || !pc) return;
-          if (pc.connectionState === "connected") setState("playing");
+          if (pc.connectionState === "connected") { connected = true; clearTimeout(timer); setState("playing"); }
+          else if (pc.connectionState === "failed" && !connected) unreachable();
           // Also fires when the server ends the stream because access was removed; the retry then gets a clean "not available".
-          if (pc.connectionState === "failed" || pc.connectionState === "disconnected" || pc.connectionState === "closed") retry();
+          else if (pc.connectionState === "failed" || pc.connectionState === "disconnected" || pc.connectionState === "closed") retry();
         };
         await pc.setLocalDescription(await pc.createOffer());
         await new Promise<void>((done) => {
@@ -68,8 +107,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
         resource = ans.location;
         if (closed) return;
         await pc.setRemoteDescription({ type: "answer", sdp: ans.sdp });
-        // No media after a while usually means UDP is blocked on this network: switch transport.
-        timer = setTimeout(() => { if (!closed && pc?.connectionState !== "connected") { pc?.close(); pc = undefined; void viaHls(); } }, 8000);
+        if (!connected) timer = setTimeout(unreachable, WEBRTC_CONNECT_MS);
       } catch (e) {
         if (closed) return;
         if (e instanceof ApiError && e.status === 404) onGone?.(); // access was removed: let the page refresh what it shows
@@ -78,14 +116,15 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
         else void viaHls();
       }
     })();
-    return () => {
+    function cleanup() {
       closed = true;
       clearTimeout(timer);
       pc?.close();
       hls?.destroy();
       if (resource) void api(resource.replace(/^\/api/, ""), { method: "DELETE" }).catch(() => {});
-      el.onplaying = null; el.srcObject = null; el.removeAttribute("src"); el.load();
-    };
+      el.onplaying = null; el.onerror = null; el.srcObject = null; el.removeAttribute("src"); el.load();
+    }
+    return cleanup;
   }, [cameraId, quality, active, online, attempt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const state: State = active && online ? raw : "idle";
