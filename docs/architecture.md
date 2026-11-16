@@ -194,8 +194,9 @@ existing sessions are not extended, and a session that could not be re-validated
 2. Vantage calls MediaMTX itself with a random ticket bound to session, subject, camera, path and
    transport, valid for 30 seconds and single-use for WebRTC.
 3. MediaMTX runs with `authMethod: http` and asks Vantage's hook before serving any reader. A
-   request without a valid ticket is refused even if it reaches MediaMTX directly. RTSP readers are
-   never admitted.
+   request without a valid ticket is refused even if it reaches MediaMTX directly. The only RTSP
+   reader admitted is the relay's own FFmpeg (publisher credentials, internal address), and only on
+   the internal `_src` paths described under Sound; no ticket ever names one of those.
 4. Each admitted MediaMTX session is recorded with its grant. A sweep re-checks all of them with
    `Access` and kicks failures through the control API. It runs on every access signal and on a
    timer; a signal that arrives during a sweep triggers another one straight after. Readers Vantage
@@ -233,6 +234,17 @@ A camera without sound shows a greyed-out speaker that explains "No audio". Whil
 small meter shows the level actually arriving, so a viewer can tell a quiet room from a problem with
 their own speakers. The meter is missing where the browser cannot expose an element's audio
 (Safari for HLS and recordings).
+
+Protect stamps its live audio in milliseconds while declaring a 16 kHz (AAC) or 48 kHz (Opus)
+clock, so its timestamps run 16 to 48 times too slow. Browsers play the first fraction of a second
+and then discard nearly every packet as late: a moment of garbled sound, then silence. For a camera
+with a microphone (`featureFlags.hasMic`), the relay therefore takes two paths (`mediamtx.ts`):
+MediaMTX pulls the camera into `<path>_src` as before, keeping the certificate fingerprint check,
+and an FFmpeg it starts on demand reads that path over loopback RTSP, copies the video, decodes the
+camera's first audio track and re-encodes it to AAC (for HLS) and Opus (for WebRTC) with timestamps
+counted from the samples, then publishes `<path>`, which is what readers get tickets for. It adds
+about half a second to start-up and one small FFmpeg process per stream being watched. Cameras
+without a microphone are pulled directly, as before.
 
 ### The relay seam
 
@@ -274,13 +286,37 @@ foreign or expired token fails the request; it never falls back to the administr
 ## Recorded playback
 
 Time is cut into fixed windows (`PLAYBACK_WINDOW_SECONDS`, default 60, aligned to the epoch). A seek
-loads only the window containing the chosen moment as a short MP4 and starts at the right offset;
-while a window plays, the player buffers the next one in a hidden video element and swaps it in when
-the current one ends, so playback continues without a black gap (the next window is buffered only
-once it is fully recorded; near live, the old load-on-end path still applies). Windows are cached on disk within a size and age limit. A seek
-that is abandoned cancels its export if nobody else is waiting for it. Clips start on a keyframe, so
-the first frame can be up to one keyframe interval early. Clicking an event starts
-`EVENT_PREROLL_SECONDS` (default 5) before it.
+loads only the window containing the chosen moment and starts at the right offset. The player first
+asks for the window's description (`GET /api/cameras/:id/playback/info`), then loads its video
+(`GET /api/cameras/:id/playback`). While a window plays, the player buffers the next one in hidden
+video elements and swaps it in, so playback continues without a black gap (the next window is
+buffered only once it is fully recorded; near live, the old load-on-end path still applies). Windows
+are cached on disk within a size and age limit. A seek that is abandoned cancels its export if nobody
+else is waiting for it. Clicking an event starts `EVENT_PREROLL_SECONDS` (default 5) before it.
+
+The recorder starts an export on the keyframe before the requested time, so a window's file usually
+begins a few seconds early. The description's `leadMs` says by how much. The player maps media time to
+wall-clock time with it, hands over to the next window when the wall-clock window ends (not when the
+file ends), and starts the next window at its own lead, so nothing is replayed or skipped at a
+handover. When the file runs out first, the old load-on-end path applies.
+
+Adaptive recording (Protect records the low channel, and the high channel only around motion) needs
+two corrections:
+
+- **Video clock.** Some cameras' low channel exports with a video clock that runs fast (a 60-second
+  window holds about 38 seconds of video beside 60 seconds of audio), which made the picture race
+  ahead and then freeze. After each export, the UniFi adapter spreads the video frames evenly across
+  the audio's span with an FFmpeg stream copy (`retimeVideoToAudio` in `src/server/protect/ffmpeg.ts`).
+  Files that are already consistent are left alone.
+- **High-resolution stretches.** A channel 0 export of a window containing motion holds only the
+  high-resolution stretches, joined, with nothing saying where they belong. When that export is more
+  than a second shorter than the window, the window is also exported from the low channel, which
+  becomes the base. The high-resolution file becomes an overlay (`?layer=high`), and its stretches are
+  placed by matching both files' audio (`alignSpans` in `src/server/media/align.ts`), to within 10 ms.
+  The description lists them as overlay spans. The player keeps the base as the clock and, on every
+  animation frame, keeps the overlay in step and shows it only inside its spans and only once it has
+  the right frame. If the audio cannot place the overlay (no audio, silence), the window plays in low
+  resolution rather than at the wrong moment.
 
 Saved clips can be up to `CLIP_MAX_SECONDS` long (default two hours). The UniFi adapter streams
 every export (playback windows and clips) from the recorder straight to disk over a second
@@ -300,9 +336,9 @@ zone, so a day is 23, 24 or 25 hours long around daylight-saving changes.
   period, and a gap shows up as "Nothing recorded" when you seek into it.
 - Live video needs an RTSP stream already enabled on the camera in Protect. Enabling one would be a
   write, so Vantage does not do it.
-- WebRTC carries a camera's sound only if Protect's RTSPS stream includes an Opus track next to the
-  AAC one. One camera checked on a real UNVR did; whether every camera model does is not known. A
-  camera with AAC only has sound over HLS and shows "No audio" over WebRTC. H.265 cameras play only
-  in browsers that support it.
+- Live sound depends on rebuilding Protect's audio timestamps (see Sound). If a Protect release
+  fixes them, the rebuild is still correct but no longer needed. Audio timing counts samples from
+  the start of each stream, so sound and video may drift apart slightly over a long session. H.265
+  cameras play only in browsers that support it.
 - SQLite means one application instance on local disk. Running replicas or placing the database on
   a network filesystem is not supported.

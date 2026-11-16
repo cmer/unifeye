@@ -177,9 +177,11 @@ route("GET", "/cameras/:id/snapshot", { rate: "media" }, async ({ s, actor, p, u
   return new Response(new Uint8Array(img), { headers: { "content-type": "image/jpeg", "cache-control": "private, no-store" } });
 });
 route("GET", "/cameras/:id/recordings", {}, ({ s, actor, p, url }) => s.recordings.ranges(actor, p.id, num(url.searchParams.get("from"), "from"), num(url.searchParams.get("to"), "to")));
+route("GET", "/cameras/:id/playback/info", { rate: "media" }, async ({ s, actor, p, url, req }) => (await s.recordings.window(actor, p.id, num(url.searchParams.get("t"), "t"), req.signal)).info);
 route("GET", "/cameras/:id/playback", { rate: "media" }, async ({ s, actor, p, url, req }) => {
-  const w = await s.recordings.window(actor, p.id, num(url.searchParams.get("t"), "t"), req.signal);
-  return fileResponse(w.file, req, "video/mp4", { "x-window-start": String(w.startMs), "x-window-end": String(w.endMs) });
+  const w = await s.recordings.window(actor, p.id, num(url.searchParams.get("t"), "t"), req.signal), file = url.searchParams.get("layer") === "high" ? w.high : w.base;
+  if (!file) throw new HttpError(404, "no_recording", "Nothing recorded at this time");
+  return fileResponse(file, req, "video/mp4", { "x-window-start": String(w.info.startMs), "x-window-end": String(w.info.endMs) });
 });
 
 // ---- live video -----------------------------------------------------------------

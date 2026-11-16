@@ -1,20 +1,10 @@
-import { spawn } from "node:child_process";
+import { ffmpeg } from "./ffmpeg";
 import { MOCK_CAMERAS, type MockCamera } from "./mock-data";
 import { NoRecordingError, type AdapterHealth, type EventQuery, type EventType, type LiveSource, type ProtectAdapter, type ProtectCamera, type ProtectEvent, type RecordingRanges } from "./types";
 
 const DAY = 864e5, RETENTION = 7 * DAY;
 function rng(a: number) {
   return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
-}
-function ffmpeg(args: string[], signal?: AbortSignal): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const p = spawn("ffmpeg", ["-hide_banner", "-loglevel", "error", ...args], { stdio: ["ignore", "pipe", "pipe"], signal });
-    const out: Buffer[] = []; let err = "";
-    p.stdout.on("data", (d) => out.push(d));
-    p.stderr.on("data", (d) => (err += d));
-    p.on("error", reject);
-    p.on("close", (code) => (code === 0 ? resolve(Buffer.concat(out)) : reject(new Error(`ffmpeg exited ${code}: ${err.slice(0, 300)}`))));
-  });
 }
 
 /**
@@ -31,6 +21,14 @@ export class MockProtectAdapter implements ProtectAdapter {
   private t0 = Date.now();
   /** Tests flip this to simulate an NVR outage. */
   down = false;
+  /**
+   * Cameras (Protect ids) that simulate adaptive recording, also settable with MOCK_ADAPTIVE=mock-06,...
+   * Their exports start 2 s early, like a recorder starting on a keyframe, and carry audio that
+   * depends only on wall-clock time. Seconds 12 to 21 of every half minute count as motion: a
+   * channel 0 ("focus") export containing any motion holds only those stretches, joined, as a real
+   * recorder does; otherwise it, like the low channel ("wall"), holds the whole range in low resolution.
+   */
+  adaptive = new Set((process.env.MOCK_ADAPTIVE ?? "").split(",").filter(Boolean));
   cameras: MockCamera[] = MOCK_CAMERAS.map((c) => ({ ...c }));
 
   constructor(readonly nvrId = "default", private opts: { rtspPublishUrl?: (path: string) => string; liveEvents?: boolean } = {}) {}
@@ -129,10 +127,30 @@ export class MockProtectAdapter implements ProtectAdapter {
     this.guard();
     const c = this.cam(id), r = this.ranges(c, startMs, endMs);
     if (!r.length) throw new NoRecordingError();
+    if (this.adaptive.has(id)) return this.adaptiveClip(c, r[0][0] - 2000, r[r.length - 1][1], destPath, opts);
     // Like a real recorder, the clip covers what exists inside the window. Keyframe every second.
     const [a, b] = [r[0][0], r[r.length - 1][1]], [w, h] = opts.quality === "focus" ? [1280, 720] : [640, 360];
     const len = ((b - a) / 1000).toFixed(3), audio = c.mic ? ["-f", "lavfi", "-t", len, "-i", MockProtectAdapter.ROOM, "-c:a", "aac", "-b:a", "32k"] : [];
     await ffmpeg(["-f", "lavfi", ...this.offset(a), "-t", len, "-i", this.source(c, w, h, 10), ...audio, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "10", "-movflags", "+faststart", "-y", "-f", "mp4", destPath], opts.signal);
+  }
+
+  /** Motion stretches inside [a, b) for an adaptive camera: seconds 12 to 21 of every half minute. */
+  static motion(a: number, b: number): [number, number][] {
+    const out: [number, number][] = [];
+    for (let m = Math.floor(a / 30_000) * 30_000; m < b; m += 30_000) { const s = Math.max(a, m + 12_000), e = Math.min(b, m + 21_000); if (s < e) out.push([s, e]); }
+    return out;
+  }
+  private async adaptiveClip(c: MockCamera, a: number, b: number, destPath: string, opts: { quality?: "wall" | "focus"; signal?: AbortSignal }) {
+    const hi = opts.quality === "focus" ? MockProtectAdapter.motion(a, b) : [];
+    const parts: [number, number][] = hi.length ? hi : [[a, b]], [w, h] = hi.length ? [1280, 720] : [640, 360];
+    const dur = parts.reduce((n, [s, e]) => n + (e - s), 0) / 1000;
+    // Wall-clock seconds (within the day) at media time t, across the joined parts.
+    let clock = "", done = 0;
+    const pieces = parts.map(([s, e]) => { const p = { from: done, start: (s % 86_400_000) / 1000 }; done += (e - s) / 1000; return p; });
+    for (let i = pieces.length - 1; i >= 0; i--) { const at = `(${pieces[i].start}+t-${pieces[i].from})`; clock = clock ? `if(lt(t\\,${pieces[i + 1].from})\\,${at}\\,${clock})` : at; }
+    const amp = `mod(abs(sin(floor(${clock}*20)*12.9898)*43758.5453)\\,1)`;
+    await ffmpeg(["-f", "lavfi", ...this.offset(a), "-t", dur.toFixed(3), "-i", this.source(c, w, h, 10), "-f", "lavfi", "-t", dur.toFixed(3), "-i", `aevalsrc=exprs=${amp}*sin(2*PI*440*t):s=8000`,
+      "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "10", "-c:a", "aac", "-movflags", "+faststart", "-y", "-f", "mp4", destPath], opts.signal);
   }
 
   private generated(c: MockCamera, fromMs: number, toMs: number): ProtectEvent[] {

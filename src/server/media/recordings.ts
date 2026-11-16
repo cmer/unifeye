@@ -1,6 +1,6 @@
 import { and, eq, inArray, lt } from "drizzle-orm";
 import { createReadStream } from "node:fs";
-import { mkdir, readdir, rm, stat, utimes } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { audit } from "../audit";
@@ -9,8 +9,14 @@ import { subjectOf, type Actor } from "../authz/actor";
 import type { Policy } from "../authz/policy";
 import { config } from "../config";
 import { schema, type Db } from "../db";
+import { audioEnvelope, probe } from "../protect/ffmpeg";
 import { NoRecordingError, type ProtectAdapter } from "../protect/types";
 import { badRequest, HttpError, log, newId, notFound } from "../util";
+import { alignSpans, type Span } from "./align";
+
+/** What the player needs to know about a window. Overlay spans are in seconds of media time. */
+export interface WindowInfo { startMs: number; endMs: number; leadMs: number; overlay: Span[] }
+export interface PlaybackWindow { info: WindowInfo; base: string; high: string | null }
 
 /** How long a finished clip stays downloadable. */
 const EXPORT_KEEP = 10 * 60_000;
@@ -36,13 +42,14 @@ export async function fileResponse(path: string, req: Request, type: string, ext
  * Playback never downloads hours of video. Time is cut into fixed windows (PLAYBACK_WINDOW_SECONDS,
  * default 60 s, aligned to the epoch). A seek to time T fetches only the window containing T from
  * the recorder as a short MP4, caches it on disk, and the player starts at offset T - windowStart.
- * The player buffers the next window while the current one plays and swaps it in when it ends. Clips start on a keyframe, so the first frame
- * can be up to one keyframe interval early; the response carries the window's real start and end so
- * the player can map media time to wall-clock time. The cache is bounded in size and age.
+ * The player buffers the next window while the current one plays and swaps it in when it ends.
+ * Exports start on a keyframe, so a window's file can begin a few seconds early; `WindowInfo.leadMs`
+ * says by how much, so the player can map media time to wall-clock time and hand over exactly at the
+ * window's end. Adaptive recordings get a high-resolution overlay (see `build`). The cache is bounded in size and age.
  * An obsolete seek cancels its export when nobody else is waiting for that window.
  */
 export class Recordings {
-  private inflight = new Map<string, { p: Promise<string>; ac: AbortController; waiters: number }>();
+  private inflight = new Map<string, { p: Promise<PlaybackWindow>; ac: AbortController; waiters: number }>();
   private jobs = new Map<string, AbortController>();
   constructor(private db: Db, private policy: Policy, private access: Access, private adapter: () => ProtectAdapter) {}
 
@@ -54,28 +61,24 @@ export class Recordings {
     return this.adapter().recordingRanges(cam.protectId, fromMs, Math.min(toMs, Date.now()));
   }
 
-  /** Returns the cached window file containing `tMs`, fetching it if needed. */
-  async window(a: Actor, cameraId: string, tMs: number, signal?: AbortSignal): Promise<{ file: string; startMs: number; endMs: number }> {
+  /**
+   * The playback window containing `tMs`, fetched and cached if needed: a base file that covers the
+   * window, and for adaptive recordings an overlay file with the high-resolution stretches and where
+   * they sit in the base (see `build`).
+   */
+  async window(a: Actor, cameraId: string, tMs: number, signal?: AbortSignal): Promise<PlaybackWindow> {
     const cam = this.policy.camera(subjectOf(a), cameraId);
     const W = config().PLAYBACK_WINDOW_SECONDS * 1000, now = Date.now();
     if (!Number.isFinite(tMs) || tMs > now - 3000 || tMs < now - 400 * 864e5) throw new HttpError(404, "no_recording", "Nothing recorded at this time");
     const startMs = Math.floor(tMs / W) * W, endMs = Math.min(startMs + W, now - 2000);
     const complete = endMs === startMs + W;
-    const key = `${cameraId}_${startMs}_${complete ? "full" : Math.floor(endMs / 10_000)}`, file = join(this.dir("playback"), `${key}.mp4`);
-    try { await stat(file); void utimes(file, new Date(), new Date()).catch(() => {}); return { file, startMs, endMs }; } catch { /* not cached */ }
+    const key = `${cameraId}_${startMs}_${complete ? "full" : Math.floor(endMs / 10_000)}`, stem = join(this.dir("playback"), `${key}.v2`);
+    const cached = await this.cached(stem);
+    if (cached) return cached;
     let f = this.inflight.get(key);
     if (!f) {
       const ac = new AbortController();
-      const p = (async () => {
-        await mkdir(this.dir("playback"), { recursive: true, mode: 0o700 });
-        const tmp = `${file}.${newId()}.part`;
-        try {
-          await this.adapter().exportClip(cam.protectId, startMs, endMs, tmp, { quality: "focus", signal: ac.signal });
-          const { rename } = await import("node:fs/promises");
-          await rename(tmp, file);
-          return file;
-        } catch (e) { await rm(tmp, { force: true }); throw e; }
-      })();
+      const p = this.build(cam.protectId, startMs, endMs, stem, ac.signal);
       f = { p, ac, waiters: 0 };
       this.inflight.set(key, f);
       p.catch(() => {}).finally(() => this.inflight.delete(key));
@@ -85,7 +88,7 @@ export class Recordings {
     const onAbort = () => { if (--entry.waiters <= 0) entry.ac.abort(); };
     signal?.addEventListener("abort", onAbort, { once: true });
     try {
-      return { file: await entry.p, startMs, endMs };
+      return await entry.p;
     } catch (e) {
       if (e instanceof NoRecordingError || (e as Error)?.name === "NoRecordingError") throw new HttpError(404, "no_recording", "Nothing recorded at this time");
       if (signal?.aborted) throw new HttpError(499, "cancelled");
@@ -93,6 +96,55 @@ export class Recordings {
       throw new HttpError(503, "nvr_unavailable");
     } finally {
       signal?.removeEventListener("abort", onAbort);
+    }
+  }
+
+  /** A complete cached window, or null. Housekeeping evicts files one by one, so every part is checked. */
+  private async cached(stem: string): Promise<PlaybackWindow | null> {
+    try {
+      const info = JSON.parse(await readFile(`${stem}.json`, "utf8")) as WindowInfo, high = info.overlay.length ? `${stem}.hi.mp4` : null;
+      await Promise.all([stat(`${stem}.mp4`), high && stat(high)]);
+      const t = new Date();
+      for (const p of [`${stem}.json`, `${stem}.mp4`, high]) if (p) void utimes(p, t, t).catch(() => {});
+      return { info, base: `${stem}.mp4`, high };
+    } catch { return null; }
+  }
+
+  /**
+   * Exports a window. Normally that is one channel 0 export. With adaptive recording, a window that
+   * contains motion exports from channel 0 as only its high-resolution stretch, so when that export
+   * is more than a second shorter than the window, the low-resolution channel is exported too. The low one
+   * becomes the base and the high one an overlay, placed by matching their audio. If the audio cannot
+   * place it, the window plays in low resolution rather than at the wrong moment.
+   *
+   * `leadMs` is how far before the window start the base begins: the recorder starts an export on the
+   * keyframe before the requested time, which can be a few seconds early.
+   */
+  private async build(protectId: string, startMs: number, endMs: number, stem: string, signal: AbortSignal): Promise<PlaybackWindow> {
+    await mkdir(this.dir("playback"), { recursive: true, mode: 0o700 });
+    const tmp = `${stem}.${newId()}`, focus = `${tmp}.f.part`, wall = `${tmp}.w.part`, span = (endMs - startMs) / 1000;
+    try {
+      const ad = this.adapter();
+      await ad.exportClip(protectId, startMs, endMs, focus, { quality: "focus", signal });
+      const f = await probe(focus, signal).catch(() => null);
+      let base = focus, baseInfo = f, high: string | null = null, overlay: Span[] = [];
+      if (f && f.duration < span - 1) {
+        const w = await ad.exportClip(protectId, startMs, endMs, wall, { quality: "wall", signal }).then(() => probe(wall, signal)).catch((e) => { if (signal.aborted) throw e; return null; });
+        if (w && w.duration > f.duration + 2 && w.width < f.width) {
+          base = wall; baseInfo = w;
+          if (f.audio && w.audio) overlay = alignSpans(await audioEnvelope(focus, signal), await audioEnvelope(wall, signal));
+          if (overlay.length) high = focus;
+          else log("info", "adaptive playback window shown in low resolution: the high-resolution part could not be placed", { protectId, startMs });
+        }
+      }
+      const info: WindowInfo = { startMs, endMs, leadMs: baseInfo ? Math.min(10_000, Math.max(0, Math.round(baseInfo.duration * 1000 - (endMs - startMs)))) : 0, overlay };
+      await rename(base, `${stem}.mp4`);
+      if (high) await rename(high, `${stem}.hi.mp4`);
+      await writeFile(`${tmp}.json.part`, JSON.stringify(info), { mode: 0o600 });
+      await rename(`${tmp}.json.part`, `${stem}.json`);
+      return { info, base: `${stem}.mp4`, high: high && `${stem}.hi.mp4` };
+    } finally {
+      await Promise.all([focus, wall, `${tmp}.json.part`].map((p) => rm(p, { force: true })));
     }
   }
 

@@ -95,8 +95,25 @@ since the move.
 - Recorded playback: a seek two hours back loaded one 60-second window and played from the right
   offset.
 - Window handoff, mock mode only (headless Chromium, 10-second windows): across four boundaries the
-  visible video never dropped below "current frame available", and the next window started from
-  0 s straight away. Not checked against a real recorder with adaptive recording.
+  visible video never dropped below "current frame available", and the next window started straight
+  away.
+- Adaptive recording on a real UNVR (one camera, Low channel 640x480 at 7 fps): Protect's exports
+  held about 38 s of video beside 61 s of audio, so the player raced, then froze for about 20 s
+  before each window ended. The burned-in camera clock confirmed that the video was simply fast.
+  After retiming, the same files have matching video and audio lengths, and the clock reads the
+  right second at 1 s, 31 s and 61 s. High-resolution and correctly timed exports are left
+  byte-identical (`tests/retime.test.ts` covers both cases with synthetic files).
+- Adaptive high-resolution stretches on a real UNVR (same camera): a channel 0 export of 20:22-20:23
+  held only 18 s (the motion, 20:22:32-20:22:50 by the camera's clock), and a 50 s request around
+  the start of the motion returned 8 s. Matching their audio against the low channel placed both at
+  the same moment (correlation 0.99 or better in every chunk), which agrees with the burned-in clock
+  and the motion event. The full player was not run against the real recorder.
+- Adaptive playback in mock mode (headless Chromium, 10-second windows, `MOCK_ADAPTIVE=mock-06`, so
+  motion crosses window boundaries): over a minute and six handovers, wall-clock time never jumped
+  or repeated. The overlay appeared within about 0.1 s of motion starting and disappeared within
+  0.1 s of it ending, stayed up across a boundary, and each window started at its 2 s lead. Opened
+  mid-motion and paused, the overlay showed the matching frame. `tests/playback.test.ts` checks
+  placement for two joined stretches in a 60-second window.
 - Each screen (wall, player, activity, manage views, admin) rendered in light and dark mode at
   1440 px wide, and the wall at 390 px wide (one column, no sideways scrolling) in a desktop
   browser's narrow window. This is not a test on a real phone.
@@ -106,6 +123,13 @@ since the move.
   Turning sound on for one wall tile turned it off on the other; the M key toggled it in the player.
   Not heard through speakers, and not checked in Safari or Firefox, whose audio detection takes a
   different path.
+- Live sound from a real UNVR camera (one camera, 2560×1920 with AAC 16 kHz and Opus tracks), in
+  headless Chromium over WebRTC against MediaMTX 1.21.4, outside Vantage: pulled directly, Chrome
+  discarded 430 of 560 audio packets and concealed 95% of the samples (the garble-then-silence
+  heard in Chrome and Safari), because Protect's audio timestamps advance in milliseconds against a
+  16 or 48 kHz clock. Through the retiming FFmpeg command `mediamtx.ts` generates: 0 packets
+  discarded, 0 samples concealed, no video freezes, about 1 s to start. A video-only source through
+  the same command played video with no audio track. Not heard through speakers; HLS not played.
 
 ## Not verified
 
@@ -120,7 +144,7 @@ since the move.
 | Browser test suite | Not written | Screens were checked by hand in one desktop browser |
 | Phones and tablets | No device testing | Layout or touch problems |
 | HLS playback in a browser | Only the gateway responses were checked | Player-level issues |
-| Sound from a real UNVR | Its streams were probed (one camera sends Opus and AAC, one sends none) but not played in Vantage | A camera model without Opus is silent over WebRTC; recordings from Protect may lack audio |
+| Sound from a real UNVR in Vantage end to end | The retiming relay was checked outside Vantage only (see Verified) | HLS sound, wall-quality streams, other camera models; recordings from Protect may lack audio |
 | Sound in Safari and Firefox | Only Chromium was used | "No audio" shown wrongly, or the speaker missing; no level meter in Safari for HLS and recordings |
 | Clip export in the browser | Checked by hand in Chromium with mock cameras: zooming and panning the clip timeline, and a 2-hour clip (prepared in about 2.5 minutes, 7200 s long) | Not checked on a phone or with touch |
 | Long clips from a real UNVR | No recorder available | How long Protect takes before sending the first byte of an hour-long export (Vantage waits up to 15 minutes), whether it caps export length, and the disk space a clip needs |

@@ -4,6 +4,7 @@ import { pipeline } from "node:stream/promises";
 import { Agent, request, type Dispatcher } from "undici";
 import { ProtectClient } from "unifi-protect";
 import { log } from "../util";
+import { retimeVideoToAudio } from "./ffmpeg";
 import { NoRecordingError, ProtectUnavailableError, type AdapterHealth, type EventQuery, type EventType, type LiveSource, type ProtectAdapter, type ProtectCamera, type ProtectEvent, type RecordingRanges } from "./types";
 
 interface RawEvent { id: string; type: string; start: number; end?: number | null; camera?: string; cameraId?: string; smartDetectTypes?: string[]; thumbnailId?: string; modelKey?: string }
@@ -176,13 +177,16 @@ export class UnifiProtectAdapter implements ProtectAdapter {
   async liveSource(id: string, quality: "wall" | "focus"): Promise<LiveSource | null> {
     const c = await this.c(), cam = c.camera(id);
     if (!cam?.isOnline) return null;
-    const chans = ((cam.config as unknown as { channels?: { id: number; isRtspEnabled?: boolean; rtspAlias?: string }[] }).channels ?? []).filter((ch) => ch.isRtspEnabled && ch.rtspAlias);
+    const cfg = cam.config as unknown as { channels?: { id: number; isRtspEnabled?: boolean; rtspAlias?: string }[]; featureFlags?: { hasMic?: boolean } };
+    const chans = (cfg.channels ?? []).filter((ch) => ch.isRtspEnabled && ch.rtspAlias);
     // Wall tiles take the smallest enabled stream, the focused player the largest. Never enables a stream.
     const pick = [...chans].sort((a, b) => (quality === "focus" ? a.id - b.id : b.id - a.id))[0];
     if (!pick) return null;
     const port = (c.nvr as unknown as { config?: { ports?: { rtsps?: number } } }).config?.ports?.rtsps ?? 7441;
     const host = this.o.host.replace(/:\d+$/, "");
-    return { kind: "rtsp", url: `rtsps://${host}:${port}/${pick.rtspAlias}?enableSrtp`, tlsFingerprint: this.o.rtspsFingerprint };
+    // Protect's audio timestamps run 16 to 48 times too slow, which browsers' jitter buffers discard
+    // after the first few packets (a moment of garbled sound, then silence). See LiveSource.
+    return { kind: "rtsp", url: `rtsps://${host}:${port}/${pick.rtspAlias}?enableSrtp`, tlsFingerprint: this.o.rtspsFingerprint, retimeAudio: cfg.featureFlags?.hasMic !== false };
   }
 
   async recordingRanges(id: string, fromMs: number, toMs: number): Promise<RecordingRanges> {
@@ -208,6 +212,8 @@ export class UnifiProtectAdapter implements ProtectAdapter {
         await pipeline(r.body, createWriteStream(destPath, { mode: 0o600 }), { signal: opts.signal });
         if ((await stat(destPath)).size < 1024) throw new NoRecordingError();
         this.ok();
+        // Adaptive recording's Low channel comes out with a short, fast video clock (see retimeVideoToAudio).
+        await retimeVideoToAudio(destPath, opts.signal).catch((err) => { if (!opts.signal?.aborted) log("warn", "could not retime export", { error: err }); });
         return;
       } catch (e) {
         if (e instanceof NoRecordingError || opts.signal?.aborted) throw e;

@@ -179,5 +179,7 @@ them separately. To restore into a clean volume, omit `--force`.
 - The database stays small (tens of megabytes). Size `/data` for the database plus
   `BACKUP_RETENTION_DAYS` copies of it.
 - `/cache` needs `MEDIA_CACHE_MAX_MB` plus room for clips being prepared.
-- Video is relayed, not transcoded, so CPU use is low in real mode. Mock mode encodes test video
-  and uses noticeably more.
+- Video is relayed, not transcoded, so CPU use is low in real mode. Sound from cameras with a
+  microphone is re-encoded by an FFmpeg in the MediaMTX container (one small process per stream
+  being watched) because Protect's audio timestamps are unusable as sent. Mock mode encodes test
+  video and uses noticeably more.
