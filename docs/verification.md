@@ -107,6 +107,14 @@ since the move.
   After retiming, the same files have matching video and audio lengths, and the clock reads the
   right second at 1 s, 31 s and 61 s. High-resolution and correctly timed exports are left
   byte-identical (`tests/retime.test.ts` covers both cases with synthetic files).
+- Long clip with a retimed piece on a real UNVR (Entrance Door, 1 h 55 min requested): the
+  downloaded clip claimed 2 h 46 min and would not play through. The retimed Low channel piece had
+  been rewritten on a 1/16000 video timescale while Protect's pieces use 1/1000; the join reads
+  every piece on the first one's timescale, so that piece stretched 16 times (frames 2.35 s apart)
+  and every piece after it was squeezed into 1.4 s. Retiming now keeps the original timescale, and
+  the join rewrites any piece whose timescale differs. Fourteen raw pieces from the same recorder
+  (one retimed) now join to 1249.7 s, the sum of their lengths, with no frame steps out of order.
+  `tests/retime.test.ts` reproduces both cases with synthetic files.
 - Adaptive high-resolution stretches on a real UNVR (same camera): a channel 0 export of 20:22-20:23
   held only 18 s (the motion, 20:22:32-20:22:50 by the camera's clock), and a 50 s request around
   the start of the motion returned 8 s. Matching their audio against the low channel placed both at
@@ -151,7 +159,7 @@ since the move.
 | Sound from a real UNVR in Vantage end to end | The retiming relay was checked outside Vantage only (see Verified) | HLS sound, wall-quality streams, other camera models; recordings from Protect may lack audio |
 | Sound in Safari and Firefox | Only Chromium was used | "No audio" shown wrongly, or the speaker missing; no level meter in Safari for HLS and recordings |
 | Clip export in the browser | Checked by hand in Chromium with mock cameras: zooming and panning the clip timeline, and a 2-hour clip (prepared in about 2.5 minutes, 7200 s long). Long clips in pieces (mock mode, headless Chromium): a 21-minute clip showed the sweep, then 57% and 76% with a time left, then "Putting the pieces together", started its download by itself and came out 1260.0 s long | Not checked on a phone or with touch |
-| Long clips from a real UNVR | No recorder available | How long Protect takes before sending the first byte of an hour-long export (Vantage waits up to 15 minutes), whether it caps export length, the disk space a clip needs, whether exporting pieces in parallel is faster than one long export on your recorder, and whether the joins between pieces are seamless on real camera streams |
+| Long clips from a real UNVR | One 1 h 55 min clip from one camera with adaptive recording (see Verified); fourteen of its pieces joined outside Vantage after the fix | How long Protect takes before sending the first byte of an hour-long export (Vantage waits up to 15 minutes), whether it caps export length, the disk space a clip needs, whether exporting pieces in parallel is faster than one long export on your recorder, and whether the joins between pieces are seamless on real camera streams |
 | Activity live updates in the browser | Checked through the API tests only | UI wiring |
 | Revocation bound under load | Checked with three streams | Slower with many sessions |
 | MediaMTX after the relay refactor | Not re-run against a real process | A request that differs from the hand-checked one in a way the stub tests do not catch |
