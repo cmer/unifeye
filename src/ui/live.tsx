@@ -164,10 +164,11 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
   useEffect(() => () => onAudio?.(null), []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (video.current) applySound(video.current, sound && hasAudio === true); }, [sound, hasAudio]);
   useEffect(() => { onMedia?.(video.current); return () => onMedia?.(null); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const fit = quality === "focus" ? "object-contain" : "object-cover"; // enlarged view letterboxes so the whole frame is always visible
   return (
     <div className={`absolute inset-0 bg-black ${className}`}>
-      {online && <img alt="" src={mediaUrl(`/api/cameras/${cameraId}/snapshot?w=${quality === "focus" ? 1280 : 640}&n=${still}`)} className="absolute inset-0 size-full object-cover" onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} onLoad={(e) => { e.currentTarget.style.visibility = "visible"; }} />}
-      <video ref={video} autoPlay muted playsInline className={`absolute inset-0 size-full object-cover transition-opacity ${state === "playing" ? "opacity-100" : "opacity-0"}`} />
+      {online && <img alt="" src={mediaUrl(`/api/cameras/${cameraId}/snapshot?w=${quality === "focus" ? 1280 : 640}&n=${still}`)} className={`absolute inset-0 size-full ${fit}`} onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} onLoad={(e) => { e.currentTarget.style.visibility = "visible"; }} />}
+      <video ref={video} autoPlay muted playsInline className={`absolute inset-0 size-full ${fit} transition-opacity ${state === "playing" ? "opacity-100" : "opacity-0"}`} />
       {(!online || state === "unavailable" || state === "error") && (
         <div className="absolute inset-0 grid place-items-center bg-zinc-900 p-4 text-center text-sm text-zinc-400">
           <div><div className="font-medium text-zinc-50">{!online ? "Camera offline" : state === "unavailable" ? "No live video" : "Can't connect"}</div>{state === "error" && online && "Check your connection."}</div>
