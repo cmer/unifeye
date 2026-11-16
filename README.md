@@ -9,6 +9,29 @@ Staff sign in through your OpenID Connect provider and land on the cameras relev
 Unifeye never changes anything on the recorder: no camera settings, recordings, retention, events
 or Protect users.
 
+![The camera wall: every camera a person may see, live, with views in the sidebar](docs/screenshots/01-wall.jpg)
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/02-camera.jpg" alt="One camera, live, with the day's timeline and detected activity"></td>
+    <td width="50%"><img src="docs/screenshots/03-activity.jpg" alt="Activity: people, vehicles and motion across the cameras a person may see"></td>
+  </tr>
+  <tr>
+    <td><b>One camera.</b> Live or recorded, with a timeline of the day and clip saving.</td>
+    <td><b>Activity.</b> People, vehicles, packages and motion, only from cameras you may see.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/04-access.jpg" alt="Admin: which groups can see which camera"></td>
+    <td width="50%" align="center"><img src="docs/screenshots/05-phone.jpg" width="220" alt="A saved view on a phone, in light mode"></td>
+  </tr>
+  <tr>
+    <td><b>Camera access.</b> Administrators decide who sees each camera; nothing is visible until it is granted.</td>
+    <td><b>On a phone.</b> The same views, in light or dark.</td>
+  </tr>
+</table>
+
+<sub>Screenshots use simulated cameras with AI-generated stills (<code>assets/demo-cameras/</code>); no real footage is shown. Retake them with <code>scripts/screenshots/capture.sh</code>.</sub>
+
 | | |
 | --- | --- |
 | Stack | Node.js, TypeScript, Next.js 16, React 19, shadcn/ui, SQLite + Drizzle, MediaMTX |
@@ -60,6 +83,9 @@ pnpm dev            # terminal 2: the app on http://localhost:3000
 MTX_AUTHHTTPADDRESS="http://127.0.0.1:3001/mediamtx-auth?secret=dev-hook" \
 MTX_WEBRTCADDITIONALHOSTS=127.0.0.1 mediamtx docker/mediamtx.yml
 ```
+
+To show realistic camera pictures instead of the default gradients, as in the screenshots above,
+add `MOCK_PHOTOS=assets/demo-cameras` to `.env.development.local`. Those stills are AI-generated.
 
 Open http://localhost:3000 and pick "Avery Chen" (the bootstrap administrator). Demo tags, groups
 and views are created on that first sign-in. Sign in as the other test identities to see staff

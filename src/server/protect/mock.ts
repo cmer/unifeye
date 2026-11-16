@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { ffmpeg } from "./ffmpeg";
 import { MOCK_CAMERAS, type MockCamera } from "./mock-data";
 import { NoRecordingError, type AdapterHealth, type EventQuery, type EventType, type LiveSource, type ProtectAdapter, type ProtectCamera, type ProtectEvent, type RecordingRanges } from "./types";
@@ -94,16 +96,19 @@ export class MockProtectAdapter implements ProtectAdapter {
   }
 
   /**
-   * A calm, slowly drifting gradient, different for every camera. Set MOCK_PATTERN=clock to get
-   * FFmpeg's test card with a running clock instead, which is useful for checking seek accuracy.
+   * FFmpeg input arguments for a camera's picture, plus any output filter it needs. By default a
+   * calm, slowly drifting gradient, different for every camera. MOCK_PATTERN=clock gives FFmpeg's
+   * test card with a running clock instead (it starts at the matching second of the minute, so a
+   * seek can be checked by eye). MOCK_PHOTOS names a folder of `<protectId>.jpg` stills, such as
+   * assets/demo-cameras, shown with light sensor noise; cameras without a still keep the gradient.
+   * Live commands are a single string, so that folder's path must not contain spaces.
    */
-  private source(c: MockCamera, w: number, h: number, fps: number) {
-    if (process.env.MOCK_PATTERN === "clock") return `testsrc2=s=${w}x${h}:r=${fps},hue=h=${c.hue}`;
-    return `gradients=s=${w}x${h}:r=${fps}:seed=${this.n(c) * 97}:speed=0.015:n=3,hue=s=0.45:b=-1.5`;
-  }
-  /** In clock mode the test card starts at the matching second of the minute, so a seek can be checked by eye. */
-  private offset(ms: number): string[] {
-    return process.env.MOCK_PATTERN === "clock" ? ["-ss", String(Math.floor(ms / 1000) % 60)] : [];
+  private video(c: MockCamera, w: number, h: number, fps: number, at: { ms?: number; len?: string } = {}): { input: string[]; vf: string[] } {
+    const t = at.len ? ["-t", at.len] : [];
+    if (process.env.MOCK_PATTERN === "clock") return { input: ["-f", "lavfi", ...(at.ms == null ? [] : ["-ss", String(Math.floor(at.ms / 1000) % 60)]), ...t, "-i", `testsrc2=s=${w}x${h}:r=${fps},hue=h=${c.hue}`], vf: [] };
+    const photo = process.env.MOCK_PHOTOS && resolve(process.env.MOCK_PHOTOS, `${c.protectId}.jpg`);
+    if (photo && existsSync(photo)) return { input: ["-loop", "1", "-framerate", String(fps), ...t, "-i", photo], vf: ["-vf", `scale=${w}:${h},noise=alls=5:allf=t`] };
+    return { input: ["-f", "lavfi", ...t, "-i", `gradients=s=${w}x${h}:r=${fps}:seed=${this.n(c) * 97}:speed=0.015:n=3,hue=s=0.45:b=-1.5`], vf: [] };
   }
   /** Quiet pink noise, like a room microphone, so the sound controls and the level meter have something to show. */
   private static readonly ROOM = "anoisesrc=c=pink:a=0.08:r=48000";
@@ -112,7 +117,8 @@ export class MockProtectAdapter implements ProtectAdapter {
     const c = this.cam(id), w = Math.min(Math.max(opts.width ?? 640, 160), 1280), h = Math.round((w * 9) / 16 / 2) * 2;
     if (opts.atMs != null && !this.ranges(c, opts.atMs, opts.atMs + 1).length) throw new NoRecordingError();
     if (opts.atMs == null && !c.online) throw new Error("camera offline");
-    return ffmpeg(["-f", "lavfi", ...this.offset(opts.atMs ?? Date.now()), "-i", this.source(c, w, h, 1), "-frames:v", "1", "-q:v", "5", "-f", "image2", "-c:v", "mjpeg", "pipe:1"], opts.signal);
+    const v = this.video(c, w, h, 1, { ms: opts.atMs ?? Date.now() });
+    return ffmpeg([...v.input, ...v.vf, "-frames:v", "1", "-q:v", "5", "-f", "image2", "-c:v", "mjpeg", "pipe:1"], opts.signal);
   }
   async liveSource(id: string, quality: "wall" | "focus"): Promise<LiveSource | null> {
     this.guard();
@@ -121,7 +127,8 @@ export class MockProtectAdapter implements ProtectAdapter {
     const [w, h, fps] = quality === "focus" ? [1280, 720, 15] : [640, 360, 10];
     // Like Protect, a camera with a microphone sends its sound twice: AAC (for HLS) and Opus (for WebRTC).
     const audio = c.mic ? `-re -f lavfi -i ${MockProtectAdapter.ROOM} -map 0:v -map 1:a -map 1:a -c:a:0 aac -b:a:0 32k -c:a:1 libopus -b:a:1 32k` : "";
-    return { kind: "command", command: `ffmpeg -hide_banner -loglevel error -re -f lavfi -i ${this.source(c, w, h, fps)} ${audio} -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g ${fps * 2} -bf 0 -f rtsp -rtsp_transport tcp ${this.opts.rtspPublishUrl("$MTX_PATH")}`.replace(/ {2,}/g, " ") };
+    const v = this.video(c, w, h, fps);
+    return { kind: "command", command: `ffmpeg -hide_banner -loglevel error -re ${v.input.join(" ")} ${audio} ${v.vf.join(" ")} -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g ${fps * 2} -bf 0 -f rtsp -rtsp_transport tcp ${this.opts.rtspPublishUrl("$MTX_PATH")}`.replace(/ {2,}/g, " ") };
   }
   async exportClip(id: string, startMs: number, endMs: number, destPath: string, opts: { quality?: "wall" | "focus"; signal?: AbortSignal } = {}) {
     this.guard();
@@ -131,7 +138,8 @@ export class MockProtectAdapter implements ProtectAdapter {
     // Like a real recorder, the clip covers what exists inside the window. Keyframe every second.
     const [a, b] = [r[0][0], r[r.length - 1][1]], [w, h] = opts.quality === "focus" ? [1280, 720] : [640, 360];
     const len = ((b - a) / 1000).toFixed(3), audio = c.mic ? ["-f", "lavfi", "-t", len, "-i", MockProtectAdapter.ROOM, "-c:a", "aac", "-b:a", "32k"] : [];
-    await ffmpeg(["-f", "lavfi", ...this.offset(a), "-t", len, "-i", this.source(c, w, h, 10), ...audio, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "10", "-movflags", "+faststart", "-y", "-f", "mp4", destPath], opts.signal);
+    const v = this.video(c, w, h, 10, { ms: a, len });
+    await ffmpeg([...v.input, ...audio, ...v.vf, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "10", "-movflags", "+faststart", "-y", "-f", "mp4", destPath], opts.signal);
   }
 
   /** Motion stretches inside [a, b) for an adaptive camera: seconds 12 to 21 of every half minute. */
@@ -149,7 +157,8 @@ export class MockProtectAdapter implements ProtectAdapter {
     const pieces = parts.map(([s, e]) => { const p = { from: done, start: (s % 86_400_000) / 1000 }; done += (e - s) / 1000; return p; });
     for (let i = pieces.length - 1; i >= 0; i--) { const at = `(${pieces[i].start}+t-${pieces[i].from})`; clock = clock ? `if(lt(t\\,${pieces[i + 1].from})\\,${at}\\,${clock})` : at; }
     const amp = `mod(abs(sin(floor(${clock}*20)*12.9898)*43758.5453)\\,1)`;
-    await ffmpeg(["-f", "lavfi", ...this.offset(a), "-t", dur.toFixed(3), "-i", this.source(c, w, h, 10), "-f", "lavfi", "-t", dur.toFixed(3), "-i", `aevalsrc=exprs=${amp}*sin(2*PI*440*t):s=8000`,
+    const v = this.video(c, w, h, 10, { ms: a, len: dur.toFixed(3) });
+    await ffmpeg([...v.input, "-f", "lavfi", "-t", dur.toFixed(3), "-i", `aevalsrc=exprs=${amp}*sin(2*PI*440*t):s=8000`, ...v.vf,
       "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "10", "-c:a", "aac", "-movflags", "+faststart", "-y", "-f", "mp4", destPath], opts.signal);
   }
 
