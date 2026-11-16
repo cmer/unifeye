@@ -70,23 +70,23 @@ export function Wall({ viewId }: { viewId?: string }) {
       const body = tags.length ? { name: tags.join(" + "), type: "dynamic", tagIds: (await api<{ tags: { id: string; name: string }[] }>("/tags")).tags.filter((t) => tags.includes(t.name)).map((t) => t.id), columns: cols } : { name: "New view", type: "static", cameraIds: shown.map((c) => c.id), columns: cols };
       const r = await api<{ id: string }>("/views", { method: "POST", body: { ...body, visibility: me.isAdmin ? "curated" : "private" } });
       await reload();
-      toast.success(me.isAdmin ? "View saved. Share it to let others open it." : "Saved as a private view");
+      toast.success("View saved");
       nav(`/views?id=${r.id}`);
     } catch (e) { fail(e); }
   };
 
   let body: React.ReactNode;
-  if (gone) body = <Empty icon={<Lock />} title="This view is not available">It may have been removed, or it is no longer shared with you.<div><Button variant="outline" className="mt-4" onClick={() => nav("/?all")}>Show all my cameras</Button></div></Empty>;
+  if (gone) body = <Empty icon={<Lock />} title="View unavailable">It may have been deleted or is no longer shared with you.<div><Button variant="outline" className="mt-4" onClick={() => nav("/?all")}>Show all cameras</Button></div></Empty>;
   else if (!data) body = <div className={`grid gap-0.5 ${GRID[cols]}`}>{Array.from({ length: 6 }, (_, i) => <div key={i} className="aspect-video animate-pulse bg-muted" />)}</div>;
   else if (!data.cameras.length) body = viewId
-    ? <Empty icon={<CameraIcon />} title="Nothing to show here">This view is shared with you, but none of its cameras are assigned to you.<div><Button variant="outline" className="mt-4" onClick={() => nav("/?all")}>Show all my cameras</Button></div></Empty>
-    : <Empty icon={<Lock />} title="No cameras yet">You are signed in, but no cameras have been assigned to you. Ask an administrator to add you to a group.</Empty>;
-  else if (!shown.length) body = <Empty icon={<Search />} title="No cameras match">A camera has to carry every tag you picked.<div><Button variant="outline" className="mt-4" onClick={() => setFilter({ tags: [], q: "" })}>Clear filters</Button></div></Empty>;
+    ? <Empty icon={<CameraIcon />} title="No cameras to show">You don&apos;t have access to any cameras in this view.<div><Button variant="outline" className="mt-4" onClick={() => nav("/?all")}>Show all cameras</Button></div></Empty>
+    : <Empty icon={<Lock />} title="No cameras yet">Ask an administrator for access.</Empty>;
+  else if (!shown.length) body = <Empty icon={<Search />} title="No matching cameras">Try removing a tag or changing your search.<div><Button variant="outline" className="mt-4" onClick={() => setFilter({ tags: [], q: "" })}>Clear filters</Button></div></Empty>;
   else body = (
     <div className={`grid grid-cols-1 gap-0.5 ${GRID[cols]}`}>
       {shown.map((c) => (
         <button key={c.id} data-cam={c.id} onClick={() => nav(`/camera/${c.id}`)} aria-label={`Open ${c.name}`} className="group relative aspect-video overflow-hidden bg-black text-left text-white outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-inset">
-          {c.missing ? <div className="absolute inset-0 grid place-items-center bg-zinc-900 p-4 text-center text-sm text-zinc-400"><div><div className="font-medium text-zinc-50">Camera removed</div>This camera is no longer on the recorder</div></div>
+          {c.missing ? <div className="absolute inset-0 grid place-items-center bg-zinc-900 p-4 text-center text-sm text-zinc-400"><div className="font-medium text-zinc-50">Camera removed</div></div>
             : <LiveVideo cameraId={c.id} quality="wall" active={streaming.has(c.id) && me.recorder !== "down"} online={c.online && me.recorder !== "down"} onGone={() => { setTick((n) => n + 1); void reload(); }} />}
           <span className="absolute top-2.5 left-2.5 flex max-w-[calc(100%-4.5rem)] items-center gap-1.5 truncate rounded-md bg-black/65 px-2 py-0.5 text-xs font-medium"><i className={`size-1.5 shrink-0 rounded-full ${c.missing ? "bg-zinc-500" : c.online ? "bg-green-500" : "bg-red-500"}`} />{c.name}</span>
           {recording.has(c.id) && <RecMark className="absolute top-2.5 right-2.5" />}
@@ -111,18 +111,18 @@ export function Wall({ viewId }: { viewId?: string }) {
           <div className="absolute inset-0 z-10" onClick={() => setPanel(false)} />
           <div role="dialog" aria-label="Filter and layout" className="absolute bottom-[4.4rem] left-1/2 z-20 max-h-[calc(100%-6rem)] w-[min(19rem,calc(100%-1.5rem))] -translate-x-1/2 overflow-auto rounded-xl border bg-popover p-3 text-popover-foreground shadow-xl">
             <Input autoFocus type="search" placeholder="Search cameras" value={q} onChange={(e) => setFilter({ q: e.target.value })} aria-label="Search cameras" />
-            <div className="px-0.5 pt-3 pb-1.5 text-xs font-medium text-muted-foreground">Only cameras with all of these tags</div>
+            <div className="px-0.5 pt-3 pb-1.5 text-xs font-medium text-muted-foreground">Tags</div>
             {facet.length ? facet.map(([t, n]) => (
               <label key={t} className="flex cursor-pointer items-center gap-2 rounded-md px-1 py-1.5 text-sm hover:bg-accent">
                 <Checkbox checked={tags.includes(t)} onCheckedChange={(on) => setFilter({ tags: on ? [...tags, t] : tags.filter((x) => x !== t) })} />{t}<span className="ml-auto text-xs text-muted-foreground">{n}</span>
               </label>
-            )) : <div className="px-0.5 text-sm text-muted-foreground">No tags on these cameras.</div>}
+            )) : <div className="px-0.5 text-sm text-muted-foreground">No tags</div>}
             <div className="px-0.5 pt-3 pb-1.5 text-xs font-medium text-muted-foreground">Columns</div>
             <div className="inline-flex gap-0.5 rounded-lg bg-muted p-0.5">{[2, 3, 4].map((n) => <button key={n} onClick={() => setPref(prefKey, n)} className={`rounded-md px-3 py-1 text-sm font-medium ${cols === n ? "bg-background shadow-sm" : "text-muted-foreground"}`}>{n}</button>)}</div>
             <div className="mt-3 flex items-center gap-2">
               {filtered && <Button size="sm" variant="outline" onClick={() => setFilter({ tags: [], q: "" })}>Clear</Button>}
               <span className="flex-1" />
-              {me.subject.canCreateViews && !me.preview && shown.length > 0 && <Button size="sm" variant="outline" onClick={saveView}>Save as a view</Button>}
+              {me.subject.canCreateViews && !me.preview && shown.length > 0 && <Button size="sm" variant="outline" onClick={saveView}>Save as view</Button>}
             </div>
           </div>
         </>
@@ -138,7 +138,7 @@ export function Wall({ viewId }: { viewId?: string }) {
           </>
         )}
         <Button variant="ghost" size="icon" className="relative" aria-label="Filter and layout" title="Filter and layout" onClick={() => setPanel((p) => !p)}><SlidersHorizontal />{filtered && <i className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-blue-500" />}</Button>
-        <Button variant="ghost" size="icon" aria-label="Full screen" title="Full screen" onClick={() => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen().catch(() => toast("Full screen is blocked here")))}><Maximize /></Button>
+        <Button variant="ghost" size="icon" aria-label="Full screen" title="Full screen" onClick={() => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen().catch(() => toast("Full screen isn't available")))}><Maximize /></Button>
       </div>
     </>
   );

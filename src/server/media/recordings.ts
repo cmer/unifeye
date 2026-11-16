@@ -96,7 +96,7 @@ export class Recordings {
   }
   createExport(a: Actor, cameraId: string, startMs: number, endMs: number) {
     const cam = this.policy.camera(subjectOf(a), cameraId), max = config().CLIP_MAX_SECONDS * 1000;
-    if (!(endMs > startMs) || endMs - startMs > max || endMs > Date.now()) throw badRequest(`Clips can be up to ${config().CLIP_MAX_SECONDS} seconds and must be in the past`);
+    if (!(endMs > startMs) || endMs - startMs > max || endMs > Date.now()) throw badRequest(`Clips can be up to ${config().CLIP_MAX_SECONDS % 60 ? `${config().CLIP_MAX_SECONDS} seconds` : `${config().CLIP_MAX_SECONDS / 60} minutes`} long.`);
     const id = newId(), t = Date.now(), file = join(this.dir("exports"), `${id}.mp4`), g = this.access.grant(a, cameraId);
     this.db.insert(schema.exportJobs).values({ id, sessionId: g.sessionId, subjectId: g.subjectId, previewId: g.previewId ?? null, cameraId: g.cameraId, startMs, endMs, status: "running", progress: 10, filePath: file, createdAt: t, expiresAt: t + 10 * 60_000 }).run();
     audit(this.db, { actorId: a.userId, previewSubjectId: a.preview?.subjectId, action: "clip.export", targetType: "camera", targetId: cameraId, requestId: a.requestId, ip: a.ip, detail: { startMs, endMs } });
@@ -110,7 +110,7 @@ export class Recordings {
         set({ status: "ready", progress: 100 });
       } catch (e) {
         await rm(file, { force: true });
-        set({ status: ac.signal.aborted ? "cancelled" : "failed", error: e instanceof NoRecordingError ? "Nothing was recorded in that time range" : "The clip could not be prepared" });
+        set({ status: ac.signal.aborted ? "cancelled" : "failed", error: e instanceof NoRecordingError ? "Nothing was recorded during that time." : "Something went wrong. Try again." });
       } finally { this.jobs.delete(id); }
     })();
     return { id };

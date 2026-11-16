@@ -95,7 +95,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
       <video ref={video} autoPlay muted playsInline className={`absolute inset-0 size-full object-cover transition-opacity ${state === "playing" ? "opacity-100" : "opacity-0"}`} />
       {(!online || state === "unavailable" || state === "error") && (
         <div className="absolute inset-0 grid place-items-center bg-zinc-900 p-4 text-center text-sm text-zinc-400">
-          <div><div className="font-medium text-zinc-50">{!online ? "Camera offline" : state === "unavailable" ? "No live video" : "Can't connect"}</div>{!online ? "Earlier recordings are still available" : state === "unavailable" ? "This camera has no live stream right now" : "Check your network and try again"}</div>
+          <div><div className="font-medium text-zinc-50">{!online ? "Camera offline" : state === "unavailable" ? "No live video" : "Can't connect"}</div>{state === "error" && online && "Check your connection."}</div>
         </div>
       )}
     </div>

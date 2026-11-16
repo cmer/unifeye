@@ -22,8 +22,8 @@ describe("camera grants", () => {
     expect(f.names(f.u.admin)).toHaveLength(14);
   });
   it("hides a forbidden camera exactly like a missing one", () => {
-    expect(() => f.policy.camera(f.u.front, f.cam["Server Closet"])).toThrowError(/Not found/);
-    expect(() => f.policy.camera(f.u.front, "does-not-exist")).toThrowError(/Not found/);
+    expect(() => f.policy.camera(f.u.front, f.cam["Server Closet"])).toThrowError(/no longer available/);
+    expect(() => f.policy.camera(f.u.front, "does-not-exist")).toThrowError(/no longer available/);
   });
   it("revoking a grant and removing a group membership take effect immediately", () => {
     f.admin.setGrant(f.actor(f.u.admin), { userId: f.u.front }, f.cam["Loading Dock"], false);
@@ -122,7 +122,7 @@ describe("tags and views", () => {
   });
   it("a private view can reference only cameras its owner may see", () => {
     const a = f.actor(f.u.front);
-    expect(() => f.admin.createView(a, { name: "sneaky", type: "static", cameraIds: [f.cam["Server Closet"]] }, "private")).toThrowError(/Not found/);
+    expect(() => f.admin.createView(a, { name: "sneaky", type: "static", cameraIds: [f.cam["Server Closet"]] }, "private")).toThrowError(/no longer available/);
     const v = f.admin.createView(a, { name: "Deliveries", type: "static", cameraIds: [f.cam["Loading Dock"]] }, "private");
     expect(opens(f.u.front)).toContain("Deliveries");
     expect(opens(f.u.sec)).not.toContain("Deliveries");
@@ -131,7 +131,7 @@ describe("tags and views", () => {
   it("rejects a concurrent edit instead of losing an update", () => {
     const id = f.viewByName()["Perimeter"], a = f.actor(f.u.admin), tags = f.tagByName();
     f.admin.updateView(a, id, { name: "Perimeter", type: "dynamic", tagIds: [tags.outdoors] }, 1);
-    expect(() => f.admin.updateView(a, id, { name: "Stale", type: "dynamic", tagIds: [] }, 1)).toThrowError(/changed by someone else/);
+    expect(() => f.admin.updateView(a, id, { name: "Stale", type: "dynamic", tagIds: [] }, 1)).toThrowError(/Someone else changed/);
   });
   it("refuses to delete a tag that a dynamic view depends on", () => {
     expect(() => f.admin.deleteTag(f.actor(f.u.admin), f.tagByName().restricted)).toThrowError(/Restricted Rooms/);
@@ -165,9 +165,9 @@ describe("landing view precedence", () => {
   });
   it("validates assignments: a default must be openable by its target", () => {
     const a = f.actor(f.u.admin), v = f.viewByName();
-    expect(() => f.admin.setDefault(a, { scope: "user", userId: f.u.upper }, v["Restricted Rooms"])).toThrowError(/cannot open/);
+    expect(() => f.admin.setDefault(a, { scope: "user", userId: f.u.upper }, v["Restricted Rooms"])).toThrowError(/Share this view with them first/);
     expect(() => f.admin.setDefault(a, { scope: "group", groupId: f.g["Upper Level Team"] }, v["Perimeter"])).toThrowError(/Share this view/);
-    expect(() => f.admin.setDefault(a, { scope: "org" }, v["Perimeter"])).toThrowError(/all staff/);
+    expect(() => f.admin.setDefault(a, { scope: "org" }, v["Perimeter"])).toThrowError(/with everyone first/);
     expect(() => f.admin.setDefault(f.actor(f.u.front), { scope: "user", userId: f.u.front }, v["Front Desk"])).toThrow(); // staff cannot set admin defaults
   });
   it("falls back safely when a default is unshared or deleted", () => {
