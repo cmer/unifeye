@@ -3,6 +3,35 @@
 The Docker image and Compose stack in this repository have **not been built or run yet** (Docker was
 not available where they were written). Treat the first deployment as a test.
 
+## Where to run it
+
+Run Vantage on the same site network as the recorder: a small machine or VM on the recorder's LAN.
+Give remote viewers access through a reverse proxy or [Cloudflare Tunnel](cloudflare-tunnel.md)
+rather than moving Vantage off site.
+
+- **The recorder stays private.** Vantage holds Protect credentials that can read every camera, and
+  it pulls the camera streams from the recorder. On a hosted server (a VPS, for example), the
+  recorder would have to be reachable from there, through a site-to-site VPN or by exposing it.
+  On-site, nothing about the recorder leaves the LAN.
+- **On-site viewers get the best video.** People on the office network get WebRTC straight from
+  MediaMTX, which starts almost at once and never touches the internet. With a hosted server, their
+  video would leave the site and come back.
+- **Recorded video reads from the recorder a lot.** Playback fetches video in
+  `PLAYBACK_WINDOW_SECONDS` windows, and clip exports copy roughly 1–4 GB per hour of video. Over the
+  LAN this costs nothing. From a hosted server, all of it crosses the site's upload link.
+- **Fewer moving parts.** The app and MediaMTX must run on one host (see
+  [Sizing and limits](#8-sizing-and-limits)). Off site, a VPN tunnel sits between them and the
+  recorder, and when it drops, cameras look offline.
+
+A hosted server can make sense in one case: most viewers are off site, many of them watch at the
+same time, and the site's upload speed is the bottleneck. MediaMTX pulls each camera from the
+recorder once and sends a copy to every viewer. If Vantage runs on-site, the site uploads one copy
+per remote viewer. If it runs off site, the site uploads each camera once. For example, ten remote
+people each watching four cameras at about 2 Mbps per stream need around 80 Mbps of upload from an
+on-site host, but only about 8 Mbps if Vantage runs off site. Before moving it, check the site's
+upload speed and make sure each camera has a low-quality stream for the wall (see
+[Prepare Protect](#2-prepare-protect)). That often stretches an on-site host far enough.
+
 ## 1. Register Vantage with your identity provider
 
 Vantage signs in through any OpenID Connect provider that supports the Authorization Code flow with
@@ -184,3 +213,9 @@ them separately. To restore into a clean volume, omit `--force`.
   microphone is re-encoded by an FFmpeg in the MediaMTX container (one small process per stream
   being watched) because Protect's audio timestamps are unusable as sent. Mock mode encodes test
   video and uses noticeably more.
+- No GPU or hardware video encoder (Quick Sync, NVENC and so on) is needed, and none would be
+  used. Live video, recorded playback and clip exports are copied as the recorder sends them, and
+  snapshots come ready-made from the recorder. For the host, the link to the recorder, upload speed
+  for remote viewers and room on `/cache` matter more than CPU.
+- Because video is not transcoded, browsers get each camera's own codec. H.265 cameras play only in
+  browsers that support it. If that's a problem, set those cameras to H.264 in Protect.

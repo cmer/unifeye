@@ -18,7 +18,7 @@ or Protect users.
 ## Where things are
 
 - [docs/architecture.md](docs/architecture.md): how it fits together, the permission model, view and landing rules, media enforcement.
-- [docs/deployment.md](docs/deployment.md): registering Vantage with your identity provider, configuration reference, networking, backups, restore, upgrades.
+- [docs/deployment.md](docs/deployment.md): where to run it, registering Vantage with your identity provider, configuration reference, networking, backups, restore, upgrades.
 - [docs/cloudflare-tunnel.md](docs/cloudflare-tunnel.md): running behind Cloudflare Tunnel, and what that means for live video.
 - [docs/identity-providers.md](docs/identity-providers.md): step-by-step sign-in setup for Zitadel, Keycloak, Microsoft Entra ID and Google Workspace.
 - [docs/verification.md](docs/verification.md): what has been verified and what has not, tested versions, and the steps to check a real UNVR and a real identity provider.
