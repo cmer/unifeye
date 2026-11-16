@@ -45,7 +45,7 @@ pnpm dev:idp        # terminal 1: throwaway test sign-in provider on :9911 (deve
 pnpm dev            # terminal 2: the app on http://localhost:3000
 
 # terminal 3, for live video: MediaMTX with the project's configuration
-MTX_AUTHHTTPADDRESS="http://127.0.0.1:3000/api/internal/mediamtx-auth?secret=dev-hook" \
+MTX_AUTHHTTPADDRESS="http://127.0.0.1:3001/mediamtx-auth?secret=dev-hook" \
 MTX_WEBRTCADDITIONALHOSTS=127.0.0.1 mediamtx docker/mediamtx.yml
 ```
 

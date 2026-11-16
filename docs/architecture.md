@@ -273,7 +273,12 @@ fails, one stream when MediaMTX answers 404 to a WHEP offer or an HLS playlist f
 then configured again the next time a ticket is issued for it, at most 25 seconds later for HLS.
 
 The other direction, MediaMTX asking the hook, is not part of the interface: it arrives at
-`/api/internal/mediamtx-auth` and is answered by the gateway.
+`POST /mediamtx-auth` on a separate listener (`src/server/media/hook-server.ts`, `HOOK_HOST` and
+`HOOK_PORT`, 3001 by default) and is answered by the gateway. The hook is not served on the web
+port at all, so it cannot be reached through whatever reverse proxy or tunnel is in front of
+Unifeye; the hook port is never published. Every call must still carry `MEDIAMTX_HOOK_SECRET`.
+Production refuses to start unless both MediaMTX secrets are at least 32 characters. If the hook
+port cannot be opened, start-up aborts, since no video could play without it.
 
 Tests use an in-memory relay (`src/server/testing/relay.ts`). It admits no reader without asking
 the same hook, tracks readers so listing and kicking work, and can be switched to unreachable. It

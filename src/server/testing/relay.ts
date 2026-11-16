@@ -8,7 +8,7 @@ export const HLS_SEGMENT = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
 /**
  * An in-memory media relay for tests. It behaves like MediaMTX as far as Unifeye can observe:
  *  - it admits no reader on its own: every WHEP offer and every HLS request asks the auth hook
- *    (the function behind /api/internal/mediamtx-auth) with the ticket it was given, and refuses
+ *    (the function behind the hook listener, `hook-server.ts`) with the ticket it was given, and refuses
  *    when the hook refuses;
  *  - admitted readers are sessions with ids, which `readers` lists and `kick` removes;
  *  - a stream must have been set up before anyone can read it;

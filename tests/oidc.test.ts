@@ -342,7 +342,8 @@ describe("group sync from the provider's group claim", () => {
 
 describe("configuration guards", () => {
   it("refuses insecure or incomplete production settings", () => {
-    const prod = { ...TEST_ENV, NODE_ENV: "production", APP_URL: "https://unifeye.example", OIDC_ISSUER: "https://id.example" } as unknown as NodeJS.ProcessEnv;
+    const secret = "a".repeat(32);
+    const prod = { ...TEST_ENV, NODE_ENV: "production", APP_URL: "https://unifeye.example", OIDC_ISSUER: "https://id.example", MEDIAMTX_HOOK_SECRET: secret, MEDIAMTX_API_SECRET: secret } as unknown as NodeJS.ProcessEnv;
     expect(() => loadConfig(prod)).not.toThrow();
     expect(() => loadConfig({ ...prod, OIDC_ALLOW_INSECURE_ISSUER: "1" })).toThrowError(/not allowed in production/);
     expect(() => loadConfig({ ...prod, OIDC_ISSUER: "http://id.example" })).toThrowError(/https/);
@@ -354,5 +355,9 @@ describe("configuration guards", () => {
     expect(() => loadConfig({ ...prod, UNIFEYE_MODE: "mock" })).not.toThrow(); // mock cameras still require SSO
     expect(() => loadConfig({ ...prod, UNIFEYE_MODE: "mock", OIDC_CLIENT_ID: "" })).toThrowError(/OIDC_CLIENT_ID/);
     expect(() => loadConfig({ ...prod, BOOTSTRAP_ADMIN_SUBJECT: "only-subject" })).toThrowError(/set together/);
+    expect(() => loadConfig({ ...prod, MEDIAMTX_HOOK_SECRET: "changeme" })).toThrowError(/MEDIAMTX_HOOK_SECRET must be at least 32/);
+    expect(() => loadConfig({ ...prod, MEDIAMTX_API_SECRET: "a".repeat(31) })).toThrowError(/MEDIAMTX_API_SECRET must be at least 32/);
+    expect(() => loadConfig({ ...prod, MEDIAMTX_HOOK_SECRET: "" })).toThrowError(/MEDIAMTX_HOOK_SECRET is required/);
+    expect(() => loadConfig({ ...TEST_ENV, MEDIAMTX_HOOK_SECRET: "dev" } as unknown as NodeJS.ProcessEnv)).not.toThrow(); // short secrets are fine outside production
   });
 });

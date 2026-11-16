@@ -136,8 +136,8 @@ relay, last backup). Neither exposes configuration or secrets.
 - Terminate HTTPS in a reverse proxy in front of `127.0.0.1:3000`. WebRTC, installable-app support
   and secure cookies all need HTTPS.
 - Disable response buffering for `/api/events/stream` and `/api/media/`.
-- Block `/api/internal/` at the proxy. MediaMTX reaches it over the Compose network; it is also
-  protected by `MEDIAMTX_HOOK_SECRET`.
+- Proxy only port 3000. MediaMTX calls Unifeye's auth hook on port 3001 over the Compose network;
+  never publish or proxy that port. Nothing needs blocking at the proxy.
 - Forward the client address in `X-Forwarded-For` (rate limiting uses the first address).
 - Open port **8189 UDP and TCP** from viewers to the host, and set `WEBRTC_PUBLIC_HOST` to the
   address they use (a comma-separated list is allowed, for example a LAN IP and a public name). A

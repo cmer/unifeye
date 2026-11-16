@@ -133,12 +133,6 @@ route("POST", "/auth/backchannel-logout", { public: true, rate: "auth" }, async 
   return new Response(null, { status: 200, headers: { "cache-control": "no-store" } });
 });
 
-// ---- called by MediaMTX on the internal network only -------------------------
-route("POST", "/internal/mediamtx-auth", { public: true, rate: "media" }, async ({ s, req, url }) => {
-  const ok = s.media.hook(url.searchParams.get("secret"), await req.json().catch(() => ({})));
-  return new Response(null, { status: ok ? 200 : 401 });
-});
-
 // ---- session bootstrap for the UI ---------------------------------------------
 route("GET", "/me", {}, ({ s, actor, user, session }) => {
   const subject = subjectOf(actor), su = s.policy.activeUser(subject)!, c = config(), landing = s.views.landing(subject);

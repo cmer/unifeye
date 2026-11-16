@@ -32,7 +32,8 @@ services:
     restart: unless-stopped
     user: "1000:1000"
     environment:
-      MTX_AUTHHTTPADDRESS: http://app:3000/api/internal/mediamtx-auth?secret=${MEDIAMTX_HOOK_SECRET:?set MEDIAMTX_HOOK_SECRET}
+      # Unifeye answers the auth hook on its own port (3001), which is never published or proxied.
+      MTX_AUTHHTTPADDRESS: http://app:3001/mediamtx-auth?secret=${MEDIAMTX_HOOK_SECRET:?set MEDIAMTX_HOOK_SECRET}
       # The address browsers use to reach this host for WebRTC media (LAN IP or DNS name).
       MTX_WEBRTCADDITIONALHOSTS: ${WEBRTC_PUBLIC_HOST:?set WEBRTC_PUBLIC_HOST}
     volumes:
@@ -46,7 +47,8 @@ services:
     security_opt: ["no-new-privileges:true"]
     networks: [unifeye]
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8889/"]
+      # MediaMTX answers / with 404, so check that the WHEP and HLS listeners Unifeye uses accept connections.
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 8889 && nc -z 127.0.0.1 8888"]
       interval: 30s
       timeout: 5s
       retries: 3
