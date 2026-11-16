@@ -91,17 +91,25 @@ since the move.
 - Recorded playback: a seek two hours back loaded one 60-second window and played from the right
   offset.
 - Window handoff, mock mode only (headless Chromium, 10-second windows): across four boundaries the
-  visible video never dropped below "current frame available", and the next window started from
-  0 s straight away. Not checked in a browser against a real recorder with adaptive recording.
+  visible video never dropped below "current frame available", and the next window started straight
+  away.
 - Adaptive recording on a real UNVR (one camera, Low channel 640x480 at 7 fps): Protect's exports
   held about 38 s of video beside 61 s of audio, so the player raced, then froze for about 20 s
   before each window ended. The burned-in camera clock confirmed that the video was simply fast.
   After retiming, the same files have matching video and audio lengths, and the clock reads the
   right second at 1 s, 31 s and 61 s. High-resolution and correctly timed exports are left
   byte-identical (`tests/retime.test.ts` covers both cases with synthetic files).
-- Known gap, not fixed: when a window contains motion, a channel 0 export returns only the
-  high-resolution stretch (18 s of a 60 s window in the sample) with no indication of where in the
-  window it starts. The player shows it from the window start and skips the rest of that minute.
+- Adaptive high-resolution stretches on a real UNVR (same camera): a channel 0 export of 20:22-20:23
+  held only 18 s (the motion, 20:22:32-20:22:50 by the camera's clock), and a 50 s request around
+  the start of the motion returned 8 s. Matching their audio against the low channel placed both at
+  the same moment (correlation 0.99 or better in every chunk), which agrees with the burned-in clock
+  and the motion event. The full player was not run against the real recorder.
+- Adaptive playback in mock mode (headless Chromium, 10-second windows, `MOCK_ADAPTIVE=mock-06`, so
+  motion crosses window boundaries): over a minute and six handovers, wall-clock time never jumped
+  or repeated. The overlay appeared within about 0.1 s of motion starting and disappeared within
+  0.1 s of it ending, stayed up across a boundary, and each window started at its 2 s lead. Opened
+  mid-motion and paused, the overlay showed the matching frame. `tests/playback.test.ts` checks
+  placement for two joined stretches in a 60-second window.
 - Each screen (wall, player, activity, manage views, admin) rendered in light and dark mode at
   1440 px wide, and the wall at 390 px wide (one column, no sideways scrolling) in a desktop
   browser's narrow window. This is not a test on a real phone.
