@@ -1,6 +1,10 @@
 # syntax=docker/dockerfile:1
 FROM node:24-bookworm-slim AS deps
 WORKDIR /app
+# better-sqlite3 compiles from source when no prebuilt binary matches this Node version.
+# The toolchain stays in the build stages; the run stage only gets the compiled module.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
@@ -11,8 +15,8 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm build
 
 FROM node:24-bookworm-slim AS run
-# FFmpeg is used only by mock mode (simulated snapshots and recordings). Real mode relays video
-# through MediaMTX without transcoding in this container.
+# FFmpeg probes and retimes recorded video for playback and clip exports (stream copy, plus
+# audio analysis), and generates mock mode's simulated media. Live video is relayed by MediaMTX.
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
@@ -23,6 +27,10 @@ COPY --from=build /app/.next/static ./.next/static
 COPY --from=build /app/public ./public
 COPY --from=build /app/drizzle ./drizzle
 COPY --from=build /app/dist/cli.mjs ./cli.mjs
+# cli.mjs imports better-sqlite3 by name. The standalone output only links it under .next/node_modules,
+# so expose the same traced copy at the top level for the CLI.
+RUN ln -s "$(ls -d node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 | head -n1 | sed 's#^node_modules/##')" node_modules/better-sqlite3 \
+  && node --input-type=module -e "import D from 'better-sqlite3'; new D(':memory:').close()"
 RUN mkdir -p /data /cache && chown -R node:node /data /cache
 USER node
 VOLUME ["/data"]
