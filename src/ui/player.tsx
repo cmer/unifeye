@@ -49,7 +49,9 @@ export function Player({ cameraId }: { cameraId: string }) {
   const [idle, setIdle] = useState(false);
   const [hover, setHover] = useState<{ x: number; y: number; ms: number; img: number } | null>(null);
   const [refresh, setRefresh] = useState(0);
-  const video = useRef<HTMLVideoElement>(null), box = useRef<HTMLDivElement>(null), tl = useRef<HTMLDivElement>(null), lastMove = useRef(0), lastTrimSeek = useRef(0);
+  /** Start of the window being buffered in the background so the next one starts without a black gap. */
+  const [armed, setArmed] = useState<number | null>(null);
+  const video = useRef<HTMLVideoElement>(null), nextVideo = useRef<HTMLVideoElement>(null), box = useRef<HTMLDivElement>(null), tl = useRef<HTMLDivElement>(null), lastMove = useRef(0), lastTrimSeek = useRef(0);
 
   useEffect(() => { api<{ cameras: Camera[] }>("/cameras").then((r) => setCam(r.cameras.find((c) => c.id === cameraId) ?? "gone")).catch(fail); }, [cameraId, me.preview?.subject.id]);
 
@@ -109,6 +111,14 @@ export function Player({ cameraId }: { cameraId: string }) {
   const ws = Math.floor(target.ms / W) * W;
   const clipStart = useMemo(() => { if (rec?.precision !== "exact") return ws; const r = rec.ranges.find(([a, b]) => b > ws && a < ws + W); return r ? Math.max(ws, r[0]) : ws; }, [rec, ws, W]);
   const src = !live && target.ms ? mediaUrl(`/api/cameras/${cameraId}/playback?t=${ws}`) : undefined;
+  // The following window loads in a hidden element while this one plays (armed once it is fully recorded).
+  const nextSrc = src && armed === ws + W ? mediaUrl(`/api/cameras/${cameraId}/playback?t=${ws + W}`) : undefined;
+  /** At the end of a window, the buffered next one takes over in place (same key, so React keeps the element). */
+  const advance = () => {
+    const nx = ws + W;
+    if (nextSrc && !nextVideo.current?.error && nx < now() - 5000) { setT(nx); setTarget((p) => ({ ms: nx, n: p.n })); }
+    else seek(nx);
+  };
   useEffect(() => { const v = video.current; if (v) v.playbackRate = speed; }, [speed, src]);
   useEffect(() => { const v = video.current; if (!v || live) return; if (playing) void v.play().catch(() => {}); else v.pause(); }, [playing, live, src]);
   const nextRange = rec?.ranges.find(([a]) => a > t);
@@ -144,10 +154,11 @@ export function Player({ cameraId }: { cameraId: string }) {
   return (
     <div ref={box} className="relative min-h-0 flex-1 overflow-hidden bg-black text-white">
       {live ? <LiveVideo cameraId={cameraId} quality="focus" active={!down} online={cam.online && !down} />
-        : <video ref={video} key={`${ws}:${target.n}`} src={src} playsInline muted className="absolute inset-0 size-full object-contain"
+        : [<video ref={video} key={`${ws}:${target.n}`} src={src} playsInline muted className="absolute inset-0 size-full object-contain"
             onLoadedMetadata={(e) => { const v = e.currentTarget; v.currentTime = Math.max(0, (target.ms - clipStart) / 1000); v.playbackRate = speed; if (playing) void v.play().catch(() => {}); }}
-            onTimeUpdate={(e) => setT(clipStart + e.currentTarget.currentTime * 1000)}
-            onEnded={() => seek(ws + W)} onError={() => setNoRec(true)} />}
+            onTimeUpdate={(e) => { setT(clipStart + e.currentTarget.currentTime * 1000); if (armed !== ws + W && ws + 2 * W < now() - 2000) setArmed(ws + W); }}
+            onEnded={advance} onError={() => setNoRec(true)} />,
+          nextSrc && <video ref={nextVideo} key={`${ws + W}:${target.n}`} src={nextSrc} preload="auto" playsInline muted aria-hidden className="invisible absolute inset-0 size-full object-contain" />]}
       {(noRec || (live && !cam.online)) && !down && (
         <div className="absolute inset-0 grid place-items-center bg-zinc-900 p-6 text-center text-sm text-zinc-400">
           <div><div className="mb-1 font-medium text-zinc-50">{noRec ? `No recording at ${fmtTime(t, tz)}` : "Camera offline"}</div>
