@@ -1,4 +1,7 @@
-import { writeFile } from "node:fs/promises";
+import { createWriteStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
+import { Agent, request, type Dispatcher } from "undici";
 import { ProtectClient } from "unifi-protect";
 import { log } from "../util";
 import { retimeVideoToAudio } from "./ffmpeg";
@@ -10,9 +13,9 @@ const SMART: Record<string, EventType> = { person: "person", vehicle: "vehicle",
 /**
  * UniFi Protect through the `unifi-protect` library (v5), using a dedicated local Protect account.
  *
- * READ-ONLY BY CONSTRUCTION: this file issues GET requests only and never calls the library's
- * mutating methods (`update`, `reboot`, `unlock`, talkback, ...). Use a view-only Protect role as
- * defence in depth.
+ * READ-ONLY BY CONSTRUCTION: this file issues GET requests only (plus the sign-in POST below) and
+ * never calls the library's mutating methods (`update`, `reboot`, `unlock`, talkback, ...). Use a
+ * view-only Protect role as defence in depth.
  *
  * What the library covers: login/relogin, bootstrap, camera state, live snapshots, realtime packets.
  * What it does not: historical events, thumbnails and recorded video. Those use Protect's private
@@ -22,6 +25,9 @@ const SMART: Record<string, EventType> = { person: "person", vehicle: "vehicle",
  *   GET /proxy/protect/api/events/{id}  and  /events/{id}/thumbnail
  *   GET /proxy/protect/api/video/export?camera&start&end&channel        (MP4, approximate to a few seconds)
  *   GET /proxy/protect/api/cameras/{id}/recording-snapshot?ts&w
+ * Video export is streamed straight to disk over a second session of the same account (the
+ * library's transport buffers whole bodies in memory, which a clip of an hour or more cannot afford).
+ * That session signs in the way the library does: GET / for a CSRF token, then POST /api/auth/login.
  * Known limits: no endpoint for recording gaps is known, so availability is reported as outer
  * bounds only; live video needs an RTSP stream that is already enabled on the camera, because
  * enabling one would be a write.
@@ -36,8 +42,11 @@ export class UnifiProtectAdapter implements ProtectAdapter {
   private lastOkAt: number | null = null;
   private lastError: string | null = null;
   private connecting?: Promise<void>;
+  /** Connection pool and session headers for streamed exports (see `exportClip`). */
+  private dl?: Dispatcher;
+  private dlAuth?: Promise<Record<string, string>>;
 
-  constructor(readonly nvrId: string, private o: { host: string; username: string; password: string; verifyTls: boolean; rtspsFingerprint?: string }) {}
+  constructor(readonly nvrId: string, private o: { host: string; username: string; password: string; verifyTls: boolean; rtspsFingerprint?: string; /** Tests only: replaces the export connection pool. */ exportDispatcher?: Dispatcher }) {}
 
   private base() { return `https://${this.o.host}/proxy/protect/api`; }
   private ok() { this.state = "connected"; this.lastOkAt = Date.now(); this.lastError = null; }
@@ -66,6 +75,9 @@ export class UnifiProtectAdapter implements ProtectAdapter {
     const c = this.client as unknown as { [Symbol.asyncDispose]?: () => Promise<void> } | undefined;
     this.client = undefined;
     await c?.[Symbol.asyncDispose]?.().catch(() => {});
+    const dl = this.dl;
+    this.dl = undefined; this.dlAuth = undefined;
+    if (dl !== this.o.exportDispatcher) await dl?.close().catch(() => {});
   }
   health(): AdapterHealth {
     const nvr = this.client?.nvr as unknown as { config?: { version?: string } } | undefined;
@@ -183,14 +195,57 @@ export class UnifiProtectAdapter implements ProtectAdapter {
     return { ranges: a < b ? [[a, b]] : [], precision: "bounds" };
   }
 
+  /**
+   * Streams Protect's MP4 export to `destPath` without holding it in memory. A long clip can take
+   * minutes before Protect sends the first byte, so the wait for headers is generous; a stalled body
+   * fails after two minutes of silence. A 401 signs in again once.
+   */
   async exportClip(id: string, startMs: number, endMs: number, destPath: string, opts: { quality?: "wall" | "focus"; signal?: AbortSignal } = {}) {
-    // The transport buffers the whole body, so callers keep windows short (see PLAYBACK_WINDOW_SECONDS / CLIP_MAX_SECONDS).
     const channel = opts.quality === "focus" ? 0 : 2;
-    const r = await this.get(`/video/export?camera=${encodeURIComponent(id)}&start=${Math.floor(startMs)}&end=${Math.floor(endMs)}&channel=${channel}`, { signal: opts.signal, timeout: 180_000 });
-    if (r.statusCode !== 200 || r.body.length < 1024) throw new NoRecordingError();
-    await writeFile(destPath, r.body, { mode: 0o600 });
-    // Adaptive recording's Low channel comes out with a short, fast video clock (see retimeVideoToAudio).
-    await retimeVideoToAudio(destPath, opts.signal).catch((e) => { if (!opts.signal?.aborted) log("warn", "could not retime export", { error: e }); });
+    const url = `${this.base()}/video/export?camera=${encodeURIComponent(id)}&start=${Math.floor(startMs)}&end=${Math.floor(endMs)}&channel=${channel}`;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const auth = await this.exportAuth();
+        const r = await request(url, { dispatcher: this.exportAgent(), headers: auth, signal: opts.signal });
+        if (r.statusCode === 401 && attempt === 0) { await r.body.dump(); this.dlAuth = undefined; continue; }
+        if (r.statusCode !== 200) { await r.body.dump(); throw new NoRecordingError(); }
+        await pipeline(r.body, createWriteStream(destPath, { mode: 0o600 }), { signal: opts.signal });
+        if ((await stat(destPath)).size < 1024) throw new NoRecordingError();
+        this.ok();
+        // Adaptive recording's Low channel comes out with a short, fast video clock (see retimeVideoToAudio).
+        await retimeVideoToAudio(destPath, opts.signal).catch((err) => { if (!opts.signal?.aborted) log("warn", "could not retime export", { error: err }); });
+        return;
+      } catch (e) {
+        if (e instanceof NoRecordingError || opts.signal?.aborted) throw e;
+        this.failed(e);
+        throw new ProtectUnavailableError((e as Error).message);
+      }
+    }
+  }
+  private exportAgent() {
+    // Same TLS rule as the library: verified unless disabled for development; trust the UNVR with NODE_EXTRA_CA_CERTS.
+    return (this.dl ??= this.o.exportDispatcher ?? new Agent({ connect: { rejectUnauthorized: this.o.verifyTls }, headersTimeout: 15 * 60_000, bodyTimeout: 120_000 }));
+  }
+  /** Session headers for exports, shared by concurrent callers; a failed sign-in is forgotten so the next export tries again. */
+  private exportAuth() {
+    return (this.dlAuth ??= this.signIn().catch((e) => { this.dlAuth = undefined; throw e; }));
+  }
+  private async signIn(): Promise<Record<string, string>> {
+    const origin = `https://${this.o.host}`, d = this.exportAgent(), one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
+    const signal = AbortSignal.timeout(30_000);
+    const root = await request(origin, { dispatcher: d, signal });
+    await root.body.dump();
+    const token = root.statusCode === 200 ? one(root.headers["x-csrf-token"]) : undefined;
+    const r = await request(`${origin}/api/auth/login`, {
+      method: "POST", dispatcher: d, signal,
+      headers: { "content-type": "application/json", ...(token ? { "x-csrf-token": token } : {}) },
+      body: JSON.stringify({ username: this.o.username, password: this.o.password, rememberMe: true, token: "" }),
+    });
+    await r.body.dump();
+    const sc = r.headers["set-cookie"], cookies = Array.isArray(sc) ? sc : sc ? [sc] : [];
+    const csrf = one(r.headers["x-updated-csrf-token"]) ?? one(r.headers["x-csrf-token"]), cookie = cookies.find((c) => c.startsWith("TOKEN=")) ?? cookies[0];
+    if (r.statusCode !== 200 || !csrf || !cookie) throw new ProtectUnavailableError(`export sign-in failed (${r.statusCode})`);
+    return { cookie: cookie.split(";")[0], "x-csrf-token": csrf };
   }
 
   async listEvents(q: EventQuery): Promise<ProtectEvent[]> {

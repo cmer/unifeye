@@ -21,15 +21,24 @@ type WinInfo = { startMs: number; endMs: number; leadMs: number; overlay: { at: 
 const ZONES: [string, string][] = [["local", "My time zone"], ["UTC", "UTC"], ["America/Toronto", "Toronto"], ["America/Vancouver", "Vancouver"], ["America/Chicago", "Chicago"], ["Europe/London", "London"], ["Europe/Paris", "Paris"], ["Australia/Sydney", "Sydney"]];
 const ghost = "text-white hover:bg-white/15 hover:text-white";
 type Job = { id: string; status: string; error: string | null };
-/** A clip being chosen: its two ends, the stretch of time the timeline shows meanwhile, and the end being dragged. */
-type Trim = { a: number; b: number; view: [number, number]; grab: "a" | "b" | null };
+/**
+ * A clip being chosen: its two ends, the stretch of time the timeline shows meanwhile, the end being
+ * dragged, and whether the viewer has zoomed the timeline themselves (then it stops fitting itself to the selection).
+ */
+type Trim = { a: number; b: number; view: [number, number]; grab: "a" | "b" | null; zoomed: boolean };
 const MIN_CLIP = 2000;
 /** Wall-clock time, for event handlers only (never called while rendering). */
 const now = () => Date.now();
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-const fmtLen = (ms: number) => { const s = Math.round(ms / 1000), m = Math.floor(s / 60); return m ? `${m} min${s % 60 ? ` ${s % 60} sec` : ""}` : `${s} sec`; };
+const fmtLen = (ms: number) => {
+  const s = Math.round(ms / 1000), m = Math.floor(s / 60), h = Math.floor(m / 60);
+  return h ? `${h} hr${m % 60 ? ` ${m % 60} min` : ""}` : m ? `${m} min${s % 60 ? ` ${s % 60} sec` : ""}` : `${s} sec`;
+};
 /** While trimming, the timeline zooms to the selection with room on both sides to extend it. */
 const viewFor = (a: number, b: number): [number, number] => { const span = Math.max(180_000, (b - a) * 2.5), mid = (a + b) / 2; return [mid - span / 2, mid + span / 2]; };
+/** How far the clip timeline can zoom: one minute across at the closest, a day across at the widest. */
+const TRIM_SPAN: [number, number] = [60_000, 24 * 3600_000];
+const fmtSpan = (ms: number) => { const m = Math.round(ms / 60_000); return m >= 60 ? `${+(m / 60).toFixed(1)} hour${m === 60 ? "" : "s"}` : `${m} minute${m === 1 ? "" : "s"}`; };
 /** How much of the day the timeline shows, widest first. 0 is the whole day. */
 const ZOOMS: [number, string][] = [[0, "Whole day"], [6 * 3600_000, "6 hours"], [3600_000, "1 hour"], [600_000, "10 minutes"]];
 /** Spacing between timeline labels: the first that gives at most six across. */
@@ -107,7 +116,7 @@ export function Player({ cameraId }: { cameraId: string }) {
   const showEnd = (ms: number) => seek(Math.min(ms, now() - 6000), false);
   const startTrim = () => {
     const lim = now() - 2000, b0 = Math.min(live ? lim : t + 15_000, lim), a0 = b0 - Math.min(30_000, maxClip);
-    setJump(false); setHover(null); setTrim({ a: a0, b: b0, view: viewFor(a0, b0), grab: null });
+    setJump(false); setHover(null); setTrim({ a: a0, b: b0, view: viewFor(a0, b0), grab: null, zoomed: false });
     seek(a0, false); setPlaying(false);
   };
   /** Dragging moves one end and stops at the limits; the other end stays put. */
@@ -115,7 +124,7 @@ export function Player({ cameraId }: { cameraId: string }) {
     if (!trim) return;
     const lim = now() - 2000;
     const a2 = g === "a" ? clamp(ms, trim.b - maxClip, trim.b - MIN_CLIP) : trim.a, b2 = g === "b" ? clamp(ms, trim.a + MIN_CLIP, Math.min(trim.a + maxClip, lim)) : trim.b;
-    setTrim({ a: a2, b: b2, view: done ? viewFor(a2, b2) : trim.view, grab: done ? null : g });
+    setTrim({ a: a2, b: b2, view: done ? keepView(trim, a2, b2) : trim.view, grab: done ? null : g, zoomed: trim.zoomed });
     if (done || now() - lastTrimSeek.current > 300) { lastTrimSeek.current = now(); showEnd(g === "a" ? a2 : b2); }
   };
   /** A typed time sets that end exactly; the other end follows only as far as the limits require. */
@@ -125,9 +134,59 @@ export function Player({ cameraId }: { cameraId: string }) {
     let a2 = trim.a, b2 = trim.b;
     if (g === "a") { a2 = Math.min(ms, lim - MIN_CLIP); b2 = Math.min(lim, clamp(b2, a2 + MIN_CLIP, a2 + maxClip)); }
     else { b2 = Math.min(ms, lim); a2 = clamp(a2, b2 - maxClip, b2 - MIN_CLIP); }
-    setTrim({ a: a2, b: b2, view: viewFor(a2, b2), grab: null });
+    setTrim({ a: a2, b: b2, view: keepView(trim, a2, b2), grab: null, zoomed: trim.zoomed });
     showEnd(g === "a" ? a2 : b2);
   };
+  /** Until the viewer zooms, the timeline refits to the selection; after that it stays put unless the selection leaves it. */
+  const keepView = (tr: Trim, a2: number, b2: number): [number, number] => {
+    if (!tr.zoomed) return viewFor(a2, b2);
+    const [v0, v1] = tr.view, span = v1 - v0;
+    if (a2 >= v0 && b2 <= v1) return tr.view;
+    if (b2 - a2 <= span) { const s = a2 < v0 ? a2 - span * 0.1 : b2 + span * 0.1 - span; return [s, s + span]; }
+    return viewFor(a2, b2);
+  };
+  /**
+   * Zooms the clip timeline by a factor (above 1 widens it), keeping the moment at `frac` of the width in place
+   * (the selection's middle when zooming from the buttons or keys), and never runs far past now.
+   * Updates from the latest state, since wheel events can arrive faster than renders.
+   */
+  const zoomTrim = (factor: number, frac?: number, note = true) => {
+    if (!trim) return;
+    const lim = now(), span0 = trim.view[1] - trim.view[0], span = clamp(span0 * factor, TRIM_SPAN[0], TRIM_SPAN[1]);
+    if (note && Math.abs(span - span0) >= 1) setZoomNote((p) => ({ text: fmtSpan(span), n: (p?.n ?? 0) + 1 }));
+    setTrim((tr) => {
+      if (!tr) return tr;
+      const [v0, v1] = tr.view, sp = clamp((v1 - v0) * factor, TRIM_SPAN[0], TRIM_SPAN[1]);
+      if (Math.abs(sp - (v1 - v0)) < 1) return tr;
+      const f = frac ?? 0.5, at = frac === undefined ? (tr.a + tr.b) / 2 : v0 + frac * (v1 - v0);
+      const s = Math.min(at - sp * f, lim + sp * 0.1 - sp);
+      return { ...tr, view: [s, s + sp], zoomed: true };
+    });
+  };
+  /** Slides the clip timeline sideways by a fraction of its width, stopping a little past now. */
+  const panTrim = (frac: number) => {
+    const lim = now();
+    setTrim((tr) => {
+      if (!tr) return tr;
+      const [v0, v1] = tr.view, span = v1 - v0, s = Math.min(v0 + frac * span, lim + span * 0.1 - span);
+      return { ...tr, view: [s, s + span], zoomed: true };
+    });
+  };
+  // On the timeline while choosing a clip, the wheel or a pinch zooms around the pointer and a sideways scroll pans.
+  // A native listener, because React's wheel handler can't stop the page from scrolling or zooming.
+  useEffect(() => {
+    const el = tl.current;
+    if (!el || !trim) return;
+    const wheel = (e: WheelEvent) => {
+      e.preventDefault();
+      if (trim.grab) return;
+      const r = el.getBoundingClientRect(), px = e.deltaMode === 1 ? 16 : 1;
+      if (!e.ctrlKey && Math.abs(e.deltaX) > Math.abs(e.deltaY)) { panTrim((e.deltaX * px) / r.width); return; }
+      zoomTrim(Math.exp(clamp(e.deltaY * px, -100, 100) * (e.ctrlKey ? 0.01 : 0.004)), clamp((e.clientX - r.left) / r.width, 0, 1), false);
+    };
+    el.addEventListener("wheel", wheel, { passive: false });
+    return () => el.removeEventListener("wheel", wheel);
+  });
   const saveClip = async () => {
     if (!trim) return;
     try { const r = await api<{ id: string }>("/exports", { method: "POST", body: { cameraId, startMs: Math.round(trim.a), endMs: Math.round(trim.b) } }); setJob({ id: r.id, status: "running", error: null }); } catch (e) { fail(e); }
@@ -211,7 +270,11 @@ export function Player({ cameraId }: { cameraId: string }) {
     const move = () => { lastMove.current = Date.now(); setIdle(false); };
     const key = (e: KeyboardEvent) => {
       move();
-      if (trim) { if (e.key === "Escape" && !job) setTrim(null); return; }
+      if (trim) {
+        if (e.key === "Escape" && !job) setTrim(null);
+        else if (!job && !(e.target as HTMLElement).closest("input,select,textarea")) { if (e.key === "-") zoomTrim(2); else if (e.key === "=" || e.key === "+") zoomTrim(0.5); }
+        return;
+      }
       if (e.defaultPrevented || (e.target as HTMLElement).closest("input,select,textarea,[role=dialog]")) return;
       if (e.key === "Escape") { if (jump) setJump(false); else if (!document.fullscreenElement) back(); return; }
       if (e.key === " ") { e.preventDefault(); toggle(); } else if (e.key === "ArrowLeft") seek(t - 10000); else if (e.key === "ArrowRight") seek(t + 10000);
@@ -309,6 +372,8 @@ export function Player({ cameraId }: { cameraId: string }) {
             {(["a", "b"] as const).map((g) => <input key={g} type="time" step={1} aria-label={g === "a" ? "Clip starts" : "Clip ends"} value={timeInput(trim[g], tz)} onChange={(e) => typeTrim(g, e.target.value)} className="h-9 rounded-lg border border-white/30 bg-transparent px-2 text-sm text-white tabular-nums outline-none [color-scheme:dark] focus-visible:border-white" />)}
             <span className="text-sm text-zinc-300">{fmtLen(trim.b - trim.a)}</span>
             <span className="flex-1" />
+            <Button variant="ghost" size="icon" className={ghost} aria-label="Zoom out" title="Zoom out (−)" disabled={trim.view[1] - trim.view[0] >= TRIM_SPAN[1]} onClick={() => zoomTrim(2)}><ZoomOut /></Button>
+            <Button variant="ghost" size="icon" className={ghost} aria-label="Zoom in" title="Zoom in (+)" disabled={trim.view[1] - trim.view[0] <= TRIM_SPAN[0]} onClick={() => zoomTrim(0.5)}><ZoomIn /></Button>
             <Button variant="outline" className="border-white/30 bg-transparent text-white hover:bg-white/15 hover:text-white" onClick={() => setTrim(null)}>Cancel</Button>
             <Button className="bg-white text-black hover:bg-white/90" onClick={saveClip}><Download />Save clip</Button>
           </div>

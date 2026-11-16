@@ -130,7 +130,7 @@ relay, last backup). Neither exposes configuration or secrets.
 | `REVOCATION_SWEEP_SECONDS` | 10 | Worst-case delay before revoked media stops (max 30) |
 | `MAX_WALL_STREAMS` | 9 | Simultaneous live tiles; the rest show stills |
 | `PLAYBACK_WINDOW_SECONDS` | 60 | Size of each recorded-video window |
-| `CLIP_MAX_SECONDS` | 300 | Longest clip a person can save |
+| `CLIP_MAX_SECONDS` | 7200 | Longest clip a person can save. Clips stream from the recorder to disk, so `/cache` needs room for them (roughly 1–4 GB per hour of video, depending on the camera) |
 | `BACKUP_RETENTION_DAYS` | 14 | How long daily backups are kept |
 | `MEDIA_CACHE_MAX_MB` | 2048 | Playback cache size limit |
 | `AUDIT_RETENTION_DAYS` | 365 | How long history is kept |
