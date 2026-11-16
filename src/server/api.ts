@@ -5,7 +5,7 @@ import { LOGIN_TXN_COOKIE } from "./auth/oidc";
 import { SESSION_COOKIE, type SessionRow } from "./auth/session";
 import { subjectOf, type Actor } from "./authz/actor";
 import type { CameraInfo, UserRow } from "./authz/policy";
-import { config } from "./config";
+import { config, groupsClaim } from "./config";
 import { schema } from "./db";
 import { backupStatus } from "./db/backup";
 import { fileResponse } from "./media/recordings";
@@ -256,8 +256,9 @@ route("GET", "/admin/overview", { admin: true }, ({ s }) => {
   const members = s.db.select().from(schema.groupMembers).all(), defaults = s.db.select().from(schema.defaultViews).all();
   const viewName = new Map(s.db.select().from(schema.views).all().map((v) => [v.id, v.name]));
   return {
-    users: users.map((u) => { const l = s.views.landing(u.id); return { id: u.id, name: u.name, email: u.email, role: u.role, status: u.status, allowPrivateViews: u.allowPrivateViews, lastLoginAt: u.lastLoginAt, groupIds: members.filter((m) => m.userId === u.id).map((m) => m.groupId), cameraCount: s.policy.cameraIds(u.id).size, landing: { ...l, viewName: l.viewId ? viewName.get(l.viewId) : null, groupName: groups.find((g) => g.id === l.groupId)?.name ?? null } }; }),
-    groups: groups.map((g) => ({ id: g.id, name: g.name, defaultPriority: g.defaultPriority, isAllStaff: g.isAllStaff, memberIds: members.filter((m) => m.groupId === g.id).map((m) => m.userId) })),
+    users: users.map((u) => { const l = s.views.landing(u.id); return { id: u.id, name: u.name, email: u.email, role: u.role, status: u.status, allowPrivateViews: u.allowPrivateViews, lastLoginAt: u.lastLoginAt, providerGroups: u.providerGroups, groupIds: members.filter((m) => m.userId === u.id).map((m) => m.groupId), cameraCount: s.policy.cameraIds(u.id).size, landing: { ...l, viewName: l.viewId ? viewName.get(l.viewId) : null, groupName: groups.find((g) => g.id === l.groupId)?.name ?? null } }; }),
+    groups: groups.map((g) => ({ id: g.id, name: g.name, defaultPriority: g.defaultPriority, isAllStaff: g.isAllStaff, providerValues: g.providerValues, memberIds: members.filter((m) => m.groupId === g.id).map((m) => m.userId), syncedMemberIds: members.filter((m) => m.groupId === g.id && m.source === "provider").map((m) => m.userId) })),
+    groupSync: { claim: groupsClaim() },
     cameras: s.policy.allCamerasUnchecked().map(camDto).sort((a, b) => a.name.localeCompare(b.name)),
     tags: s.db.select().from(schema.tags).all().map((t) => ({ id: t.id, name: t.name })).sort((a, b) => a.name.localeCompare(b.name)),
     cameraTags: s.db.select().from(schema.cameraTags).all(),

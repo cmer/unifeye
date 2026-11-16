@@ -155,6 +155,12 @@ empty with a way to other views; nothing is borrowed to fill it.
 - Identity is the exact `(issuer, subject)` pair. Email is a display attribute and is never used to
   find or link a profile.
 - First sign-in creates a profile with no cameras and no administrator rights.
+- Group sync: when a group lists values for the group claim (`OIDC_GROUPS_CLAIM`, default
+  `OIDC_ADMIT_CLAIM`), people whose ID token carries one of them are added to it. These memberships
+  are marked `provider` and are removed when the value goes away, checked at sign-in and on every
+  refresh-token re-check (only from an ID token verified against the issuer's keys for the same
+  subject). Manual memberships are never removed by the sync. The values last seen for each person
+  are stored, so a mapping change applies immediately.
 - The first administrator is the `(issuer, subject)` named in deployment configuration, promoted
   once on a normal sign-in, and audited.
 - Sessions are random opaque tokens, stored hashed, in an HttpOnly cookie (Secure over HTTPS,

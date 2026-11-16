@@ -1,5 +1,5 @@
 "use client";
-import { Eye, Plus } from "lucide-react";
+import { Eye, Plus, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -11,7 +11,7 @@ import { fail, Page, PageHeader, Select, useApp } from "./app";
 import { Card, landingReason, Pill, Row, type Overview } from "./manage-views";
 
 const TH = "px-3 py-2.5 text-left text-xs font-medium whitespace-nowrap text-muted-foreground", TD = "border-t px-3 py-2.5 align-middle";
-const ACTION: Record<string, string> = { "auth.login": "Signed in", "auth.logout": "Signed out", "auth.backchannel_logout": "Signed out by the sign-in provider", "auth.provider_revoked": "Access ended by the sign-in provider", "user.provisioned": "First sign-in", "admin.bootstrap": "Became the first administrator", "user.update": "Changed a person", "group.create": "Added a group", "group.update": "Changed a group", "group.delete": "Deleted a group", "group.member.add": "Added to a group", "group.member.remove": "Removed from a group", "grant.add": "Gave camera access", "grant.revoke": "Removed camera access", "tag.create": "Added a tag", "tag.rename": "Renamed a tag", "tag.delete": "Removed a tag", "camera.tag": "Tagged a camera", "camera.untag": "Untagged a camera", "view.create": "Created a view", "view.update": "Changed a view", "view.convert": "Changed a view's type", "view.delete": "Deleted a view", "view.share": "Changed sharing", "default.set": "Set a starting view", "preview.start": "Started viewing as", "preview.exit": "Stopped viewing as", "preview.end": "Viewing as ended", "preview.mutation": "Tried to make a change while viewing as", "preview.use": "Used an expired view-as session", "clip.export": "Saved a clip", "admin.access": "Tried to open Admin", "system.start": "Vantage started" };
+const ACTION: Record<string, string> = { "auth.login": "Signed in", "auth.logout": "Signed out", "auth.backchannel_logout": "Signed out by the sign-in provider", "auth.provider_revoked": "Access ended by the sign-in provider", "user.provisioned": "First sign-in", "admin.bootstrap": "Became the first administrator", "user.update": "Changed a person", "group.create": "Added a group", "group.update": "Changed a group", "group.delete": "Deleted a group", "group.member.add": "Added to a group", "group.member.remove": "Removed from a group", "group.member.sync_add": "Added to a group by the sign-in provider", "group.member.sync_remove": "Removed from a group by the sign-in provider", "grant.add": "Gave camera access", "grant.revoke": "Removed camera access", "tag.create": "Added a tag", "tag.rename": "Renamed a tag", "tag.delete": "Removed a tag", "camera.tag": "Tagged a camera", "camera.untag": "Untagged a camera", "view.create": "Created a view", "view.update": "Changed a view", "view.convert": "Changed a view's type", "view.delete": "Deleted a view", "view.share": "Changed sharing", "default.set": "Set a starting view", "preview.start": "Started viewing as", "preview.exit": "Stopped viewing as", "preview.end": "Viewing as ended", "preview.mutation": "Tried to make a change while viewing as", "preview.use": "Used an expired view-as session", "clip.export": "Saved a clip", "admin.access": "Tried to open Admin", "system.start": "Vantage started" };
 
 /** Vantage's own data only: people's access, groups, camera grants and tags. Nothing here changes the recorder or the identity provider. */
 export function Admin() {
@@ -28,6 +28,14 @@ export function Admin() {
   const seeAs = async (userId: string) => { try { const r = await api<{ token: string }>("/preview", { method: "POST", body: { userId } }); setPreviewToken(r.token); location.assign("/"); } catch (e) { fail(e); } };
   if (!ov) return <Page><PageHeader title="Admin" /></Page>;
   const staff = ov.users.filter((u) => u.role === "staff"), nameOf = (u: Overview["users"][number]) => u.name || u.email || "Unnamed";
+  const claim = ov.groupSync.claim;
+  /** Membership toggle. A synced membership is locked here: it follows the sign-in provider. */
+  const member = (g: Overview["groups"][number], userId: string, label: string) => claim && g.syncedMemberIds.includes(userId)
+    ? <span key={g.id + userId} title="Added by your sign-in provider. Change it there."><Pill on disabled onChange={() => {}}>{label}<RefreshCw aria-label="synced" className="ml-1 size-3" /></Pill></span>
+    : <Pill key={g.id + userId} on={g.memberIds.includes(userId)} onChange={(on) => put("/admin/members", { groupId: g.id, userId, on })}>{label}</Pill>;
+  /** Every value seen in someone's group claim, plus any already mapped, for picking. */
+  const seenValues = [...new Set([...ov.users.flatMap((u) => u.providerGroups), ...ov.groups.flatMap((g) => g.providerValues)])].sort();
+  const setValues = (g: Overview["groups"][number], values: string[]) => put(`/admin/groups/${g.id}`, { providerValues: values }, "PATCH");
   const subjects = [...ov.groups.map((g) => ({ key: `g${g.id}`, name: g.name, kind: g.isAllStaff ? "Everyone" : "Group", body: { groupId: g.id }, has: (c: string) => ov.groupGrants.some((x) => x.groupId === g.id && x.cameraId === c) })), ...staff.map((u) => ({ key: `u${u.id}`, name: nameOf(u), kind: "Person", body: { userId: u.id }, has: (c: string) => ov.userGrants.some((x) => x.userId === u.id && x.cameraId === c) }))];
   const preview = staff.filter((u) => u.status === "active"), chosen = preview.find((u) => u.id === pick) ?? preview[0];
 
@@ -43,7 +51,7 @@ export function Admin() {
             {ov.users.map((u) => (
               <tr key={u.id}><td className={TD}>{nameOf(u)}<div className="text-xs text-muted-foreground">{u.email}</div></td>
                 <td className={TD}><Select aria-label="Role" value={u.role} onChange={(e) => put(`/admin/users/${u.id}`, { role: e.target.value }, "PATCH")}><option value="staff">Staff</option><option value="admin">Admin</option></Select></td>
-                <td className={TD}>{ov.groups.filter((g) => !g.isAllStaff).map((g) => <Pill key={g.id} on={g.memberIds.includes(u.id)} onChange={(on) => put("/admin/members", { groupId: g.id, userId: u.id, on })}>{g.name}</Pill>)}</td>
+                <td className={TD}>{ov.groups.filter((g) => !g.isAllStaff).map((g) => member(g, u.id, g.name))}</td>
                 <td className={TD}>{u.cameraCount}</td>
                 <td className={TD}><Switch checked={u.allowPrivateViews} onCheckedChange={(v) => put(`/admin/users/${u.id}`, { allowPrivateViews: v }, "PATCH")} aria-label="Can create views" /></td>
                 <td className={TD}><Switch checked={u.status === "active"} onCheckedChange={(v) => put(`/admin/users/${u.id}`, { status: v ? "active" : "disabled" }, "PATCH")} aria-label="Active" /></td>
@@ -60,7 +68,12 @@ export function Admin() {
             <Card key={`${g.id}:${g.name}`} title={g.name} hint={g.isAllStaff ? "Includes everyone automatically." : undefined}>
               {!g.isAllStaff && <>
                 <Row label="Name"><Input aria-label="Group name" defaultValue={g.name} className="max-w-xs" onBlur={(e) => e.target.value.trim() && e.target.value.trim() !== g.name && put(`/admin/groups/${g.id}`, { name: e.target.value.trim() }, "PATCH")} /><span className="flex-1" /><Button size="sm" variant="outline" className="text-destructive" onClick={() => confirm(`Delete "${g.name}"? Members will lose access to its cameras.`) && act(() => api(`/admin/groups/${g.id}`, { method: "DELETE" }))}>Delete</Button></Row>
-                <div className="flex items-start gap-2"><span className="w-28 shrink-0 pt-1.5 text-sm text-muted-foreground">Members</span><div className="flex-1">{staff.map((u) => <Pill key={u.id} on={g.memberIds.includes(u.id)} onChange={(on) => put("/admin/members", { groupId: g.id, userId: u.id, on })}>{nameOf(u)}</Pill>)}</div></div>
+                {claim && <div className="flex items-start gap-2"><span className="w-28 shrink-0 pt-1.5 text-sm text-muted-foreground">Sync from</span><div className="flex-1">
+                  {seenValues.map((v) => <Pill key={v} on={g.providerValues.includes(v)} onChange={(on) => setValues(g, on ? [...g.providerValues, v] : g.providerValues.filter((x) => x !== v))}>{v}</Pill>)}
+                  <form className="mt-1.5 flex gap-2" onSubmit={(e) => { e.preventDefault(); const f = e.currentTarget, v = String(new FormData(f).get("value") ?? "").trim(); if (v && !g.providerValues.includes(v)) void setValues(g, [...g.providerValues, v]).then(() => f.reset()); }}><Input name="value" placeholder={`Another "${claim}" value`} aria-label="Add a value to sync from" className="h-8 max-w-xs" /><Button size="sm" variant="outline"><Plus />Add</Button></form>
+                  <p className="mt-1.5 text-xs text-muted-foreground">People whose <code>{claim}</code> claim includes a selected value join this group when they sign in, and leave it when the value goes away.</p>
+                </div></div>}
+                <div className="flex items-start gap-2"><span className="w-28 shrink-0 pt-1.5 text-sm text-muted-foreground">Members</span><div className="flex-1">{staff.map((u) => member(g, u.id, nameOf(u)))}</div></div>
               </>}
             </Card>
           ))}

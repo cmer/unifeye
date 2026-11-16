@@ -14,7 +14,7 @@ import { Oidc } from "@/server/auth/oidc";
  */
 type KP = Awaited<ReturnType<typeof generateKeyPair>>;
 let server: Server, issuer = "", good: KP, evil: KP, jwk: JWK;
-const idp = { claims: {} as Record<string, unknown>, signWith: undefined as KP | undefined, refreshOk: true, down: false, refreshCalls: 0, pkce: "" };
+const idp = { claims: {} as Record<string, unknown>, signWith: undefined as KP | undefined, refreshIdClaims: undefined as Record<string, unknown> | undefined, refreshOk: true, down: false, refreshCalls: 0, pkce: "" };
 const CLIENT = "vantage-test";
 
 async function idToken(extra: Record<string, unknown>, key: KP = good) {
@@ -31,7 +31,13 @@ beforeAll(async () => {
     if (req.url === "/token") {
       let body = ""; for await (const c of req) body += c;
       const p = new URLSearchParams(body);
-      if (p.get("grant_type") === "refresh_token") { idp.refreshCalls++; return idp.refreshOk ? send(200, { access_token: "at2", token_type: "Bearer", refresh_token: "rt-rotated" }) : send(400, { error: "invalid_grant" }); }
+      if (p.get("grant_type") === "refresh_token") {
+        idp.refreshCalls++;
+        if (!idp.refreshOk) return send(400, { error: "invalid_grant" });
+        const now = Math.floor(Date.now() / 1000);
+        const id_token = idp.refreshIdClaims && await idToken({ iss: issuer, aud: CLIENT, iat: now, exp: now + 300, ...idp.refreshIdClaims }, idp.signWith ?? good);
+        return send(200, { access_token: "at2", token_type: "Bearer", refresh_token: "rt-rotated", ...(id_token ? { id_token } : {}) });
+      }
       idp.pkce = p.get("code_verifier") ?? "";
       const now = Math.floor(Date.now() / 1000);
       const claims = { iss: issuer, aud: CLIENT, iat: now, exp: now + 300, sid: "sid-1", ...idp.claims };
@@ -50,7 +56,7 @@ beforeEach(() => {
   f = makeFixture();
   setConfigForTests(env());
   oidc = new Oidc(f.db, f.policy, f.sessions);
-  Object.assign(idp, { claims: {}, signWith: undefined, refreshOk: true, down: false, refreshCalls: 0 });
+  Object.assign(idp, { claims: {}, signWith: undefined, refreshIdClaims: undefined, refreshOk: true, down: false, refreshCalls: 0 });
 });
 
 /** Runs the redirect half of the flow and returns what the browser would bring back. */
@@ -252,6 +258,85 @@ describe("sessions and provider lifecycle", () => {
     await oidc.reconcile();
     expect(f.sessions.load(r.token)).toBeTruthy(); // provider back and still valid: usable again
     expect(f.names(r.user.id)).toEqual([]); // permission records untouched throughout
+  });
+});
+
+describe("group sync from the provider's group claim", () => {
+  const row = (groupId: string, userId: string) => f.db.select().from(schema.groupMembers).all().find((m) => m.groupId === groupId && m.userId === userId);
+  const map = (group: string, values: string[]) => f.admin.updateGroup(f.actor(f.u.admin), f.g[group], { providerValues: values });
+  const due = () => f.db.update(schema.sessions).set({ lastValidatedAt: Date.now() - 301_000 }).run();
+
+  it("adds and removes synced memberships at sign-in, and never touches manual ones", async () => {
+    map("Front Desk Team", ["front-desk"]); map("Security", ["security", "guards"]);
+    const r = await login({ sub: "gs", groups: ["vantage", "front-desk", "guards"] });
+    expect(row(f.g["Front Desk Team"], r.user.id)?.source).toBe("provider");
+    expect(row(f.g["Security"], r.user.id)?.source).toBe("provider");
+    expect(f.policy.groupIds(r.user.id)).toContain(f.g["Front Desk Team"]); // policy cache was invalidated
+    f.admin.setMember(f.actor(f.u.admin), f.g["Upper Level Team"], r.user.id, true); // unmapped, manual
+    await login({ sub: "gs", groups: ["vantage", "guards"] });
+    expect(row(f.g["Front Desk Team"], r.user.id)).toBeUndefined();
+    expect(row(f.g["Security"], r.user.id)?.source).toBe("provider");
+    expect(row(f.g["Upper Level Team"], r.user.id)?.source).toBe("manual");
+    expect(f.policy.groupIds(r.user.id)).not.toContain(f.g["Front Desk Team"]);
+    const actions = f.db.select().from(schema.auditLog).all().map((a) => a.action);
+    expect(actions.filter((a) => a === "group.member.sync_add")).toHaveLength(2);
+    expect(actions.filter((a) => a === "group.member.sync_remove")).toHaveLength(1);
+  });
+  it("keeps a manual membership when the value goes away, and an admin add turns a synced one manual", async () => {
+    map("Front Desk Team", ["front-desk"]);
+    const r = await login({ sub: "mix", groups: ["vantage"] });
+    f.admin.setMember(f.actor(f.u.admin), f.g["Front Desk Team"], r.user.id, true);
+    await login({ sub: "mix", groups: ["vantage", "front-desk"] });
+    expect(row(f.g["Front Desk Team"], r.user.id)?.source).toBe("manual"); // no second row, stays manual
+    await login({ sub: "mix", groups: ["vantage"] });
+    expect(row(f.g["Front Desk Team"], r.user.id)?.source).toBe("manual");
+    map("Security", ["security"]);
+    await login({ sub: "mix", groups: ["vantage", "security"] });
+    expect(() => f.admin.setMember(f.actor(f.u.admin), f.g["Security"], r.user.id, false)).toThrowError(/sign-in provider/);
+    f.admin.setMember(f.actor(f.u.admin), f.g["Security"], r.user.id, true);
+    await login({ sub: "mix", groups: ["vantage"] });
+    expect(row(f.g["Security"], r.user.id)?.source).toBe("manual");
+  });
+  it("applies a mapping change at once from each person's last reported values", async () => {
+    const r = await login({ sub: "late", groups: ["vantage", "night-shift"] });
+    expect(f.db.select().from(schema.users).all().find((u) => u.id === r.user.id)!.providerGroups).toEqual(["night-shift", "vantage"]);
+    map("Security", ["night-shift"]);
+    expect(row(f.g["Security"], r.user.id)?.source).toBe("provider");
+    expect(f.policy.groupIds(r.user.id)).toContain(f.g["Security"]);
+    map("Security", []); // clearing the mapping removes the synced members
+    expect(row(f.g["Security"], r.user.id)).toBeUndefined();
+  });
+  it("re-syncs during the session re-check from a verified refreshed ID token only", async () => {
+    map("Security", ["security"]);
+    const r = await login({ sub: "rc", groups: ["vantage", "security"] });
+    idp.refreshIdClaims = { sub: "rc", groups: ["vantage", "security"] }; idp.signWith = evil; due();
+    expect(await oidc.reconcile()).toMatchObject({ checked: 1, revoked: 0 });
+    idp.refreshIdClaims = { sub: "someone-else", groups: ["vantage"] }; idp.signWith = undefined; due();
+    await oidc.reconcile();
+    expect(row(f.g["Security"], r.user.id)?.source).toBe("provider"); // neither token was used
+    idp.refreshIdClaims = undefined; due();
+    await oidc.reconcile();
+    expect(row(f.g["Security"], r.user.id)?.source).toBe("provider"); // no ID token: unchanged
+    idp.refreshIdClaims = { sub: "rc", groups: ["vantage"] }; due();
+    await oidc.reconcile();
+    expect(row(f.g["Security"], r.user.id)).toBeUndefined(); // value removed at the provider
+    expect(f.policy.groupIds(r.user.id)).not.toContain(f.g["Security"]);
+    expect(f.sessions.load(r.token)).toBeTruthy(); // the session itself carries on
+  });
+  it("reads a separate claim when OIDC_GROUPS_CLAIM is set, and is off with `none`", async () => {
+    setConfigForTests(env({ OIDC_GROUPS_CLAIM: "realm_access.roles" })); oidc = new Oidc(f.db, f.policy, f.sessions);
+    map("Security", ["guard"]);
+    const r = await login({ sub: "kc", realm_access: { roles: ["guard"] } });
+    expect(row(f.g["Security"], r.user.id)?.source).toBe("provider");
+    setConfigForTests(env({ OIDC_GROUPS_CLAIM: "none" })); oidc = new Oidc(f.db, f.policy, f.sessions);
+    await login({ sub: "kc", realm_access: { roles: [] } });
+    expect(row(f.g["Security"], r.user.id)?.source).toBe("provider"); // sync off: nothing changes
+    expect(() => map("Security", ["x"])).toThrowError(/sync is off/);
+    f.admin.setMember(f.actor(f.u.admin), f.g["Security"], r.user.id, false); // and leftovers can be removed by hand
+    expect(row(f.g["Security"], r.user.id)).toBeUndefined();
+  });
+  it("refuses a mapping on the all-staff group", () => {
+    expect(() => map("All Staff", ["x"])).toThrowError(/already in this group/);
   });
 });
 

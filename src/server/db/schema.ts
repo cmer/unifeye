@@ -20,6 +20,8 @@ export const users = sqliteTable(
     role: text("role", { enum: ["admin", "staff"] }).notNull().default("staff"),
     status: text("status", { enum: ["active", "disabled"] }).notNull().default("active"),
     allowPrivateViews: integer("allow_private_views", { mode: "boolean" }).notNull().default(false),
+    /** The group-claim values from this person's latest verified ID token, kept so a mapping change applies at once. */
+    providerGroups: text("provider_groups", { mode: "json" }).$type<string[]>().notNull().default([]),
     createdAt: ts("created_at").notNull(),
     updatedAt: ts("updated_at").notNull(),
     lastLoginAt: ts("last_login_at"),
@@ -84,6 +86,12 @@ export const groups = sqliteTable(
     defaultPriority: integer("default_priority").notNull().default(0),
     /** The built-in "All staff" group: every active staff member is treated as a member. */
     isAllStaff: integer("is_all_staff", { mode: "boolean" }).notNull().default(false),
+    /**
+     * Values of the provider's group claim (OIDC_GROUPS_CLAIM) that make someone a member. At every
+     * sign-in and session re-check, people whose claim carries one of these are added, and synced
+     * members whose claim no longer does are removed. Empty: membership is managed by hand only.
+     */
+    providerValues: text("provider_values", { mode: "json" }).$type<string[]>().notNull().default([]),
     createdAt: ts("created_at").notNull(),
     version: integer("version").notNull().default(1),
   },
@@ -95,6 +103,8 @@ export const groupMembers = sqliteTable(
   {
     groupId: text("group_id").notNull().references(() => groups.id, { onDelete: "cascade" }),
     userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    /** `manual`: added by an administrator. `provider`: added by the group-claim sync, which may also remove it. */
+    source: text("source", { enum: ["manual", "provider"] }).notNull().default("manual"),
     createdAt: ts("created_at").notNull(),
   },
   (t) => [primaryKey({ columns: [t.groupId, t.userId] }), index("group_members_user").on(t.userId)],

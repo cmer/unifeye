@@ -53,6 +53,12 @@ const schema = z.object({
     .string()
     .optional()
     .transform((v) => [...new URLSearchParams((v ?? "").replace(/^\?/, "")).entries()].filter(([k]) => k)),
+  /**
+   * Group sync: the ID token claim whose values put people into Vantage groups (each group lists
+   * the values it accepts). Same formats as OIDC_ADMIT_CLAIM. Defaults to OIDC_ADMIT_CLAIM.
+   * Set to `none` to turn the sync off.
+   */
+  OIDC_GROUPS_CLAIM: z.string().optional(),
   /** Admit everyone the provider authenticates. Only for providers that already restrict who can use this client. */
   OIDC_ADMIT_ANY: bool(false),
   /** Test-only: permit an http:// issuer. Refused when NODE_ENV=production. */
@@ -129,6 +135,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     problems.push("BOOTSTRAP_ADMIN_ISSUER and BOOTSTRAP_ADMIN_SUBJECT must be set together");
   if (problems.length) throw new Error("Invalid configuration:\n- " + problems.join("\n- "));
   return c;
+}
+
+/** The claim group sync reads, or null when the sync is off. */
+export function groupsClaim(c: Config = config()): string | null {
+  const v = c.OIDC_GROUPS_CLAIM?.trim();
+  if (v === "none") return null;
+  return v || c.OIDC_ADMIT_CLAIM || null;
 }
 
 export function config(): Config {

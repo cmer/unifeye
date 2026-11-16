@@ -34,6 +34,38 @@ appears in the access token or userinfo, Vantage doesn't see it.
 The admission rule (`OIDC_ADMIT_CLAIM`, `OIDC_ADMIT_VALUES`) decides who gets in. It is explained
 under [Admission rule](deployment.md#admission-rule).
 
+### Groups from your provider
+
+Vantage can put people into its groups based on a claim in the ID token, so a role or group you
+assign in your provider gives access to that Vantage group's cameras.
+
+1. Pick the claim. By default it's the admission claim (`OIDC_ADMIT_CLAIM`). To use a different one,
+   set `OIDC_GROUPS_CLAIM` (same formats: string, array, object keys, or a dotted path). Set it to
+   `none` to turn group sync off.
+2. In Admin > Groups, open a group and select the values under **Sync from**. Values from everyone's
+   latest sign-in are listed; type any other value to add it.
+
+People join a group when their claim includes one of its values, and leave it when the value goes
+away. This happens at every sign-in and at every [session re-check](deployment.md#session-re-checks),
+so a removal takes effect within `OIDC_RECHECK_SECONDS` (5 minutes by default). Sessions without a
+refresh token only re-sync at the next sign-in. A mapping change in Admin applies right away, using
+the values from each person's latest sign-in or re-check.
+
+Memberships added this way show a sync icon and are locked in Admin: change them in your provider.
+People you add by hand stay until you remove them, whatever the claim says.
+
+Per provider:
+
+| Provider | Typical `OIDC_GROUPS_CLAIM` | Values look like |
+| --- | --- | --- |
+| Zitadel | `urn:zitadel:iam:org:project:roles` (needs the `urn:zitadel:iam:org:projects:roles` scope) | role keys, e.g. `front-desk` |
+| Keycloak | `groups` or `realm_access.roles` | group names (with a leading `/` if **Full group path** is on) or role names |
+| Entra ID | `roles` (app roles) or `groups` | app role values, or group **object IDs** |
+| Google Workspace | none | Google puts no groups in the ID token |
+
+If the claim is missing from a token, Vantage treats it as empty and removes that person's synced
+memberships. Make sure the provider includes the claim on refreshed ID tokens too.
+
 ### The first administrator
 
 Vantage makes one person an administrator: the one whose issuer and subject (`sub`) match

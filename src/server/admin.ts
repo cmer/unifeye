@@ -1,16 +1,19 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { audit } from "./audit";
+import { applyProviderGroups } from "./auth/claims";
 import type { Sessions } from "./auth/session";
 import { subjectOf, type Actor } from "./authz/actor";
 import type { Policy } from "./authz/policy";
 import type { Views, ViewRow } from "./authz/views";
+import { groupsClaim } from "./config";
 import { schema, type Db } from "./db";
 import { badRequest, conflict, forbidden, newId, notFound } from "./util";
 
 const S = schema;
 const tagName = z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9_]{0,39}$/, "Tags can only use lowercase letters, numbers and underscores.");
 const name = z.string().trim().min(1, "Enter a name.").max(80, "Names can be up to 80 characters.");
+const providerValues = z.array(z.string().trim().max(200, "Values can be up to 200 characters.")).max(50, "A group can match up to 50 values.").transform((v) => [...new Set(v.filter(Boolean))]);
 const viewInput = z.object({
   name,
   type: z.enum(["dynamic", "static"]),
@@ -93,12 +96,23 @@ export class Admin {
     this.done();
     return { id, name: n };
   }
-  updateGroup(a: Actor, id: string, patch: { name?: string; defaultPriority?: number }) {
+  updateGroup(a: Actor, id: string, patch: { name?: string; defaultPriority?: number; providerValues?: string[] }) {
     this.admin(a, "group.update");
     const set: Partial<typeof S.groups.$inferInsert> = {};
     if (patch.name != null) set.name = name.parse(patch.name);
     if (patch.defaultPriority != null) set.defaultPriority = z.number().int().min(-1000).max(1000).parse(patch.defaultPriority);
-    try { if (!this.db.update(S.groups).set({ ...set, version: sql`${S.groups.version} + 1` }).where(eq(S.groups.id, id)).run().changes) throw notFound(); } catch (e) { if ((e as { status?: number }).status) throw e; throw conflict("A group with that name already exists."); }
+    if (patch.providerValues != null) {
+      if (!groupsClaim()) throw badRequest("Group sync is off. Set OIDC_GROUPS_CLAIM to turn it on.");
+      const g = this.db.select().from(S.groups).where(eq(S.groups.id, id)).get();
+      if (!g) throw notFound();
+      if (g.isAllStaff) throw badRequest("Everyone is already in this group.");
+      set.providerValues = providerValues.parse(patch.providerValues);
+    }
+    this.db.transaction(() => {
+      try { if (!this.db.update(S.groups).set({ ...set, version: sql`${S.groups.version} + 1` }).where(eq(S.groups.id, id)).run().changes) throw notFound(); } catch (e) { if ((e as { status?: number }).status) throw e; throw conflict("A group with that name already exists."); }
+      // A new mapping applies at once, from the values each person's last sign-in or re-check reported.
+      if (set.providerValues) applyProviderGroups(this.db, undefined, { actorId: a.userId, ip: a.ip });
+    }, { behavior: "immediate" });
     this.log(a, "group.update", "group", id, set);
     this.done();
   }
@@ -113,8 +127,13 @@ export class Admin {
   }
   setMember(a: Actor, groupId: string, userId: string, on: boolean) {
     this.admin(a, "group.member");
-    if (on) this.db.insert(S.groupMembers).values({ groupId, userId, createdAt: Date.now() }).onConflictDoNothing().run();
-    else this.db.delete(S.groupMembers).where(and(eq(S.groupMembers.groupId, groupId), eq(S.groupMembers.userId, userId))).run();
+    const where = and(eq(S.groupMembers.groupId, groupId), eq(S.groupMembers.userId, userId));
+    const row = this.db.select().from(S.groupMembers).where(where).get();
+    // A synced membership belongs to the provider while sync is on: remove the person from the group there.
+    if (!on && row?.source === "provider" && groupsClaim()) throw badRequest("This person is in the group through your sign-in provider. Remove them from the matching group there.");
+    // Adding someone who is only synced makes the membership manual, so it survives a change at the provider.
+    if (on) this.db.insert(S.groupMembers).values({ groupId, userId, source: "manual", createdAt: Date.now() }).onConflictDoUpdate({ target: [S.groupMembers.groupId, S.groupMembers.userId], set: { source: "manual" } }).run();
+    else this.db.delete(S.groupMembers).where(where).run();
     this.log(a, on ? "group.member.add" : "group.member.remove", "group", groupId, { userId });
     this.done();
   }
