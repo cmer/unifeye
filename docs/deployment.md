@@ -140,7 +140,9 @@ relay, last backup). Neither exposes configuration or secrets.
   never publish or proxy that port. Nothing needs blocking at the proxy.
 - Forward the client address in `X-Forwarded-For` (rate limiting uses the first address).
 - Open port **8189 UDP and TCP** from viewers to the host, and set `WEBRTC_PUBLIC_HOST` to the
-  address they use (a comma-separated list is allowed, for example a LAN IP and a public name). A
+  address they use (a comma-separated list is allowed, for example a LAN IP and a public name). To
+  use another port, set `WEBRTC_PORT`; Compose publishes it and MediaMTX listens on it, and the
+  port must be the same on the outside as inside (no remapping, including on a router). A
   viewer who cannot reach it gets HLS through the HTTPS proxy after about 4 seconds, and that tab
   uses HLS directly for the next 10 minutes.
 - Cloudflare Tunnel can take the place of the reverse proxy: see [cloudflare-tunnel.md](cloudflare-tunnel.md).

@@ -56,7 +56,9 @@ timedatectl show -p NTPSynchronized --value 2>/dev/null           # clock sync m
 
 Requirements: 64-bit Linux (x86_64 or arm64), Docker Engine with the Compose v2 plugin, about 2 GB
 of RAM for the image build, and at least 10 GB free disk (more if people will save long clips:
-roughly 1–4 GB per hour of video). Ports 3000 (on 127.0.0.1) and 8189 must be free.
+roughly 1–4 GB per hour of video). Ports 3000 (on 127.0.0.1) and 8189 must be free. If 8189 is
+taken, pick another port, set `WEBRTC_PORT` to it in `.env`, and use that port wherever this guide
+says 8189.
 
 If Docker is missing, ask before installing it. Use the distribution's documented method (Docker's
 official `apt`/`dnf` repository), add the SSH user to the `docker` group only if the person agrees.
@@ -163,6 +165,8 @@ Start from `.env.example` and fill in every line marked REQUIRED. `chmod 600 .en
 - `WEBRTC_PUBLIC_HOST`: the server's LAN IP first. If the person chose real-time everywhere, add
   the public name after a comma: `192.168.1.10,cameras-media.example.com`. This is the address
   browsers dial for live video, so it must be one they can reach, never a container address.
+- `WEBRTC_PORT`: leave commented (8189) unless that port is taken. A router forward must keep the
+  same port number on both sides.
 - Leave the optional tuning lines commented unless the person asked for something.
 
 Then show the person a summary of the non-secret settings and ask them to confirm.

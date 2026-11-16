@@ -207,9 +207,9 @@ existing sessions are not extended, and a session that could not be re-validated
    does not know about are kicked.
 5. HLS is proxied entirely by Unifeye, so every playlist and segment request is authorized again.
 
-WebRTC signalling is proxied; media flows from MediaMTX to the browser over ICE on port 8189. If no
-media arrives within 4 seconds, the player tears the WebRTC session down and switches to HLS, and the
-tab skips WebRTC for 10 minutes (`src/ui/live.tsx`). Tearing down a WHEP session frees its slot at
+WebRTC signalling is proxied; media flows from MediaMTX to the browser over ICE on port 8189
+(`WEBRTC_PORT` in Compose). If no media arrives within 4 seconds, the player tears the WebRTC session
+down and switches to HLS, and the tab skips WebRTC for 10 minutes (`src/ui/live.tsx`). Tearing down a WHEP session frees its slot at
 once. The per-session limit (`MAX_WALL_STREAMS` + 3) counts distinct streams (camera and quality),
 not relay readers, because HLS takes a new reader every 25 seconds.
 
