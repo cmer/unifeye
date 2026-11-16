@@ -139,7 +139,16 @@ describe("clip export jobs", () => {
     f.admin.setGrant(f.actor(f.u.admin), { userId: f.u.front }, cam, false);
     expect((await call(f.u.front, "GET", `/exports/${id}/download`)).status).toBe(404);
     await wait(async () => !existsSync(file));
-    expect((await call(f.u.front, "POST", "/exports", { body: { cameraId: f.cam["Front Entrance"], startMs: t, endMs: t + 3600e3 } })).status).toBe(400); // longer than the clip limit
+    expect((await call(f.u.front, "POST", "/exports", { body: { cameraId: f.cam["Front Entrance"], startMs: t - 3600e3, endMs: t + 3600e3 + 1000 } })).status).toBe(400); // longer than the clip limit
+  });
+  it("prepare at most two at a time per session", async () => {
+    const cam = f.cam["Front Entrance"], t = Date.now() - 3 * 3600e3;
+    const post = (s: number) => call(f.u.front, "POST", "/exports", { body: { cameraId: cam, startMs: t + s * 60_000, endMs: t + s * 60_000 + 30_000 } });
+    const [a, b, c] = await Promise.all([post(0), post(1), post(2)]);
+    expect([a.status, b.status]).toEqual([200, 200]);
+    expect(c.status).toBe(429); expect(c.data.error).toBe("too_many_exports");
+    await wait(async () => (await call(f.u.front, "GET", `/exports/${a.data.id}`)).data.status !== "running" && (await call(f.u.front, "GET", `/exports/${b.data.id}`)).data.status !== "running", 20_000);
+    expect((await post(3)).status).toBe(200);
   });
 });
 

@@ -97,7 +97,7 @@ const schema = z.object({
   /** Username Vantage uses for the MediaMTX control API (checked by the same hook). */
   MEDIAMTX_API_SECRET: z.string().optional(),
   MAX_WALL_STREAMS: int(9, 1),
-  CLIP_MAX_SECONDS: int(300, 5),
+  CLIP_MAX_SECONDS: int(7200, 5),
   PLAYBACK_WINDOW_SECONDS: int(60, 10),
   EVENT_PREROLL_SECONDS: int(5, 0),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),

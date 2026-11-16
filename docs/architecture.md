@@ -282,6 +282,12 @@ that is abandoned cancels its export if nobody else is waiting for it. Clips sta
 the first frame can be up to one keyframe interval early. Clicking an event starts
 `EVENT_PREROLL_SECONDS` (default 5) before it.
 
+Saved clips can be up to `CLIP_MAX_SECONDS` long (default two hours). The UniFi adapter streams
+every export (playback windows and clips) from the recorder straight to disk over a second
+sign-in of the same Protect account, because the library's transport holds whole responses in
+memory. A clip job may run for ten minutes plus the clip's length before it is dropped; once ready it
+stays downloadable for ten minutes. Each session prepares at most two clips at a time.
+
 Times are UTC in storage and transport and shown in a selectable zone. Day boundaries follow the
 zone, so a day is 23, 24 or 25 hours long around daylight-saving changes.
 

@@ -12,6 +12,13 @@ import { schema, type Db } from "../db";
 import { NoRecordingError, type ProtectAdapter } from "../protect/types";
 import { badRequest, HttpError, log, newId, notFound } from "../util";
 
+/** How long a finished clip stays downloadable. */
+const EXPORT_KEEP = 10 * 60_000;
+/** The longest a clip may take to prepare before it is dropped: generous, since the recorder builds long clips slowly. */
+const prepTime = (lenMs: number) => 10 * 60_000 + lenMs;
+
+const fmtLimit = (sec: number) => (sec % 3600 === 0 ? `${sec / 3600} hour${sec === 3600 ? "" : "s"}` : sec % 60 === 0 ? `${sec / 60} minutes` : `${sec} seconds`);
+
 /** Serves a local file with single-range support (what <video> needs to seek inside a window). */
 export async function fileResponse(path: string, req: Request, type: string, extra: Record<string, string> = {}): Promise<Response> {
   const size = (await stat(path)).size;
@@ -96,9 +103,12 @@ export class Recordings {
   }
   createExport(a: Actor, cameraId: string, startMs: number, endMs: number) {
     const cam = this.policy.camera(subjectOf(a), cameraId), max = config().CLIP_MAX_SECONDS * 1000;
-    if (!(endMs > startMs) || endMs - startMs > max || endMs > Date.now()) throw badRequest(`Clips can be up to ${config().CLIP_MAX_SECONDS % 60 ? `${config().CLIP_MAX_SECONDS} seconds` : `${config().CLIP_MAX_SECONDS / 60} minutes`} long.`);
+    if (!(endMs > startMs) || endMs - startMs > max || endMs > Date.now()) throw badRequest(`Clips can be up to ${fmtLimit(config().CLIP_MAX_SECONDS)} long.`);
+    // A long clip ties up the recorder for minutes, so each session prepares at most two at a time.
+    const running = this.db.select({ id: schema.exportJobs.id }).from(schema.exportJobs).where(and(eq(schema.exportJobs.sessionId, a.sessionId), eq(schema.exportJobs.status, "running"))).all();
+    if (running.filter((j) => this.jobs.has(j.id)).length >= 2) throw new HttpError(429, "too_many_exports", "Two clips are already being prepared. Wait for one to finish.");
     const id = newId(), t = Date.now(), file = join(this.dir("exports"), `${id}.mp4`), g = this.access.grant(a, cameraId);
-    this.db.insert(schema.exportJobs).values({ id, sessionId: g.sessionId, subjectId: g.subjectId, previewId: g.previewId ?? null, cameraId: g.cameraId, startMs, endMs, status: "running", progress: 10, filePath: file, createdAt: t, expiresAt: t + 10 * 60_000 }).run();
+    this.db.insert(schema.exportJobs).values({ id, sessionId: g.sessionId, subjectId: g.subjectId, previewId: g.previewId ?? null, cameraId: g.cameraId, startMs, endMs, status: "running", progress: 10, filePath: file, createdAt: t, expiresAt: t + EXPORT_KEEP + prepTime(endMs - startMs) }).run();
     audit(this.db, { actorId: a.userId, previewSubjectId: a.preview?.subjectId, action: "clip.export", targetType: "camera", targetId: cameraId, requestId: a.requestId, ip: a.ip, detail: { startMs, endMs } });
     const ac = new AbortController();
     this.jobs.set(id, ac);
@@ -107,7 +117,7 @@ export class Recordings {
       try {
         await mkdir(this.dir("exports"), { recursive: true, mode: 0o700 });
         await this.adapter().exportClip(cam.protectId, startMs, endMs, file, { quality: "focus", signal: ac.signal });
-        set({ status: "ready", progress: 100 });
+        set({ status: "ready", progress: 100, expiresAt: Date.now() + EXPORT_KEEP });
       } catch (e) {
         await rm(file, { force: true });
         set({ status: ac.signal.aborted ? "cancelled" : "failed", error: e instanceof NoRecordingError ? "Nothing was recorded during that time." : "Something went wrong. Try again." });
