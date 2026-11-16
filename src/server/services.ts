@@ -33,7 +33,7 @@ export function makeAdapter(): ProtectAdapter {
   const c = config();
   if (c.VANTAGE_MODE === "real") return new UnifiProtectAdapter(c.PROTECT_NVR_ID, { host: c.PROTECT_HOST!, username: c.PROTECT_USERNAME!, password: c.PROTECT_PASSWORD!, verifyTls: !c.PROTECT_TLS_INSECURE, rtspsFingerprint: c.PROTECT_RTSPS_FINGERPRINT });
   // In mock mode MediaMTX runs the FFmpeg test source itself and publishes to its own loopback RTSP listener.
-  return new MockProtectAdapter(c.PROTECT_NVR_ID, { rtspPublishUrl: (p) => `rtsp://${MTX_PUBLISH_USER}:${c.MEDIAMTX_API_SECRET ?? ""}@127.0.0.1:8554/${p}` });
+  return new MockProtectAdapter(c.PROTECT_NVR_ID, { rtspPublishUrl: (p) => `rtsp://${MTX_PUBLISH_USER}:${c.MEDIAMTX_API_SECRET ?? ""}@127.0.0.1:$RTSP_PORT/${p}` });
 }
 
 /** Wires every server-side service around one database connection, one Protect adapter and one media relay. */

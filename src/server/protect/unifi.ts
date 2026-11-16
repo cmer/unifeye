@@ -81,6 +81,11 @@ export class UnifiProtectAdapter implements ProtectAdapter {
           this.ok();
           delay = 1000;
           const h = (pkt as { header?: { action?: string; modelKey?: string } }).header;
+          if (h?.modelKey === "camera" && h.action === "update") {
+            const id = (h as { id?: string }).id, rec = (pkt as { payload?: { isRecording?: unknown } }).payload?.isRecording;
+            if (id && typeof rec === "boolean") this.recording.set(id, rec);
+            continue;
+          }
           if (h?.modelKey !== "event" || h.action !== "add") continue;
           const e = this.map((pkt as { payload: RawEvent }).payload);
           if (!e || this.seen.has(e.id)) continue;
@@ -90,6 +95,7 @@ export class UnifiProtectAdapter implements ProtectAdapter {
         }
       } catch (e) {
         if (this.abort.signal.aborted) return;
+        this.recording.clear(); // updates were missed; fall back to the library's state until new ones arrive
         this.failed(e);
         log("warn", "protect event stream interrupted; retrying", { error: e, delayMs: delay });
       }
@@ -119,6 +125,13 @@ export class UnifiProtectAdapter implements ProtectAdapter {
     const smart = r.smartDetectTypes?.map((t) => SMART[t]).find(Boolean);
     const type: EventType = r.type === "motion" ? "motion" : r.type === "ring" ? "ring" : r.type === "smartAudioDetect" ? "audio" : r.type?.startsWith("smartDetect") ? smart ?? "other" : "other";
     return { id: r.id, protectCameraId: cam, type, startMs: r.start, endMs: r.end ?? null, hasThumbnail: !!r.thumbnailId && r.end != null };
+  }
+
+  /** Realtime `isRecording` updates seen since the stream last connected, by Protect camera id. */
+  private recording = new Map<string, boolean>();
+  async recordingNow(): Promise<string[]> {
+    const c = await this.c();
+    return c.cameras.filter((cam) => { const cfg = cam.config as unknown as { id: string; isRecording?: boolean }; return cam.isOnline && (this.recording.get(cfg.id) ?? cfg.isRecording === true); }).map((cam) => (cam.config as unknown as { id: string }).id);
   }
 
   async listCameras(): Promise<ProtectCamera[]> {

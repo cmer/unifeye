@@ -16,6 +16,23 @@ interface Loc { path: string; query: URLSearchParams }
 interface Ctx { me: Me; reload: () => Promise<void>; loc: Loc; nav: (to: string, replace?: boolean) => void; tz: string; setPref: (key: string, value: unknown) => void }
 const AppCtx = createContext<Ctx | null>(null);
 export const useApp = () => useContext(AppCtx)!;
+const NONE: ReadonlySet<string> = new Set();
+/** Cameras recording right now. Administrators only: everyone else (and any preview) gets an empty set and asks nothing. */
+export function useRecording(): ReadonlySet<string> {
+  const { me } = useApp();
+  const [ids, setIds] = useState<ReadonlySet<string>>(NONE);
+  useEffect(() => {
+    if (!me.isAdmin) return;
+    let off = false;
+    const load = () => api<{ cameraIds: string[] }>("/recording").then((r) => { if (!off) setIds(new Set(r.cameraIds)); }).catch(() => { if (!off) setIds(NONE); });
+    load();
+    const t = setInterval(load, 5000);
+    return () => { off = true; clearInterval(t); };
+  }, [me.isAdmin]);
+  return me.isAdmin ? ids : NONE;
+}
+/** The small "REC" mark shown to administrators on a camera that is recording. */
+export const RecMark = ({ className = "" }: { className?: string }) => <span className={`flex items-center gap-1.5 rounded-md bg-black/65 px-1.5 py-0.5 text-[11px] font-medium tracking-wide text-white ${className}`} title="Recording now"><i className="size-1.5 rounded-full bg-red-500" />REC</span>;
 export const fail = (e: unknown) => { if (!(e instanceof ApiError && e.status === 401)) toast.error(e instanceof Error ? e.message : "Something went wrong"); };
 const here = (): Loc => ({ path: location.pathname, query: new URLSearchParams(location.search) });
 

@@ -161,6 +161,11 @@ route("DELETE", "/preview", {}, ({ s, actor }) => { s.previews.end(actor); });
 
 // ---- cameras ------------------------------------------------------------------
 route("GET", "/cameras", {}, ({ s, actor }) => ({ cameras: s.policy.cameras(subjectOf(actor)).map(camDto), recorder: s.adapter.health().state }));
+// Which cameras are writing to the recorder right now. Administrators only, and not while previewing as staff.
+route("GET", "/recording", { admin: true }, async ({ s }) => {
+  const now = new Set(await s.adapter.recordingNow().catch(() => [] as string[]));
+  return { cameraIds: s.policy.allCamerasUnchecked().filter((c) => !c.missing && c.nvrId === s.adapter.nvrId && now.has(c.protectId)).map((c) => c.id) };
+});
 route("GET", "/tags", {}, ({ s, actor }) => {
   const names = new Set(s.policy.cameras(subjectOf(actor)).flatMap((c) => c.tags));
   const all = s.db.select().from(schema.tags).all();

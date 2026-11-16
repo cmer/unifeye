@@ -99,6 +99,7 @@ since the move.
 | Area | Why | What could go wrong |
 | --- | --- | --- |
 | Real UNVR: login, camera discovery, snapshots, events, thumbnails, video export, RTSPS relay | No recorder available | Private endpoint shapes or required privileges differ on your Protect version |
+| "Recording now" indicator on a real UNVR | No recorder available | Relies on the camera `isRecording` field and realtime camera updates; a wrong assumption shows a stale or missing REC mark, never extra access |
 | Recording gaps on a real UNVR | No known endpoint | Timeline shows only the overall recorded period |
 | Real Zitadel: login, admission claims, logout, back-channel logout, deactivation detection | No instance available | Claim names, PKCE-plus-refresh behaviour or error codes differ |
 | Docker image and Compose stack | Docker not running | Build errors, native module missing from the standalone output, MediaMTX environment overrides, volume ownership |

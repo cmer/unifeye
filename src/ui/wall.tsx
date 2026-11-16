@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { api, ApiError, type Camera } from "./api";
-import { Empty, fail, SidebarOpener, useApp } from "./app";
+import { Empty, fail, RecMark, SidebarOpener, useApp, useRecording } from "./app";
 import { LiveVideo } from "./live";
 import { useSidebar } from "@/components/ui/sidebar";
 
@@ -21,6 +21,7 @@ const GRID: Record<number, string> = { 2: "sm:grid-cols-2", 3: "sm:grid-cols-2 l
 export function Wall({ viewId }: { viewId?: string }) {
   const { me, nav, loc, setPref, reload } = useApp();
   const { open: sidebarOpen, isMobile } = useSidebar();
+  const recording = useRecording();
   const [data, setData] = useState<{ cameras: Camera[]; view?: ViewData } | null>(null);
   const [gone, setGone] = useState(false);
   const [panel, setPanel] = useState(false);
@@ -87,7 +88,8 @@ export function Wall({ viewId }: { viewId?: string }) {
         <button key={c.id} data-cam={c.id} onClick={() => nav(`/camera/${c.id}`)} aria-label={`Open ${c.name}`} className="group relative aspect-video overflow-hidden bg-black text-left text-white outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-inset">
           {c.missing ? <div className="absolute inset-0 grid place-items-center bg-zinc-900 p-4 text-center text-sm text-zinc-400"><div><div className="font-medium text-zinc-50">Camera removed</div>This camera is no longer on the recorder</div></div>
             : <LiveVideo cameraId={c.id} quality="wall" active={streaming.has(c.id) && me.recorder !== "down"} online={c.online && me.recorder !== "down"} onGone={() => { setTick((n) => n + 1); void reload(); }} />}
-          <span className="absolute top-2.5 left-2.5 flex max-w-[calc(100%-1.25rem)] items-center gap-1.5 truncate rounded-md bg-black/65 px-2 py-0.5 text-xs font-medium"><i className={`size-1.5 shrink-0 rounded-full ${c.missing ? "bg-zinc-500" : c.online ? "bg-green-500" : "bg-red-500"}`} />{c.name}</span>
+          <span className="absolute top-2.5 left-2.5 flex max-w-[calc(100%-4.5rem)] items-center gap-1.5 truncate rounded-md bg-black/65 px-2 py-0.5 text-xs font-medium"><i className={`size-1.5 shrink-0 rounded-full ${c.missing ? "bg-zinc-500" : c.online ? "bg-green-500" : "bg-red-500"}`} />{c.name}</span>
+          {recording.has(c.id) && <RecMark className="absolute top-2.5 right-2.5" />}
           <span className="pointer-events-none absolute inset-0 ring-2 ring-white/0 transition ring-inset group-hover:ring-white" />
         </button>
       ))}

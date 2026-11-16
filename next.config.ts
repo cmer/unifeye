@@ -5,6 +5,8 @@ const nextConfig: NextConfig = {
   // Every page is per-user and permission-dependent; nothing is statically cached.
   serverExternalPackages: ["better-sqlite3", "unifi-protect"],
   poweredByHeader: false,
+  // Development only: extra hostnames (comma separated) allowed to load dev assets, e.g. a tunnel.
+  allowedDevOrigins: process.env.DEV_ALLOWED_ORIGINS?.split(",") ?? [],
   turbopack: {
     rules: {
       "*.css": { loaders: ["@tailwindcss/turbopack"], as: "*.css" },

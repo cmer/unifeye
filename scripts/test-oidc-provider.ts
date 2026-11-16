@@ -9,7 +9,7 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 
-const PORT = Number(process.env.TEST_OIDC_PORT ?? 9911), ISS = `http://localhost:${PORT}`, CLIENT = process.env.OIDC_CLIENT_ID ?? "vantage-dev", ORG = "org-dev";
+const PORT = Number(process.env.TEST_OIDC_PORT ?? 9911), ISS = `http://localhost:${PORT}`, PUB = process.env.TEST_OIDC_PUBLIC_URL ?? ISS, CLIENT = process.env.OIDC_CLIENT_ID ?? "vantage-dev", ORG = "org-dev";
 const PEOPLE = [["dev-admin", "Avery Chen"], ["dev-upper", "Morgan Reyes"], ["dev-front", "Sam Okafor"], ["dev-security", "Jordan Blake"], ["dev-newhire", "Riley Park"]];
 const codes = new Map<string, { sub: string; nonce: string; challenge: string }>();
 
@@ -18,7 +18,7 @@ const main = async () => {
   const jwk = { ...(await exportJWK(publicKey)), kid: "dev", alg: "RS256", use: "sig" };
   createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", ISS), json = (code: number, body: unknown) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
-    if (url.pathname === "/.well-known/openid-configuration") return json(200, { issuer: ISS, authorization_endpoint: `${ISS}/authorize`, token_endpoint: `${ISS}/token`, jwks_uri: `${ISS}/keys`, end_session_endpoint: `${ISS}/end_session`, response_types_supported: ["code"], subject_types_supported: ["public"], id_token_signing_alg_values_supported: ["RS256"], code_challenge_methods_supported: ["S256"] });
+    if (url.pathname === "/.well-known/openid-configuration") return json(200, { issuer: ISS, authorization_endpoint: `${PUB}/authorize`, token_endpoint: `${ISS}/token`, jwks_uri: `${ISS}/keys`, end_session_endpoint: `${PUB}/end_session`, response_types_supported: ["code"], subject_types_supported: ["public"], id_token_signing_alg_values_supported: ["RS256"], code_challenge_methods_supported: ["S256"] });
     if (url.pathname === "/keys") return json(200, { keys: [jwk] });
     if (url.pathname === "/authorize") {
       const q = url.searchParams, pick = q.get("login");

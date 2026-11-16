@@ -63,6 +63,13 @@ export class MockProtectAdapter implements ProtectAdapter {
     return t;
   }
 
+  /** Simulated: the first camera records continuously, the rest in motion-like bursts. Offline cameras never record. */
+  async recordingNow(): Promise<string[]> {
+    this.guard();
+    const slice = Math.floor(Date.now() / 20_000);
+    return this.cameras.filter((c) => c.online && (this.n(c) === 1 || (this.n(c) * 7 + slice * 3) % 5 < 2)).map((c) => c.protectId);
+  }
+
   async listCameras(): Promise<ProtectCamera[]> {
     this.guard();
     return this.cameras.map((c) => ({ protectId: c.protectId, name: c.name, online: c.online, model: "Mock G5", eventTypes: this.typesFor(c), streams: [{ quality: "high", width: 1280, height: 720, codec: "h264" }, { quality: "low", width: 640, height: 360, codec: "h264" }], recordingStartMs: Date.now() - RETENTION, recordingEndMs: c.online ? Date.now() : this.t0 - 3 * 36e5 }));

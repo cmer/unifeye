@@ -59,6 +59,7 @@ size- and age-bounded directory.
 | Capability | Admin | Staff |
 | --- | --- | --- |
 | Cameras and media | All | Granted cameras only |
+| See which cameras are recording right now (REC mark) | Yes, but not while previewing as staff | No |
 | Open views | All curated views and their own | Their own private views and views shared with them |
 | Create private views | Yes | When an administrator allows it |
 | Create, edit and share curated views | Yes | No |

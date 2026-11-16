@@ -46,3 +46,6 @@ next-env.d.ts
 *.tsbuildinfo
 /dist
 !.env.development.example
+
+# QA sweep scratch
+/tmp

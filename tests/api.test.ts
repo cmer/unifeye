@@ -207,6 +207,18 @@ describe("media tickets and active-stream revocation", () => {
     expect((await call(f.u.front, "PATCH", `/media/live/whep/${secret}`, { raw: "a=candidate" })).status).toBe(404); // gone after teardown
     expect(f.relay.ids("webrtc")).toEqual([]);
   });
+  it("tells only administrators which cameras are recording, and not while previewing as staff", async () => {
+    const r = await call(f.u.admin, "GET", "/recording");
+    expect(r.status).toBe(200);
+    const ids = (r.data as { cameraIds: string[] }).cameraIds;
+    expect(ids).toContain(f.cam["Front Entrance"]); // the mock's continuously recording camera
+    expect(ids.every((id) => Object.values(f.cam).includes(id))).toBe(true);
+    expect((await call(f.u.front, "GET", "/recording")).status).toBe(403);
+    expect((await call(null, "GET", "/recording")).status).toBe(401);
+    const pv = await call(f.u.admin, "POST", "/preview", { body: { userId: f.u.front } });
+    expect((await call(f.u.admin, "GET", "/recording", { preview: (pv.data as { token: string }).token })).status).toBe(403);
+    expect((await call(f.u.front, "GET", "/cameras")).text).not.toMatch(/recording/i); // nothing about recording reaches staff
+  });
   it("stops an active stream when the grant, the account or the session goes away", async () => {
     await whep(f.u.front, "Loading Dock"); await whep(f.u.front, "Front Entrance"); await whep(f.u.upper, "Upper Lounge");
     const [dock, entrance, lounge] = f.relay.ids("webrtc");

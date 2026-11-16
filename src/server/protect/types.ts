@@ -61,6 +61,8 @@ export interface ProtectAdapter {
   close(): Promise<void>;
   health(): AdapterHealth;
   listCameras(): Promise<ProtectCamera[]>;
+  /** Protect ids of cameras writing video to the recorder at this moment (continuous, motion or schedule). */
+  recordingNow(): Promise<string[]>;
   /** JPEG. `atMs` requests a still from the recording near that time, where supported. */
   snapshot(protectCameraId: string, opts?: { width?: number; atMs?: number; signal?: AbortSignal }): Promise<Buffer>;
   liveSource(protectCameraId: string, quality: "wall" | "focus"): Promise<LiveSource | null>;
