@@ -27,8 +27,6 @@ tile or every page.
 Compared with WebRTC, HLS:
 
 - runs a few seconds behind live instead of under a second,
-- carries camera audio in AAC, which WebRTC cannot (WebRTC has sound only from cameras that also
-  send Opus),
 - sends all of its video through Cloudflare.
 
 ## Choose how live video reaches people

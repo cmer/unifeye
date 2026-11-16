@@ -4,7 +4,7 @@ import type { Policy } from "../authz/policy";
 import { config } from "../config";
 import type { ProtectAdapter } from "../protect/types";
 import { HttpError, log, notFound, randomToken, safeEqual } from "../util";
-import { MTX_API_USER, MTX_PUBLISH_USER } from "./mediamtx";
+import { MTX_API_USER, MTX_PUBLISH_USER, SRC_SUFFIX } from "./mediamtx";
 import { RelayUnavailable, type HlsReader, type ReaderKind, type Relay } from "./relay";
 
 export type Quality = "wall" | "focus";
@@ -82,8 +82,12 @@ export class Media {
     if (!c.MEDIAMTX_HOOK_SECRET || !secret || !safeEqual(secret, c.MEDIAMTX_HOOK_SECRET)) return false;
     const api = c.MEDIAMTX_API_SECRET ?? "";
     if (b.action === "api") return b.user === MTX_API_USER && !!api && safeEqual(b.password ?? "", api);
-    if (b.action === "publish") return c.VANTAGE_MODE === "mock" && b.user === MTX_PUBLISH_USER && !!api && safeEqual(b.password ?? "", api) && isInternal(b.ip);
-    if (b.action !== "read" || (b.protocol !== "webrtc" && b.protocol !== "hls")) return false; // RTSP/RTMP/SRT readers, playback, metrics: never
+    const relay = b.user === MTX_PUBLISH_USER && !!api && safeEqual(b.password ?? "", api) && isInternal(b.ip);
+    // The relay's own FFmpeg: the mock test streams, and real cameras whose audio is retimed (mediamtx.ts).
+    if (b.action === "publish") return relay && !(b.path ?? "").endsWith(SRC_SUFFIX);
+    // That FFmpeg reads the camera from the internal `_src` path over RTSP. Nobody else reads RTSP.
+    if (b.action === "read" && b.protocol === "rtsp") return relay && (b.path ?? "").endsWith(SRC_SUFFIX);
+    if (b.action !== "read" || (b.protocol !== "webrtc" && b.protocol !== "hls")) return false; // RTMP/SRT readers, playback, metrics: never
     const token = b.token || b.password || "";
     const t = this.tickets.get(token);
     if (!t || Date.now() > t.exp || t.path !== b.path || t.kind !== b.protocol || (t.single && t.used) || !b.id || !this.access.holds(t)) return false;

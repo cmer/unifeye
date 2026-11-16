@@ -199,6 +199,15 @@ describe("media tickets and active-stream revocation", () => {
     expect(f.s.media.hook("wrong", { action: "api", user: "vantage-api", password: "api" })).toBe(false);
     expect(f.s.media.hook("hook", { action: "api", user: "vantage-api", password: "api" })).toBe(true);
     expect(f.s.media.hook("hook", { action: "publish", user: "vantage-publisher", password: "api", ip: "203.0.113.9" })).toBe(false);
+    // The relay's own FFmpeg, on loopback: may publish a camera path, and read only the internal `_src` path over RTSP.
+    const relayHook = (b: object) => f.s.media.hook("hook", { user: "vantage-publisher", password: "api", ip: "127.0.0.1", ...b });
+    expect(relayHook({ action: "publish", path: `c_${cam}_wall` })).toBe(true);
+    expect(relayHook({ action: "publish", path: `c_${cam}_wall_src` })).toBe(false);
+    expect(relayHook({ action: "read", protocol: "rtsp", path: `c_${cam}_wall_src` })).toBe(true);
+    expect(relayHook({ action: "read", protocol: "rtsp", path: `c_${cam}_wall` })).toBe(false);
+    expect(relayHook({ action: "read", protocol: "rtsp", path: `c_${cam}_wall_src`, password: "wrong" })).toBe(false);
+    expect(relayHook({ action: "read", protocol: "rtsp", path: `c_${cam}_wall_src`, ip: "203.0.113.9" })).toBe(false);
+    expect(relayHook({ action: "read", protocol: "webrtc", path: `c_${cam}_wall_src`, id: "r2" })).toBe(false); // browsers need a ticket, and none names `_src`
     // The WHEP resource belongs to the session that created it.
     const secret = r.res.headers.get("location")!.split("/").pop();
     expect((await call(f.u.sec, "DELETE", `/media/live/whep/${secret}`)).status).toBe(404);

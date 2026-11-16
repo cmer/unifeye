@@ -5,6 +5,25 @@ import { RelayUnavailable, type HlsFile, type HlsReader, type ReaderKind, type R
 
 export const MTX_API_USER = "vantage-api";
 export const MTX_PUBLISH_USER = "vantage-publisher";
+/** Suffix of the internal path a retimed stream is pulled into. Only the retiming FFmpeg reads it. */
+export const SRC_SUFFIX = "_src";
+
+/**
+ * The FFmpeg that MediaMTX runs to publish `<name>` from `<name>_src`. `$RTSP_PORT` and `$MTX_PATH`
+ * are filled in by MediaMTX. Short probing keeps start-up near half a second; `asetpts=N/SR/TB`
+ * ignores the camera's audio timestamps and counts samples instead. The camera's first audio track
+ * is used (AAC on Protect, present on every camera with a microphone); `?` makes it optional.
+ */
+function retimeCommand(name: string) {
+  const auth = `${MTX_PUBLISH_USER}:${encodeURIComponent(config().MEDIAMTX_API_SECRET ?? "")}`;
+  return [
+    "ffmpeg -hide_banner -loglevel error -analyzeduration 500000 -probesize 500000",
+    `-rtsp_transport tcp -i rtsp://${auth}@127.0.0.1:$RTSP_PORT/${name}${SRC_SUFFIX}`,
+    "-map 0:v:0 -map 0:a:0? -map 0:a:0? -c:v copy -filter:a asetpts=N/SR/TB",
+    "-c:a:0 aac -b:a:0 48k -c:a:1 libopus -b:a:1 48k",
+    `-f rtsp -rtsp_transport tcp rtsp://${auth}@127.0.0.1:$RTSP_PORT/$MTX_PATH`,
+  ].join(" ");
+}
 
 /**
  * The MediaMTX relay: its control API (v3), its WHEP listener and its HLS listener. This file is
@@ -42,16 +61,26 @@ export class MediaMtxRelay implements Relay {
       return ok;
     } catch { return false; }
   }
-  /** Creates or updates an on-demand path. */
+  /**
+   * Creates or updates an on-demand path. A source whose audio needs retiming gets two paths: MediaMTX
+   * pulls the camera into `<name>_src` (keeping the TLS fingerprint check), and an FFmpeg that MediaMTX
+   * starts on demand reads that path over loopback RTSP, copies the video, re-encodes the sound with
+   * timestamps rebuilt from the sample count (AAC for HLS, Opus for WebRTC) and publishes `<name>`.
+   * Readers only ever get tickets for `<name>`; the hook admits nobody but that FFmpeg to `_src`.
+   */
   async ensureStream(name: string, src: LiveSource) {
-    const conf = src.kind === "rtsp"
-      ? { source: src.url, sourceOnDemand: true, sourceOnDemandCloseAfter: "10s", rtspTransport: "tcp", ...(src.tlsFingerprint ? { sourceFingerprint: src.tlsFingerprint } : {}) }
-      : { source: "publisher", runOnDemand: src.command, runOnDemandRestart: true, runOnDemandCloseAfter: "10s" };
-    const hash = createHash("sha256").update(JSON.stringify(conf)).digest("hex");
+    const pull = (url: string, fp?: string) => ({ source: url, sourceOnDemand: true, sourceOnDemandCloseAfter: "10s", rtspTransport: "tcp", ...(fp ? { sourceFingerprint: fp } : {}) });
+    const run = (command: string) => ({ source: "publisher", runOnDemand: command, runOnDemandRestart: true, runOnDemandCloseAfter: "10s" });
+    const paths: [string, object][] = src.kind === "command" ? [[name, run(src.command)]]
+      : src.retimeAudio ? [[`${name}${SRC_SUFFIX}`, pull(src.url, src.tlsFingerprint)], [name, run(retimeCommand(name))]]
+      : [[name, pull(src.url, src.tlsFingerprint)]];
+    const hash = createHash("sha256").update(JSON.stringify(paths)).digest("hex");
     if (this.known.get(name) === hash) return;
-    let r = await this.api("POST", `/v3/config/paths/add/${encodeURIComponent(name)}`, conf);
-    if (!r.ok) r = await this.api("POST", `/v3/config/paths/replace/${encodeURIComponent(name)}`, conf);
-    if (!r.ok) throw new Error(`mediamtx path setup failed (${r.status})`);
+    for (const [path, conf] of paths) {
+      let r = await this.api("POST", `/v3/config/paths/add/${encodeURIComponent(path)}`, conf);
+      if (!r.ok) r = await this.api("POST", `/v3/config/paths/replace/${encodeURIComponent(path)}`, conf);
+      if (!r.ok) throw new Error(`mediamtx path setup failed (${r.status})`);
+    }
     this.known.set(name, hash);
   }
 
