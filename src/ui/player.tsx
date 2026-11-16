@@ -9,7 +9,7 @@ import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitl
 import { api, dateInput, dayBounds, EVENT_COLOR, EVENT_LABEL, fmtDay, fmtShort, fmtTime, mediaUrl, timeInput, zonedParts, zonedToUtc, type ActivityEvent, type Camera } from "./api";
 import { Empty, fail, RecMark, Select, useApp, useRecording } from "./app";
 import { LiveVideo, type Transport } from "./live";
-import { applySound, play, setSound, SoundButton, useSound, watchAudio } from "./sound";
+import { applySound, claimSound, play, setSound, SoundButton, useSound, watchAudio } from "./sound";
 
 type Ranges = { ranges: [number, number][]; precision: "exact" | "bounds" };
 const ZONES: [string, string][] = [["local", "My time zone"], ["UTC", "UTC"], ["America/Toronto", "Toronto"], ["America/Vancouver", "Vancouver"], ["America/Chicago", "Chicago"], ["Europe/London", "London"], ["Europe/Paris", "Paris"], ["Australia/Sydney", "Sydney"]];
@@ -65,6 +65,8 @@ export function Player({ cameraId }: { cameraId: string }) {
   const [liveAudio, setLiveAudio] = useState<boolean | null>(null), [recAudio, setRecAudio] = useState<boolean | null>(null);
   const [liveEl, setLiveEl] = useState<HTMLVideoElement | null>(null), [recEl, setRecEl] = useState<HTMLVideoElement | null>(null);
   const soundOn = useSound() === cameraId;
+  // Opening a camera while sound is on (it was playing for another one) brings the sound along.
+  useEffect(() => claimSound(cameraId), [cameraId]);
   const video = useRef<HTMLVideoElement>(null), nextVideo = useRef<HTMLVideoElement>(null), box = useRef<HTMLDivElement>(null), tl = useRef<HTMLDivElement>(null), lastMove = useRef(0), lastTrimSeek = useRef(0);
 
   useEffect(() => { api<{ cameras: Camera[] }>("/cameras").then((r) => setCam(r.cameras.find((c) => c.id === cameraId) ?? "gone")).catch(fail); }, [cameraId, me.preview?.subject.id]);

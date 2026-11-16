@@ -6,15 +6,53 @@ import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitl
 
 /**
  * Which camera is playing sound, if any. Only one at a time, across the wall and the player, so a
- * wall of cameras never plays over itself. Sound only ever starts from a click, which keeps it
- * within the browsers' autoplay rules.
+ * wall of cameras never plays over itself.
+ *
+ * Whether the viewer wants sound at all is remembered in this browser: turning a camera's sound on
+ * or off sets it, and opening a camera while it is on gives that camera the sound (`claimSound`).
+ * When the browser refuses to play with sound (no recent click, e.g. after a reload), the camera
+ * plays muted and gets its sound back on the viewer's next click or key press anywhere on the page.
  */
+const KEY = "vantage.sound";
 let current: string | null = null;
+let wanted = (() => { try { return localStorage.getItem(KEY) === "on"; } catch { return false; } })();
+/** The camera that lost its sound to the browser's autoplay rules, waiting for the next gesture. */
+let blocked: string | null = null;
 const subs = new Set<() => void>();
-export function setSound(cameraId: string | null) {
+function publish(cameraId: string | null) {
   if (current === cameraId) return;
   current = cameraId;
   for (const f of subs) f();
+}
+/** The viewer's choice: sound on for this camera, or off. Remembered for next time. */
+export function setSound(cameraId: string | null) {
+  unblock();
+  if (wanted !== (cameraId !== null)) { wanted = cameraId !== null; try { localStorage.setItem(KEY, wanted ? "on" : "off"); } catch { /* not remembered */ } }
+  publish(cameraId);
+}
+/** Gives this camera the sound if the viewer has sound on; leaves it muted otherwise. */
+export function claimSound(cameraId: string) {
+  if (!wanted || current === cameraId) return;
+  unblock();
+  publish(cameraId);
+}
+const gesture = (e: Event) => {
+  if ((e.target as Element | null)?.closest?.("[data-sound]")) return; // the speaker button decides for itself
+  const id = blocked;
+  unblock();
+  if (id && wanted && current === null) publish(id);
+};
+function unblock() {
+  if (blocked === null) return;
+  blocked = null;
+  document.removeEventListener("pointerdown", gesture, true); document.removeEventListener("keydown", gesture, true);
+}
+/** The browser would not play with sound: mute for now, and try again on the next gesture. */
+function block() {
+  if (current === null) return;
+  if (blocked === null) { document.addEventListener("pointerdown", gesture, true); document.addEventListener("keydown", gesture, true); }
+  blocked = current;
+  publish(null);
 }
 export const useSound = () => useSyncExternalStore((f) => { subs.add(f); return () => { subs.delete(f); }; }, () => current, () => null);
 
@@ -49,9 +87,15 @@ export function applySound(el: HTMLVideoElement, on: boolean) {
   el.muted = !on;
   if (on && el.paused && el.readyState > 2) play(el);
 }
-/** `play()` that falls back to muted, and switches sound off, when the browser won't play it with sound. */
+/**
+ * `play()` that falls back to muted when the browser won't play it with sound. Only a refusal
+ * (NotAllowedError) counts: a play interrupted by a seek or a new source (AbortError) is not one.
+ */
 export function play(el: HTMLVideoElement) {
-  void el.play().catch(() => { if (el.muted) return; el.muted = true; setSound(null); void el.play().catch(() => {}); });
+  void el.play().catch((e: unknown) => {
+    if (el.muted || (e as { name?: string } | null)?.name !== "NotAllowedError") return;
+    el.muted = true; block(); void el.play().catch(() => {});
+  });
 }
 
 /** A media stream carrying the element's audio, for the level meter. Null where the browser can't provide one. */
@@ -114,7 +158,7 @@ export function SoundButton({ cameraId, has, media, recorded = false, className 
     </Popover>
   );
   return (
-    <span className="flex items-center">
+    <span data-sound className="flex items-center">
       <button type="button" aria-label={on ? "Turn sound off" : "Turn sound on"} aria-pressed={on} title={on ? "Sound off (M)" : "Sound on (M)"} onClick={(e) => { e.stopPropagation(); setSound(on ? null : cameraId); }}
         className={cn("grid size-9 place-items-center rounded-lg text-white outline-none hover:bg-white/15 focus-visible:ring-2 focus-visible:ring-white [&_svg]:size-4", className, on && onClassName)}>
         {on ? <Volume2 /> : <VolumeX />}
