@@ -14,7 +14,13 @@ function run(cmd: "ffmpeg" | "ffprobe", args: string[], signal?: AbortSignal): P
 }
 export const ffmpeg = (args: string[], signal?: AbortSignal) => run("ffmpeg", args, signal);
 
-interface Probed { codec_type: string; start_time?: string; duration?: string; nb_read_packets?: string; has_b_frames?: number }
+interface Probed { codec_type: string; time_base?: string; start_time?: string; duration?: string; nb_read_packets?: string; has_b_frames?: number }
+
+/** `-video_track_timescale` arguments that keep the video track on `timeBase` (e.g. "1/1000"); none if it cannot be read. */
+const keepTimescale = (timeBase?: string) => {
+  const den = Number(timeBase?.split("/")[1]);
+  return Number.isInteger(den) && den > 0 ? ["-video_track_timescale", String(den)] : [];
+};
 
 /**
  * Repairs the video clock of a Protect export, in place. Returns true when the file was rewritten.
@@ -25,11 +31,15 @@ interface Probed { codec_type: string; start_time?: string; duration?: string; n
  * runs out. The audio clock is right, so the video frames are spread evenly across the audio's
  * span. Stream copy only: no re-encode, a few tens of milliseconds per window.
  *
+ * The video keeps its original timescale. Left alone, the MP4 muxer raises Protect's 1/1000 to
+ * 1/16000, and a long clip's join (`joinParts`) reads every piece on the first piece's timescale: the
+ * retimed piece then plays 16 times too long and every piece after it is squeezed into a moment.
+ *
  * Only a file with both tracks, no B-frames, and video clearly shorter than audio is touched. Any
  * other file, or any FFmpeg failure, leaves the export as it was.
  */
 export async function retimeVideoToAudio(path: string, signal?: AbortSignal): Promise<boolean> {
-  const info = JSON.parse((await run("ffprobe", ["-count_packets", "-show_entries", "stream=codec_type,start_time,duration,nb_read_packets,has_b_frames", "-of", "json", path], signal)).toString()) as { streams?: Probed[] };
+  const info = JSON.parse((await run("ffprobe", ["-count_packets", "-show_entries", "stream=codec_type,time_base,start_time,duration,nb_read_packets,has_b_frames", "-of", "json", path], signal)).toString()) as { streams?: Probed[] };
   const v = info.streams?.find((s) => s.codec_type === "video"), a = info.streams?.find((s) => s.codec_type === "audio");
   if (!v || !a || v.has_b_frames) return false;
   const vStart = Number(v.start_time), vDur = Number(v.duration), aEnd = Number(a.start_time) + Number(a.duration), frames = Number(v.nb_read_packets);
@@ -38,10 +48,15 @@ export async function retimeVideoToAudio(path: string, signal?: AbortSignal): Pr
   if (ratio < 1.15 || ratio > 4) return false;
   const step = ((aEnd - vStart) / frames).toFixed(6), tmp = `${path}.retime`;
   try {
-    await run("ffmpeg", ["-i", path, "-map", "0", "-c", "copy", "-bsf:v", `setts=ts=STARTPTS+N*${step}/TB:duration=${step}/TB`, "-movflags", "+faststart", "-f", "mp4", "-y", tmp], signal);
+    await run("ffmpeg", ["-i", path, "-map", "0", "-c", "copy", "-bsf:v", `setts=ts=STARTPTS+N*${step}/TB:duration=${step}/TB`, ...keepTimescale(v.time_base), "-movflags", "+faststart", "-f", "mp4", "-y", tmp], signal);
     await rename(tmp, path);
     return true;
   } catch (e) { await rm(tmp, { force: true }); throw e; }
+}
+
+async function videoTimeBase(path: string, signal?: AbortSignal): Promise<string | undefined> {
+  const r = JSON.parse((await run("ffprobe", ["-select_streams", "v:0", "-show_entries", "stream=time_base", "-of", "json", path], signal)).toString()) as { streams?: Probed[] };
+  return r.streams?.[0]?.time_base;
 }
 
 export interface MediaInfo { start: number; duration: number; width: number; audio: boolean }
@@ -63,8 +78,21 @@ export async function audioEnvelope(path: string, signal?: AbortSignal): Promise
  * Joins exports of consecutive stretches into one MP4, stream copy only. `outpoint` (seconds, on the
  * part's own clock) drops the tail of a part that the next part repeats: the recorder starts each
  * export on the keyframe before the requested time, so neighbours overlap by up to a few seconds.
+ *
+ * FFmpeg's concat reads every part on the first part's timescales, so a part with a different video
+ * timescale is first rewritten (stream copy) to match. Otherwise its frames land at the wrong times
+ * and every later part is squeezed together, which makes the clip far too long and unplayable.
  */
 export async function joinParts(parts: { path: string; outpoint?: number }[], dest: string, signal?: AbortSignal) {
+  const tb = await Promise.all(parts.map((p) => videoTimeBase(p.path, signal)));
+  for (let i = 1; i < parts.length; i++) {
+    if (!tb[0] || !tb[i] || tb[i] === tb[0]) continue;
+    const tmp = `${parts[i].path}.ts.mp4`;
+    try {
+      await run("ffmpeg", ["-i", parts[i].path, "-map", "0", "-c", "copy", ...keepTimescale(tb[0]), "-f", "mp4", "-y", tmp], signal);
+      await rename(tmp, parts[i].path);
+    } catch (e) { await rm(tmp, { force: true }); throw e; }
+  }
   // FFmpeg reads relative entries against the list's own folder, so every path is made absolute.
   const list = `${dest}.txt`, q = (p: string) => `'${resolve(p).replace(/'/g, "'\\''")}'`;
   await writeFile(list, parts.map((p) => `file ${q(p.path)}\n${p.outpoint != null ? `outpoint ${p.outpoint.toFixed(3)}\n` : ""}`).join(""), { mode: 0o600 });
