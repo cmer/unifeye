@@ -325,7 +325,10 @@ the repository's Settings > Deploy keys, then in the checkout switch to the SSH 
   remote viewers and room on `/cache` matter more than CPU.
 - **GPU.** With `VIDEO_ENCODER=auto` (the default) Unifeye tries, once per start, a short test encode
   on VAAPI (Intel Quick Sync and AMD), then NVIDIA NVENC, and uses the first that works, or the CPU.
-  The log says which (`clip resizing uses the GPU`). The image includes the Intel and AMD VAAPI
+  The first clip that needs it logs the choice (`clip resizing uses the GPU`, or `… uses the CPU`
+  with the reason). Each clip piece logs `clip piece ready` (time spent downloading, and combining
+  when it was rebuilt, with the encoder used) or `clip piece resized`, and each saved clip logs
+  `clip saved` with its total time and how much of it went to encoding. The image includes the Intel and AMD VAAPI
   drivers. To pass an Intel or AMD GPU in, uncomment `devices` and `group_add` in `compose.yaml` and
   set `RENDER_GID` in `.env` to the host's `render` group id (`getent group render | cut -d: -f3`).
   For NVIDIA, install the NVIDIA Container Toolkit on the host and uncomment the `deploy` block.

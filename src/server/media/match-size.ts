@@ -1,5 +1,5 @@
 import { rm } from "node:fs/promises";
-import { isCodec, withEncoder, type Codec } from "../protect/encoders";
+import { isCodec, timedEncode, type Codec } from "../protect/encoders";
 import { fitVideo, videoSizes, type Size } from "../protect/ffmpeg";
 import { log } from "../util";
 
@@ -83,7 +83,8 @@ export class SizeMatcher {
 
   private async fit(p: Piece) {
     const { size, codec } = this.target!, dest = `${p.path}.fit.mp4`;
-    await withEncoder(codec, (enc) => fitVideo(p.path, dest, size, enc, this.signal), this.signal);
+    const { encoder, ms } = await timedEncode(codec, (enc) => fitVideo(p.path, dest, size, enc, this.signal), this.signal);
     p.fitted = { path: dest, size };
+    log("info", "clip piece resized", { from: p.sizes.map((s) => `${s.w}x${s.h}`).join(","), to: `${size.w}x${size.h}`, encoder, ms });
   }
 }

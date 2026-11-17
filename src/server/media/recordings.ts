@@ -10,7 +10,7 @@ import { subjectOf, type Actor } from "../authz/actor";
 import type { Policy } from "../authz/policy";
 import { config } from "../config";
 import { schema, type Db } from "../db";
-import { isCodec, withEncoder } from "../protect/encoders";
+import { isCodec, timedEncode } from "../protect/encoders";
 import { audioEnvelope, joinParts, overlayStretches, probe, videoSizes, type MediaInfo } from "../protect/ffmpeg";
 import { isNoRecording, isRecorderBusy, NoRecordingError, RecorderBusyError, type ProtectAdapter } from "../protect/types";
 import { badRequest, HttpError, log, newId, notFound } from "../util";
@@ -206,23 +206,27 @@ export class Recordings {
    * (`overlayStretches`). If that cannot be done, the piece is saved in low resolution, so no time
    * is missing from the clip.
    */
-  private async exportPiece(protectId: string, startMs: number, endMs: number, path: string, signal: AbortSignal): Promise<{ info: MediaInfo; busy: boolean }> {
-    const focus = `${path}.f`, wall = `${path}.w`;
+  private async exportPiece(protectId: string, startMs: number, endMs: number, path: string, signal: AbortSignal): Promise<{ info: MediaInfo; busy: boolean; combineMs: number }> {
+    const focus = `${path}.f`, wall = `${path}.w`, t = Date.now();
     try {
-      const r = await this.fetchBoth(protectId, startMs, endMs, focus, wall, signal, true);
+      const r = await this.fetchBoth(protectId, startMs, endMs, focus, wall, signal, true), fetchMs = Date.now() - t;
       if (r.high) {
         try {
           const { codec } = await videoSizes(r.high, signal);
           if (!isCodec(codec)) throw new Error(`cannot encode ${codec}`);
-          await withEncoder(codec, (enc) => overlayStretches(r.base, r.high!, r.overlay, path, enc, signal), signal);
-          return { info: await probe(path, signal), busy: false };
+          const { encoder, ms } = await timedEncode(codec, (enc) => overlayStretches(r.base, r.high!, r.overlay, path, enc, signal), signal);
+          const info = await probe(path, signal);
+          log("info", "clip piece ready", { protectId, startMs, fetchMs, combined: true, combineMs: ms, encoder, width: info.width });
+          return { info, busy: false, combineMs: ms };
         } catch (e) {
           if (signal.aborted) throw e;
           log("warn", "a clip piece is saved in low resolution: its high-resolution parts could not be combined with it", { protectId, startMs, error: e });
         }
       }
       await rename(r.base, path);
-      return { info: r.info ?? (await probe(path, signal)), busy: r.busy };
+      const info = r.info ?? (await probe(path, signal));
+      log("info", "clip piece ready", { protectId, startMs, fetchMs, combined: false, width: info.width });
+      return { info, busy: r.busy, combineMs: 0 };
     } finally {
       await Promise.all([focus, wall].map((p) => rm(p, { force: true })));
     }
@@ -248,12 +252,14 @@ export class Recordings {
     void (async () => {
       try {
         await mkdir(this.dir("exports"), { recursive: true, mode: 0o700 });
-        const { busy } = await this.exportPieces(cam.protectId, startMs, endMs, file, ac.signal, (f, ms) => { set({ progress: Math.round(f * 95) }); this.etas.set(id, { ms, at: Date.now() }); });
+        const began = Date.now();
+        const { busy, stats } = await this.exportPieces(cam.protectId, startMs, endMs, file, ac.signal, (f, ms) => { set({ progress: Math.round(f * 95) }); this.etas.set(id, { ms, at: Date.now() }); });
         // The clip's real length tells whether time is missing, whatever the cause: a piece left out,
         // or one that came back short. The recorder may start a few seconds early, never late.
         const durationMs = Math.round((await probe(file, ac.signal)).duration * 1000), missing = endMs - startMs - durationMs;
         const gap = missing >= Math.max(MISSING_MIN, (endMs - startMs) / 100) ? (busy ? "busy" : "unrecorded") : null;
         if (gap) log("info", "a saved clip is shorter than asked", { cameraId, startMs, endMs, durationMs, gap });
+        log("info", "clip saved", { cameraId, startMs, endMs, durationMs, tookMs: Date.now() - began, ...stats });
         set({ status: "ready", progress: 100, durationMs, gap, expiresAt: Date.now() + EXPORT_KEEP });
       } catch (e) {
         await rm(file, { force: true });
@@ -277,13 +283,13 @@ export class Recordings {
    * one size. `onProgress` gets the fraction of the work done and a rough time left: the average piece
    * so far, times the pieces left, shared among the workers, or the resizes still queued if longer.
    */
-  private async exportPieces(protectId: string, startMs: number, endMs: number, file: string, signal: AbortSignal, onProgress: (f: number, etaMs: number) => void): Promise<{ busy: boolean }> {
+  private async exportPieces(protectId: string, startMs: number, endMs: number, file: string, signal: AbortSignal, onProgress: (f: number, etaMs: number) => void): Promise<{ busy: boolean; stats: { pieces: number; combined: number; combineMs: number; resized: number; resizeMs: number; joinMs: number } }> {
     const n = Math.max(1, Math.ceil((endMs - startMs) / PIECE));
     const parts = Array.from({ length: n }, (_, i) => ({ a: startMs + i * PIECE, b: Math.min(endMs, startMs + (i + 1) * PIECE), path: n === 1 ? `${file}.part` : `${file}.${i}.part`, info: null as MediaInfo | null }));
     const local = new AbortController(), stop = () => local.abort();
     signal.addEventListener("abort", stop, { once: true });
     const width = Math.min(n, config().CLIP_EXPORT_PARALLEL);
-    let next = 0, done = 0, spent = 0, shown = 0, busy = false;
+    let next = 0, done = 0, spent = 0, shown = 0, busy = false, combined = 0, combineMs = 0;
     const report = () => {
       if (!done) return;
       const s = sizes ?? { pending: 0, done: 0, spentMs: 0 }, perFit = s.done ? s.spentMs / s.done : 10_000;
@@ -297,6 +303,7 @@ export class Recordings {
         try {
           const r = await this.exportPiece(protectId, p.a, p.b, p.path, local.signal);
           p.info = r.info; busy ||= r.busy;
+          if (r.combineMs) { combined++; combineMs += r.combineMs; }
           sizes?.add(p.path);
         } catch (e) {
           if (isRecorderBusy(e) && !local.signal.aborted) { busy = true; log("warn", "part of a clip is left out: the recorder kept failing to export it", { protectId, startMs: p.a, error: e }); }
@@ -313,13 +320,13 @@ export class Recordings {
       if (bad) throw bad.reason;
       const got = parts.filter((p) => p.info);
       if (!got.length) throw busy ? new RecorderBusyError(0) : new NoRecordingError();
-      const fitted = sizes ? await sizes.finish() : new Map<string, string>();
+      const fitted = sizes ? await sizes.finish() : new Map<string, string>(), joinAt = Date.now();
       if (got.length === 1) await rename(fitted.get(got[0].path) ?? got[0].path, file);
       else await joinParts(got.map((p, i) => {
         const nx = got[i + 1], lead = nx && nx.a === p.b ? Math.min(10_000, Math.max(0, nx.info!.duration * 1000 - (nx.b - nx.a))) : 0;
         return { path: fitted.get(p.path) ?? p.path, outpoint: lead > 50 ? p.info!.start + p.info!.duration - lead / 1000 : undefined };
       }), file, signal);
-      return { busy };
+      return { busy, stats: { pieces: got.length, combined, combineMs, resized: sizes?.done ?? 0, resizeMs: sizes?.spentMs ?? 0, joinMs: Date.now() - joinAt } };
     } finally {
       signal.removeEventListener("abort", stop);
       local.abort();
