@@ -6,8 +6,9 @@ export const HLS_SEGMENT = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
 
 /**
  * An in-memory media relay for tests. It behaves like MediaMTX as far as Unifeye can observe:
- *  - it admits no reader on its own: every WHEP offer and every HLS request asks `Media.admit`
- *    with the ticket it was given, and refuses when that refuses;
+ *  - it admits no reader on its own: every WHEP offer and every new HLS session (opened by the top
+ *    playlist, `index.m3u8`) asks `Media.admit` with the ticket it was given, and refuses when that refuses;
+ *  - other HLS files are served only to the session the reader already holds, whatever ticket comes with them;
  *  - admitted readers are sessions with ids, which `readers` lists and `kick` removes;
  *  - a stream must have been set up before anyone can read it;
  *  - it can be down, and it can forget everything like a restarted relay.
@@ -75,17 +76,22 @@ export class MemoryRelay implements Relay {
     return undefined;
   }
 
-  hlsReader(stream: string, ticket: string): HlsReader {
+  hlsReader(stream: string): HlsReader {
     let id = "";
     return {
-      fetch: async (file): Promise<HlsFile> => {
+      fetch: async (file, _search, ticket): Promise<HlsFile> => {
         this.up();
         if (!this.streams.has(stream)) return { outcome: "not_found" };
-        // A kicked or new reader starts a new session; either way the hook decides, on every request.
-        if (!this.sessions.has(id)) id = `hls-${++this.seq}`;
-        if (!this.admit("hls", stream, ticket, id)) { this.sessions.delete(id); return { outcome: "failed" }; }
-        this.sessions.set(id, { kind: "hls", stream });
-        if (file === "index.m3u8") return { outcome: "ok", body: new Response(HLS_PLAYLIST).body, contentType: "application/vnd.apple.mpegurl" };
+        // As in MediaMTX, only the top playlist opens a session, and that is when the hook is asked.
+        // Every other file belongs to the session this reader already holds; without one it is refused.
+        if (file === "index.m3u8") {
+          const next = `hls-${++this.seq}`;
+          if (!this.admit("hls", stream, ticket, next)) return { outcome: "failed" };
+          id = next;
+          this.sessions.set(id, { kind: "hls", stream });
+          return { outcome: "ok", body: new Response(HLS_PLAYLIST).body, contentType: "application/vnd.apple.mpegurl" };
+        }
+        if (!this.sessions.has(id)) return { outcome: "failed" };
         if (file === "init.mp4" || file === "seg1.mp4") return { outcome: "ok", body: new Response(HLS_SEGMENT).body, contentType: "video/mp4" };
         return { outcome: "not_found" };
       },

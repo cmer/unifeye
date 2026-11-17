@@ -117,7 +117,7 @@ describe("MediaMTX adapter: forgetting configured paths when MediaMTX may have r
     await expect(relay.whepCreate("c_a_wall", "t", "o")).rejects.toBeInstanceOf(RelayUnavailable);
     expect(await again()).toEqual(["c_a_wall", "c_b_wall"]);
     down = true;
-    await expect(relay.hlsReader("c_a_wall", "t").fetch("index.m3u8", "")).rejects.toBeInstanceOf(RelayUnavailable);
+    await expect(relay.hlsReader("c_a_wall").fetch("index.m3u8", "", "t")).rejects.toBeInstanceOf(RelayUnavailable);
     expect(await again()).toEqual(["c_a_wall", "c_b_wall"]);
     down = true;
     await relay.kick("hls", "x");
@@ -133,10 +133,10 @@ describe("MediaMTX adapter: forgetting configured paths when MediaMTX may have r
     expect(await relay.whepCreate("c_a_wall", "t", "o")).toEqual({ outcome: "no_stream" });
     expect(await again()).toEqual(["c_a_wall"]);
     answer = status(404);
-    expect(await relay.hlsReader("c_b_wall", "t").fetch("index.m3u8", "")).toEqual({ outcome: "not_found" });
+    expect(await relay.hlsReader("c_b_wall").fetch("index.m3u8", "", "t")).toEqual({ outcome: "not_found" });
     expect(await again()).toEqual(["c_b_wall"]);
     answer = status(404);
-    expect(await relay.hlsReader("c_b_wall", "t").fetch("seg9.mp4", "")).toEqual({ outcome: "not_found" }); // a segment that aged out is not a missing path
+    expect(await relay.hlsReader("c_b_wall").fetch("seg9.mp4", "", "t")).toEqual({ outcome: "not_found" }); // a segment that aged out is not a missing path
     expect(await again()).toEqual([]);
   });
 });
@@ -175,33 +175,35 @@ describe("MediaMTX adapter: WHEP", () => {
 });
 
 describe("MediaMTX adapter: HLS", () => {
-  it("follows the redirect, keeps the session cookie for that reader, and sends the ticket every time", async () => {
+  it("follows the redirect, keeps the session cookie for that reader, and sends the current ticket every time", async () => {
     answer = (r, res) => {
       if (r.url === "/hls-listener/c_cam1_wall/index.m3u8?_HLS_msn=3") { res.writeHead(302, { location: "index.m3u8?session=s1", "set-cookie": ["mtx_hls=s1; Path=/c_cam1_wall/; HttpOnly", "other=2; Max-Age=60"] }); return res.end(); }
       res.writeHead(200, { "content-type": r.url.includes(".m3u8") ? "application/vnd.apple.mpegurl" : "video/mp4" }); res.end(r.url.includes(".m3u8") ? "#EXTM3U" : "bytes");
     };
-    const reader = relay.hlsReader("c_cam1_wall", "TICKET");
+    const reader = relay.hlsReader("c_cam1_wall");
     expect(seen).toHaveLength(0); // nothing is sent until a file is asked for
-    const list = await reader.fetch("index.m3u8", "?_HLS_msn=3");
+    const list = await reader.fetch("index.m3u8", "?_HLS_msn=3", "TICKET");
     expect(list).toMatchObject({ outcome: "ok", contentType: "application/vnd.apple.mpegurl" });
     expect(list.outcome === "ok" && await new Response(list.body).text()).toBe("#EXTM3U");
-    const seg = await reader.fetch("seg1.mp4", "");
+    const seg = await reader.fetch("seg1.mp4", "", "TICKET");
     expect(seg.outcome === "ok" && await new Response(seg.body).text()).toBe("bytes");
-    expect(lines()).toEqual(["GET /hls-listener/c_cam1_wall/index.m3u8?_HLS_msn=3", "GET /hls-listener/c_cam1_wall/index.m3u8?session=s1", "GET /hls-listener/c_cam1_wall/seg1.mp4"]);
-    expect(seen.map((r) => r.headers.authorization)).toEqual(["Bearer TICKET", "Bearer TICKET", "Bearer TICKET"]);
-    expect(seen.map((r) => r.headers.cookie)).toEqual([undefined, "mtx_hls=s1; other=2", "mtx_hls=s1; other=2"]);
+    // A renewed ticket goes with the same cookie: the session outlives the ticket that opened it.
+    await reader.fetch("seg2.mp4", "", "RENEWED");
+    expect(lines()).toEqual(["GET /hls-listener/c_cam1_wall/index.m3u8?_HLS_msn=3", "GET /hls-listener/c_cam1_wall/index.m3u8?session=s1", "GET /hls-listener/c_cam1_wall/seg1.mp4", "GET /hls-listener/c_cam1_wall/seg2.mp4"]);
+    expect(seen.map((r) => r.headers.authorization)).toEqual(["Bearer TICKET", "Bearer TICKET", "Bearer TICKET", "Bearer RENEWED"]);
+    expect(seen.map((r) => r.headers.cookie)).toEqual([undefined, "mtx_hls=s1; other=2", "mtx_hls=s1; other=2", "mtx_hls=s1; other=2"]);
     // Another reader of the same stream starts without that cookie.
     seen = [];
-    await relay.hlsReader("c_cam1_wall", "OTHER").fetch("seg1.mp4", "");
+    await relay.hlsReader("c_cam1_wall").fetch("seg1.mp4", "", "OTHER");
     expect(seen[0].headers.cookie).toBeUndefined(); expect(seen[0].headers.authorization).toBe("Bearer OTHER");
   });
   it("maps 404 to not_found, other errors to failed, and gives up on a redirect loop", async () => {
     answer = status(404);
-    expect(await relay.hlsReader("c_cam1_wall", "t").fetch("seg1.mp4", "")).toEqual({ outcome: "not_found" });
+    expect(await relay.hlsReader("c_cam1_wall").fetch("seg1.mp4", "", "t")).toEqual({ outcome: "not_found" });
     answer = status(401);
-    expect(await relay.hlsReader("c_cam1_wall", "t").fetch("index.m3u8", "")).toEqual({ outcome: "failed" });
+    expect(await relay.hlsReader("c_cam1_wall").fetch("index.m3u8", "", "t")).toEqual({ outcome: "failed" });
     seen = []; answer = (_, res) => { res.writeHead(302, { location: "/hls-listener/c_cam1_wall/index.m3u8" }); res.end(); };
-    expect(await relay.hlsReader("c_cam1_wall", "t").fetch("index.m3u8", "")).toEqual({ outcome: "failed" });
+    expect(await relay.hlsReader("c_cam1_wall").fetch("index.m3u8", "", "t")).toEqual({ outcome: "failed" });
     expect(seen).toHaveLength(4);
   });
 });

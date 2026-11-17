@@ -48,7 +48,7 @@ gateway) is pinned separately in
   account disablement and session revocation; unknown readers kicked on both transports; a
   revocation arriving during a sweep is swept straight after it; a sweep with nothing revoked kicks
   nobody.
-- HLS fallback through the gateway: playlist then segment, the hook asked for each file; 401
+- HLS fallback through the gateway: playlist then segment, the hook asked when the playlist opens a session; 401
   without a session; 404 once the grant is removed, without the relay being asked; HLS readers
   kicked on grant removal and session revocation, and the gateway's HLS state dropped with them.
 - Relay outage: WHEP setup, trickle, teardown and HLS answer 503 `relay_unavailable`; a sweep
@@ -226,6 +226,19 @@ since the move.
 - MediaMTX's auth hook on its own port (`HOOK_PORT`) was checked with a real MediaMTX 1.21.4 in the
   QA stack: the control API is admitted through it, and `POST /api/internal/mediamtx-auth` on the
   web port returns 404. That check was local, not in the Compose stack.
+
+**HLS stopping after 25 seconds (2026-11-17):**
+
+- On production, a camera's enlarged view on HLS showed repeated 502s for `video1_stream.m3u8` and
+  `audio2_stream.m3u8`. MediaMTX 1.21.4 (`internal/servers/hls/http_server.go`) starts a session
+  only on the top playlist and finds it again by cookie for every other file, answering 401
+  "session not found" without one. The gateway replaced its relay reader, and so lost that cookie,
+  each time it renewed the ticket (every 25 seconds). A player only ever asks for the top playlist
+  once, so from then on every request failed, and the 401 reached the browser as a 502.
+- `tests/api.test.ts` ("keeps an HLS stream playing past the ticket's renewal") fails on the
+  previous code. The in-memory relay now asks the hook only when the top playlist opens a session,
+  as MediaMTX does. `tests/mediamtx.test.ts`: a renewed ticket is sent with the same cookie.
+  Not yet checked on production.
 
 **HLS stream slots and timeline previews (2026-11-17):**
 

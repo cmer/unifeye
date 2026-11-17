@@ -143,10 +143,10 @@ export class MediaMtxRelay implements Relay {
   }
 
   /** MediaMTX may answer with a redirect and a session cookie; both are followed and kept here, per reader. */
-  hlsReader(stream: string, ticket: string): HlsReader {
+  hlsReader(stream: string): HlsReader {
     let cookie = "";
     return {
-      fetch: async (file, search): Promise<HlsFile> => {
+      fetch: async (file, search, ticket): Promise<HlsFile> => {
         let url = `${config().MEDIAMTX_HLS_URL}/${stream}/${file}${search}`;
         for (let hop = 0; hop < 4; hop++) {
           const r = await fetch(url, { redirect: "manual", headers: { authorization: `Bearer ${ticket}`, ...(cookie ? { cookie } : {}) }, signal: AbortSignal.timeout(15_000) }).catch(() => { throw this.unreachable(); });

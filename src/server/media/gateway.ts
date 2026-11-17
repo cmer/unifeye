@@ -44,8 +44,8 @@ export class Media {
   private whep = new Map<string, Grant & { path: string; readerId?: string }>();
   /** WebRTC ticket -> relay reader id, between the hook admitting the reader and `whepCreate` reading it back. */
   private admitted = new Map<string, string>();
-  /** One entry per session + subject + preview + stream: who it was opened for, when to re-issue, and the relay's reader. */
-  private hlsJar = new Map<string, { grant: Grant; exp: number; reader: HlsReader }>();
+  /** One entry per session + subject + preview + stream: who it was opened for, when to re-issue, the current ticket and the relay's reader. */
+  private hlsJar = new Map<string, { grant: Grant; exp: number; ticket: string; reader: HlsReader }>();
   private sweeping = false;
   private pending = false;
   private again = false;
@@ -127,11 +127,13 @@ export class Media {
     let jar = this.hlsJar.get(key);
     this.policy.camera(subjectOf(a), cameraId); // every request, not only the first
     if (!jar || Date.now() > jar.exp) {
+      // Renewal re-checks the stream limit and issues a fresh ticket, but keeps the reader: the
+      // player's media playlists and segments belong to the relay session it already holds.
       const { ticket } = await this.issue(a, cameraId, q, "hls");
-      jar = { grant: this.access.grant(a, cameraId), exp: Date.now() + 25_000, reader: this.relay.hlsReader(path, ticket) };
+      jar = { grant: this.access.grant(a, cameraId), exp: Date.now() + 25_000, ticket, reader: jar?.reader ?? this.relay.hlsReader(path) };
       this.hlsJar.set(key, jar);
     }
-    const r = await jar.reader.fetch(file, search).catch(relayDown);
+    const r = await jar.reader.fetch(file, search, jar.ticket).catch(relayDown);
     if (r.outcome !== "ok") throw new HttpError(r.outcome === "not_found" ? 404 : 502, r.outcome === "not_found" ? "not_found" : "relay_error");
     return new Response(r.body, { status: 200, headers: { "content-type": r.contentType ?? "application/octet-stream", "cache-control": "no-store" } });
   }

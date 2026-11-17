@@ -438,7 +438,7 @@ describe("media tickets and active-stream revocation", () => {
     await kicked(lounge);
   });
 
-  it("serves the HLS fallback through the gateway, asking the hook for every file", async () => {
+  it("serves the HLS fallback through the gateway, asking the hook when the player opens a session", async () => {
     const list = await hls(f.u.front, "Front Entrance", "index.m3u8");
     expect(list.status).toBe(200);
     expect(list.res.headers.get("content-type")).toBe("application/vnd.apple.mpegurl");
@@ -448,7 +448,7 @@ describe("media tickets and active-stream revocation", () => {
     const seg = await hls(f.u.front, "Front Entrance", "seg1.mp4");
     expect(seg.status).toBe(200); expect(seg.res.headers.get("content-type")).toBe("video/mp4");
     expect((await seg.res.arrayBuffer()).byteLength).toBeGreaterThan(0);
-    expect(f.relay.tickets).toHaveLength(2); expect(f.relay.tickets[1]).toBe(f.relay.tickets[0]); // one reader, admitted twice
+    expect(f.relay.tickets).toHaveLength(1); // the segment belongs to the session the playlist opened
     expect(f.relay.ids("hls")).toHaveLength(1);
     expect((await hls(f.u.front, "Front Entrance", "missing.mp4")).status).toBe(404);
     // An HLS ticket is bound to its transport and path, and nobody else gets in on this reader.
@@ -458,6 +458,21 @@ describe("media tickets and active-stream revocation", () => {
     expect((await hls(null, "Front Entrance", "seg1.mp4")).status).toBe(401);
     expect((await hls(f.u.nobody, "Front Entrance", "seg1.mp4")).status).toBe(404);
     expect(f.relay.ids("hls")).toHaveLength(1);
+  });
+  it("keeps an HLS stream playing past the ticket's renewal", async () => {
+    // A player asks for the top playlist once, then only for media playlists and segments. Those
+    // belong to the relay session that first request opened, so renewing the ticket must keep it.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      expect((await hls(f.u.front, "Front Entrance", "index.m3u8")).status).toBe(200);
+      vi.setSystemTime(Date.now() + 26_000);
+      expect((await hls(f.u.front, "Front Entrance", "seg1.mp4")).status).toBe(200);
+      expect(f.relay.ids("hls")).toHaveLength(1);
+      // The renewal re-checked access and issued a new ticket, which the next new session presents.
+      const used = new Set(f.relay.tickets);
+      expect((await hls(f.u.front, "Front Entrance", "index.m3u8")).status).toBe(200);
+      expect(used.has(f.relay.tickets.at(-1)!)).toBe(false);
+    } finally { vi.useRealTimers(); }
   });
   it("refuses HLS files once access is revoked, without asking the relay", async () => {
     expect((await hls(f.u.front, "Loading Dock", "index.m3u8")).status).toBe(200);
