@@ -172,6 +172,30 @@ Rules that hold for all of them:
   request carries an Access token), straight to the identity provider (when it is the only method
   besides Cloudflare), or the `/sign-in` page (when passwords are on; it also offers the provider).
 
+### Rate limits
+
+Fixed one-minute windows in `src/server/api.ts`. Signed-in requests count per session, so people
+behind one address (an office, a VPN) do not share a limit. Sign-in routes, and requests to
+signed-in routes that fail to authenticate (`unauth`, such as a wall left open after signing out),
+count per client address; a valid session is never refused because of its address.
+
+| Class | Per minute | Counted per |
+| --- | --- | --- |
+| `auth` (sign-in routes) | 30 | address |
+| `unauth` (failed authentication) | 600 | address |
+| `read` / `write` | 1,200 / 240 | session |
+| `media` (snapshots, WebRTC set-up, playback, thumbnails, exports) | 600 | session |
+| `hls` (playlists and segments) | 120 × (`MAX_WALL_STREAMS` + 3), 1,440 by default | session |
+
+An HLS stream on Protect cameras polls a video and a sound playlist and fetches a segment of each
+every 4 seconds, about 60 requests a minute (measured 2026-11-17: 29 playlist requests per tile per
+minute in Chrome). HLS has its own budget, sized from the stream limit, so a full wall on HLS
+fits beside its still-image refreshes.
+
+The client address is the last `X-Forwarded-For` entry: the one the nearest proxy appends. Earlier
+entries are whatever the client sent. Next fills the header from the connection when a request
+arrives without one, so a client that reaches Unifeye directly, with no proxy, can still choose it.
+
 ### Company sign-in (`oidc`)
 
 - Authorization Code with PKCE (S256), state and nonce, in a single-use transaction that expires in
@@ -224,7 +248,7 @@ Rules that hold for all of them:
   before the slow check so parallel guesses cannot slip past it. Counts are in memory, forgotten
   after 30 quiet minutes, and at most 100,000 usernames are tracked; when full, the oldest idle
   entries go first and a running lock is never dropped, so flooding junk usernames cannot clear one.
-  Every lock is audited. The per-address rate limit also applies. A correct password for
+  Every lock is audited. The per-address sign-in rate limit also applies. A correct password for
   a disabled account says so.
 - Password routes take small JSON bodies only (a `Content-Length` of at most 4 KB).
 - Return addresses (`returnTo`) must be same-site paths in printable ASCII: no `//`, backslashes,
@@ -501,14 +525,14 @@ zone, so a day is 23, 24 or 25 hours long around daylight-saving changes.
   Set the secret, or make sure the server is reachable only through Cloudflare.
 - With `cloudflare` and `local` both on, password sign-in is open to anyone who can reach Unifeye
   without going through Cloudflare. Keep the server reachable from outside only through Cloudflare
-  (Tunnel or firewall rules), so that path is the local network. The rate limit is keyed on the
-  first `X-Forwarded-For` address, which a client can set when no proxy overwrites it; the
-  per-username lockout does not depend on it.
+  (Tunnel or firewall rules), so that path is the local network. The sign-in rate limit is keyed on
+  the last `X-Forwarded-For` address, which a client that reaches Unifeye directly can still set;
+  the per-username lockout does not depend on it.
 - Password lockouts are kept in memory. A restart clears them. Anyone who knows a username can keep
   it locked by guessing wrong once every 15 minutes; locks are audited, and the operator can always
   issue a password link from the command line (using it clears the lock). Someone can also fill
   the password-check queue to make sign-in answer "try again in a moment" for everyone; the
-  per-address rate limit (spoofable without a proxy that overwrites `X-Forwarded-For`) is the only
+  per-address rate limit (spoofable by a client that reaches Unifeye with no proxy in between) is the only
   brake on that.
 - SQLite means one application instance on local disk. Running replicas or placing the database on
   a network filesystem is not supported.
