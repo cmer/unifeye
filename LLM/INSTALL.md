@@ -29,9 +29,9 @@ those disagree, those win. Read the relevant section before each phase.
 - **Confirm before anything hard to undo or outside the server:** installing packages, opening
   firewall ports, overwriting an existing `.env` or `compose.override.yaml`, deleting volumes, or
   touching any other host.
-- **This deployment path is new.** `docs/deployment.md` says the Docker stack has not been run in
-  production before. Treat this install as a test. If something in the repository is wrong, stop,
-  explain what you saw, and suggest the fix rather than working around it silently.
+- **This deployment path is young.** The Docker stack runs in production at one site only (see
+  `docs/verification.md`). If something in the repository is wrong, stop, explain what you saw, and
+  suggest the fix rather than working around it silently.
 
 ## Phase 1: Reach the server
 

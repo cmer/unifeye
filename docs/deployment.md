@@ -1,7 +1,7 @@
 # Deployment
 
-The Docker image and Compose stack in this repository have **not been built or run yet** (Docker was
-not available where they were written). Treat the first deployment as a test.
+The Docker image and Compose stack run in production against a real UNVR. See
+[verification.md](verification.md) for what has and hasn't been checked.
 
 ## Where to run it
 
