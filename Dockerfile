@@ -16,8 +16,11 @@ RUN pnpm build
 
 FROM node:24-bookworm-slim AS run
 # FFmpeg probes and retimes recorded video for playback and clip exports (stream copy, plus
-# audio analysis), and generates mock mode's simulated media. Live video is relayed by MediaMTX.
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+# audio analysis), resizes the low-resolution stretches of adaptive clips, and generates mock mode's
+# simulated media. Live video is relayed by MediaMTX. The VAAPI drivers let that resize use an
+# Intel (Quick Sync) or AMD GPU when the host passes one in; without one, FFmpeg uses the CPU.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates mesa-va-drivers \
+    $([ "$(dpkg --print-architecture)" = amd64 ] && echo intel-media-va-driver) \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0 HOOK_HOST=0.0.0.0 HOOK_PORT=3001 \

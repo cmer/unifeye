@@ -343,6 +343,31 @@ done, and the status route adds a rough time left (average piece time, times the
 by the parallel count). When the job is ready the browser starts the download on its own, and the
 dialog stays open with a way to download it again.
 
+With adaptive recording, a channel 0 export of a piece that contains motion holds only the motion,
+so each piece is fetched as playback windows are (`fetchBoth`): when the channel 0 export is more
+than a second short, the low channel is exported too and the high-resolution stretches are placed
+by their audio. A clip needs one file, so `exportPiece` combines them (`overlayStretches` in
+`src/server/protect/ffmpeg.ts`): the low recording, scaled up and repeated to the high frame rate,
+with the high-resolution frames laid over it inside their spans, and the low recording's sound,
+which has no gaps. This re-encodes the whole piece at full size (about 14 s for five minutes at
+2688x1512 on a fast desktop CPU; a GPU barely helps because the scaling runs on the CPU). If the audio
+cannot place the stretches, or the combine fails, the piece is saved in low resolution, so no time is
+missing. If channel 0 has nothing for a piece, the low channel is tried before the piece is left out.
+
+Pieces can still differ in size: one recorded only in low resolution (640x480 at 7 fps on the camera
+tested) sits next to combined or high-resolution ones, and a player resizes its picture at every change. With
+`CLIP_MATCH_RESOLUTION` (on by default), `SizeMatcher` (`src/server/media/match-size.ts`) reads each
+piece's picture sizes as it arrives (keyframes only: a size can change only there) and keeps the
+largest seen as the target. A piece with any smaller picture is re-encoded to the target, scaled to
+fit with black bars when the shape differs, one piece at a time while the others download. If a
+later piece is larger still, the resized ones are redone from their originals. Each frame keeps its
+time and the video its timescale, so a resized piece takes the original's place in the join and the
+cut points do not move. The encoder is chosen once per process (`src/server/protect/encoders.ts`):
+a GPU that passes a short test encode (VAAPI, NVENC, VideoToolbox), else libx264 or libx265 to
+match the camera's codec. A GPU encode that fails is retried on the CPU, and a piece that cannot be
+resized is joined at its own size, so the clip still saves. Progress counts the resizes, and the time
+left is the larger of the downloads' estimate and the queued resizes'.
+
 Times are UTC in storage and transport and shown in a selectable zone. Day boundaries follow the
 zone, so a day is 23, 24 or 25 hours long around daylight-saving changes.
 

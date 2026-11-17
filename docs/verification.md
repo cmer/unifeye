@@ -63,6 +63,31 @@ reader. They show what the gateway decides, not how MediaMTX behaves.
   three pieces, reports progress and a time left, and, with every piece starting 2.5 s early as the
   recorder does, joins to the requested length plus only the first piece's lead. It also runs with a
   relative cache folder, which once broke the join.
+- One picture size across a clip (`tests/match-size.test.ts`, and "play at one size" in
+  `tests/api.test.ts`): with synthetic files, pieces at 640x480 (4:3), 960x540 and one that changes
+  from 640x480 to 1280x720 partway, added before the 1280x720 piece, all come out 1280x720 with every
+  frame at its original time, the sound kept and the timescale unchanged, and join into one size.
+  H.265 stays H.265. A cancelled clip stops resizing. In mock mode, a 10.5-minute clip whose middle
+  piece came from the low stream downloads at one size and the right length. Passed with libx264,
+  libx265 and VideoToolbox on macOS (FFmpeg 9.0) and with libx264 and libx265 in Debian bookworm
+  (FFmpeg 5.1, the image's), where a VAAPI device that does not exist falls back to the CPU. FFmpeg's
+  join of pieces from different encoders (different SPS and profile) decoded cleanly on both versions.
+  On the same bookworm run, `tests/retime.test.ts` "spreads a too-fast video clock" fails because
+  FFmpeg 5.1 builds that test's fast-clock sample with 0.2 s of video instead of 7.7 s; the test input
+  is wrong there, not the retiming.
+- Saving adaptive recordings in full (`tests/api.test.ts`, "keep every minute of an adaptive
+  recording" and "keep a stretch the recorder only has in low resolution"; `tests/match-size.test.ts`,
+  "combining an adaptive recording's two exports"): in mock mode, a six-minute clip from a camera with
+  high resolution only in 9 s of every 30 came out 362 s long (the 2 s lead included) at 1280x720,
+  where before it would have held only the high-resolution stretches. With synthetic red (low) and
+  blue (high) files, blue shows exactly inside the two placed spans and red everywhere else, the high
+  stretches keep 15 fps, and the low recording's sound is kept. A piece whose channel 0 export has
+  nothing is taken from the low channel instead. Passed on FFmpeg 9.0 (macOS) and 5.1 (Debian
+  bookworm). Combining a five-minute piece (640x480 7 fps base, 90 s of 2688x1512 15 fps stretches)
+  took 14 s with libx264 and 16 s with VideoToolbox on an Apple M5 Max (4 threads).
+- Resize speed (synthetic 640x480 7 fps source, five minutes, Apple M5 Max, 4 threads): 8.5 s to
+  2688x1512 with libx264 `veryfast`, 7.6 s with VideoToolbox. Reading the picture sizes of a
+  five-minute 2688x1512 piece took about 1 s.
 - UniFi export streaming, against a mocked recorder (undici `MockAgent`, `tests/unifi-export.test.ts`):
   the separate sign-in (root CSRF token, login, `TOKEN` cookie), the body streamed to disk, one
   re-sign-in after a 401, and refusals or tiny bodies reported as nothing recorded. This pins what
@@ -171,6 +196,8 @@ since the move.
 | Sound in Safari and Firefox | Only Chromium was used | "No audio" shown wrongly, or the speaker missing; no level meter in Safari for HLS and recordings |
 | Clip export in the browser | Checked by hand in Chromium with mock cameras: zooming and panning the clip timeline, and a 2-hour clip (prepared in about 2.5 minutes, 7200 s long). Long clips in pieces (mock mode, headless Chromium): a 21-minute clip showed the sweep, then 57% and 76% with a time left, then "Putting the pieces together", started its download by itself and came out 1260.0 s long | Not checked on a phone or with touch |
 | Long clips from a real UNVR | One 1 h 55 min clip from one camera with adaptive recording (see Verified); fourteen of its pieces joined outside Unifeye after the fix | How long Protect takes before sending the first byte of an hour-long export (Unifeye waits up to 15 minutes), whether it caps export length, the disk space a clip needs, whether exporting pieces in parallel is faster than one long export on your recorder, and whether the joins between pieces are seamless on real camera streams |
+| Clip resizing on a GPU in Linux (VAAPI with Intel Quick Sync or AMD, NVENC) | No such GPU available; only "no device, so the CPU" was checked | The driver rejects the settings and every clip resizes on the CPU (logged at start-up of the first clip), or a driver encodes at a quality that looks worse |
+| Clip resizing and combining with real adaptive recordings | Synthetic files and mock mode only | Real low-resolution pieces that are not 4:3 or change size in a way the keyframe scan misses; players that still resize on a real joined file; file size; whether Protect's channel 0 export of a piece with no motion is low resolution, empty or an error (each case is handled, but only the mock was seen); how long combining takes on a small server |
 | Activity live updates in the browser | Checked through the API tests only | UI wiring |
 | Revocation bound under load | Checked with three streams | Slower with many sessions |
 | MediaMTX after the relay refactor | Not re-run against a real process | A request that differs from the hand-checked one in a way the stub tests do not catch |

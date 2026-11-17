@@ -9,10 +9,12 @@ import { subjectOf, type Actor } from "../authz/actor";
 import type { Policy } from "../authz/policy";
 import { config } from "../config";
 import { schema, type Db } from "../db";
-import { audioEnvelope, joinParts, probe, type MediaInfo } from "../protect/ffmpeg";
+import { isCodec, withEncoder } from "../protect/encoders";
+import { audioEnvelope, joinParts, overlayStretches, probe, videoSizes, type MediaInfo } from "../protect/ffmpeg";
 import { NoRecordingError, type ProtectAdapter } from "../protect/types";
 import { badRequest, HttpError, log, newId, notFound } from "../util";
 import { alignSpans, type Span } from "./align";
+import { SizeMatcher } from "./match-size";
 
 /** What the player needs to know about a window. Overlay spans are in seconds of media time. */
 export interface WindowInfo { startMs: number; endMs: number; leadMs: number; overlay: Span[] }
@@ -115,32 +117,48 @@ export class Recordings {
   }
 
   /**
-   * Exports a window. Normally that is one channel 0 export. With adaptive recording, a window that
-   * contains motion exports from channel 0 as only its high-resolution stretch, so when that export
-   * is more than a second shorter than the window, the low-resolution channel is exported too. The low one
-   * becomes the base and the high one an overlay, placed by matching their audio. If the audio cannot
-   * place it, the window plays in low resolution rather than at the wrong moment.
+   * Exports [startMs, endMs) for playback or a clip, from both channels when adaptive recording needs
+   * it. Normally that is one channel 0 export. With adaptive recording, a channel 0 export of a
+   * stretch that contains motion holds only its high-resolution parts, so when that export is more
+   * than a second short, the low-resolution channel is exported too. The low one becomes the base
+   * and the high one an overlay, placed by matching their audio (`overlay` is empty and `high` null
+   * when the audio cannot place it). If channel 0 has nothing at all, the low channel is tried, so a
+   * stretch recorded only in low resolution is not lost. The caller deletes `focus` and `wall`.
+   */
+  private async fetchBoth(protectId: string, startMs: number, endMs: number, focus: string, wall: string, signal: AbortSignal): Promise<{ base: string; info: MediaInfo | null; high: string | null; overlay: Span[] }> {
+    const ad = this.adapter(), span = (endMs - startMs) / 1000;
+    try {
+      await ad.exportClip(protectId, startMs, endMs, focus, { quality: "focus", signal });
+    } catch (e) {
+      if (signal.aborted || !(e instanceof NoRecordingError || (e as Error)?.name === "NoRecordingError")) throw e;
+      await ad.exportClip(protectId, startMs, endMs, wall, { quality: "wall", signal }).catch(() => { throw e; });
+      return { base: wall, info: await probe(wall, signal).catch(() => null), high: null, overlay: [] };
+    }
+    const f = await probe(focus, signal).catch(() => null);
+    if (f && f.duration < span - 1) {
+      const w = await ad.exportClip(protectId, startMs, endMs, wall, { quality: "wall", signal }).then(() => probe(wall, signal)).catch((e) => { if (signal.aborted) throw e; return null; });
+      if (w && w.duration > f.duration + 2 && w.width < f.width) {
+        const overlay = f.audio && w.audio ? alignSpans(await audioEnvelope(focus, signal), await audioEnvelope(wall, signal)) : [];
+        if (!overlay.length) log("info", "adaptive recording shown in low resolution: the high-resolution part could not be placed", { protectId, startMs });
+        return { base: wall, info: w, high: overlay.length ? focus : null, overlay };
+      }
+    }
+    return { base: focus, info: f, high: null, overlay: [] };
+  }
+
+  /**
+   * Exports a playback window (`fetchBoth`): a base file and, for adaptive recordings, an overlay the
+   * player shows inside its spans. If the audio cannot place the overlay, the window plays in low
+   * resolution rather than at the wrong moment.
    *
    * `leadMs` is how far before the window start the base begins: the recorder starts an export on the
    * keyframe before the requested time, which can be a few seconds early.
    */
   private async build(protectId: string, startMs: number, endMs: number, stem: string, signal: AbortSignal): Promise<PlaybackWindow> {
     await mkdir(this.dir("playback"), { recursive: true, mode: 0o700 });
-    const tmp = `${stem}.${newId()}`, focus = `${tmp}.f.part`, wall = `${tmp}.w.part`, span = (endMs - startMs) / 1000;
+    const tmp = `${stem}.${newId()}`, focus = `${tmp}.f.part`, wall = `${tmp}.w.part`;
     try {
-      const ad = this.adapter();
-      await ad.exportClip(protectId, startMs, endMs, focus, { quality: "focus", signal });
-      const f = await probe(focus, signal).catch(() => null);
-      let base = focus, baseInfo = f, high: string | null = null, overlay: Span[] = [];
-      if (f && f.duration < span - 1) {
-        const w = await ad.exportClip(protectId, startMs, endMs, wall, { quality: "wall", signal }).then(() => probe(wall, signal)).catch((e) => { if (signal.aborted) throw e; return null; });
-        if (w && w.duration > f.duration + 2 && w.width < f.width) {
-          base = wall; baseInfo = w;
-          if (f.audio && w.audio) overlay = alignSpans(await audioEnvelope(focus, signal), await audioEnvelope(wall, signal));
-          if (overlay.length) high = focus;
-          else log("info", "adaptive playback window shown in low resolution: the high-resolution part could not be placed", { protectId, startMs });
-        }
-      }
+      const { base, info: baseInfo, high, overlay } = await this.fetchBoth(protectId, startMs, endMs, focus, wall, signal);
       const info: WindowInfo = { startMs, endMs, leadMs: baseInfo ? Math.min(10_000, Math.max(0, Math.round(baseInfo.duration * 1000 - (endMs - startMs)))) : 0, overlay };
       await rename(base, `${stem}.mp4`);
       if (high) await rename(high, `${stem}.hi.mp4`);
@@ -149,6 +167,35 @@ export class Recordings {
       return { info, base: `${stem}.mp4`, high: high && `${stem}.hi.mp4` };
     } finally {
       await Promise.all([focus, wall, `${tmp}.json.part`].map((p) => rm(p, { force: true })));
+    }
+  }
+
+  /**
+   * Exports one piece of a clip to `path` as a single file covering the whole piece (`fetchBoth`).
+   * When adaptive recording split it into a low-resolution base and high-resolution stretches, they
+   * are combined: the stretches are laid over the base at their places, at the high resolution
+   * (`overlayStretches`). If that cannot be done, the piece is saved in low resolution, so no time
+   * is missing from the clip.
+   */
+  private async exportPiece(protectId: string, startMs: number, endMs: number, path: string, signal: AbortSignal): Promise<MediaInfo> {
+    const focus = `${path}.f`, wall = `${path}.w`;
+    try {
+      const r = await this.fetchBoth(protectId, startMs, endMs, focus, wall, signal);
+      if (r.high) {
+        try {
+          const { codec } = await videoSizes(r.high, signal);
+          if (!isCodec(codec)) throw new Error(`cannot encode ${codec}`);
+          await withEncoder(codec, (enc) => overlayStretches(r.base, r.high!, r.overlay, path, enc, signal), signal);
+          return await probe(path, signal);
+        } catch (e) {
+          if (signal.aborted) throw e;
+          log("warn", "a clip piece is saved in low resolution: its high-resolution parts could not be combined with it", { protectId, startMs, error: e });
+        }
+      }
+      await rename(r.base, path);
+      return r.info ?? (await probe(path, signal));
+    } finally {
+      await Promise.all([focus, wall].map((p) => rm(p, { force: true })));
     }
   }
 
@@ -183,33 +230,42 @@ export class Recordings {
     return { id };
   }
   /**
-   * Exports a clip. A clip up to `PIECE` long is one recorder export. A longer one is exported in
-   * pieces, `CLIP_EXPORT_PARALLEL` at a time, then joined without re-encoding. The recorder builds a
-   * whole export before sending the first byte, so pieces are what make progress measurable, and
-   * running a few at once shortens the wait. Each piece starts on the keyframe before its start
-   * (`leadMs`, as for playback windows), so the overlap is cut from the end of the piece before it.
-   * A piece with nothing recorded is left out. `onProgress` gets the fraction of pieces done and a
-   * rough time left: the average piece so far, times the pieces left, shared among the workers.
+   * Exports a clip in pieces of up to `PIECE`, `CLIP_EXPORT_PARALLEL` at a time, then joins them
+   * without re-encoding. The recorder builds a whole export before sending the first byte, so pieces
+   * are what make progress measurable, and running a few at once shortens the wait. Each piece starts
+   * on the keyframe before its start (`leadMs`, as for playback windows), so the overlap is cut from
+   * the end of the piece before it. A piece with nothing recorded is left out.
+   *
+   * With `CLIP_MATCH_RESOLUTION`, pieces with a smaller picture (adaptive recording's low stretches)
+   * are re-encoded at the largest size while the rest download (`SizeMatcher`), so the clip plays at
+   * one size. `onProgress` gets the fraction of the work done and a rough time left: the average piece
+   * so far, times the pieces left, shared among the workers, or the resizes still queued if longer.
    */
   private async exportPieces(protectId: string, startMs: number, endMs: number, file: string, signal: AbortSignal, onProgress: (f: number, etaMs: number) => void) {
-    const ad = this.adapter(), n = Math.ceil((endMs - startMs) / PIECE);
-    if (n <= 1) return ad.exportClip(protectId, startMs, endMs, file, { quality: "focus", signal });
-    const parts = Array.from({ length: n }, (_, i) => ({ a: startMs + i * PIECE, b: Math.min(endMs, startMs + (i + 1) * PIECE), path: `${file}.${i}.part`, info: null as MediaInfo | null }));
+    const n = Math.max(1, Math.ceil((endMs - startMs) / PIECE));
+    const parts = Array.from({ length: n }, (_, i) => ({ a: startMs + i * PIECE, b: Math.min(endMs, startMs + (i + 1) * PIECE), path: n === 1 ? `${file}.part` : `${file}.${i}.part`, info: null as MediaInfo | null }));
     const local = new AbortController(), stop = () => local.abort();
     signal.addEventListener("abort", stop, { once: true });
     const width = Math.min(n, config().CLIP_EXPORT_PARALLEL);
-    let next = 0, done = 0, spent = 0;
+    let next = 0, done = 0, spent = 0, shown = 0;
+    const report = () => {
+      if (!done) return;
+      const s = sizes ?? { pending: 0, done: 0, spentMs: 0 }, perFit = s.done ? s.spentMs / s.done : 10_000;
+      shown = Math.max(shown, (done + s.done) / (n + s.done + s.pending));
+      onProgress(shown, Math.max(Math.round(((spent / done) * (n - done)) / width), Math.round(s.pending * perFit)));
+    };
+    const sizes = config().CLIP_MATCH_RESOLUTION ? new SizeMatcher(local.signal, report) : null;
     const worker = async () => {
       while (next < n && !local.signal.aborted) {
         const p = parts[next++], t = Date.now();
         try {
-          await ad.exportClip(protectId, p.a, p.b, p.path, { quality: "focus", signal: local.signal });
-          p.info = await probe(p.path, local.signal);
+          p.info = await this.exportPiece(protectId, p.a, p.b, p.path, local.signal);
+          sizes?.add(p.path);
         } catch (e) {
           if (!(e instanceof NoRecordingError || (e as Error)?.name === "NoRecordingError")) { local.abort(); throw e; }
         }
         done++; spent += Date.now() - t;
-        onProgress(done / n, Math.round(((spent / done) * (n - done)) / width));
+        report();
       }
     };
     try {
@@ -219,13 +275,16 @@ export class Recordings {
       if (bad) throw bad.reason;
       const got = parts.filter((p) => p.info);
       if (!got.length) throw new NoRecordingError();
-      if (got.length === 1) return void (await rename(got[0].path, file));
+      const fitted = sizes ? await sizes.finish() : new Map<string, string>();
+      if (got.length === 1) return void (await rename(fitted.get(got[0].path) ?? got[0].path, file));
       await joinParts(got.map((p, i) => {
         const nx = got[i + 1], lead = nx && nx.a === p.b ? Math.min(10_000, Math.max(0, nx.info!.duration * 1000 - (nx.b - nx.a))) : 0;
-        return { path: p.path, outpoint: lead > 50 ? p.info!.start + p.info!.duration - lead / 1000 : undefined };
+        return { path: fitted.get(p.path) ?? p.path, outpoint: lead > 50 ? p.info!.start + p.info!.duration - lead / 1000 : undefined };
       }), file, signal);
     } finally {
       signal.removeEventListener("abort", stop);
+      local.abort();
+      await sizes?.cleanup();
       await Promise.all(parts.map((p) => rm(p.path, { force: true })));
     }
   }

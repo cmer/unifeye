@@ -24,6 +24,11 @@ services:
     security_opt: ["no-new-privileges:true"]
     stop_grace_period: 20s
     networks: [unifeye]
+    # Optional: let clip resizing use the GPU (docs/deployment.md, "GPU"). Intel Quick Sync or AMD:
+    # devices: ["/dev/dri:/dev/dri"]
+    # group_add: ["${RENDER_GID:?getent group render | cut -d: -f3}"]
+    # NVIDIA (needs the NVIDIA Container Toolkit on the host):
+    # deploy: { resources: { reservations: { devices: [{ driver: nvidia, count: 1, capabilities: [gpu, video] }] } } }
 
   mediamtx:
     # The -ffmpeg variant is required: it re-encodes camera sound (Protect's audio timestamps are unusable
