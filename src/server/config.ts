@@ -126,6 +126,13 @@ const schema = z.object({
   PROTECT_NVR_ID: z.string().default("default"),
   /** SHA-256 fingerprint of the UNVR certificate, so MediaMTX can verify the RTSPS source. */
   PROTECT_RTSPS_FINGERPRINT: z.string().optional(),
+  /**
+   * Login for reading video straight from cameras made by someone else, for the cameras an
+   * administrator switches over in Admin. A camera can have its own login instead (stored encrypted
+   * with TOKEN_ENC_KEY).
+   */
+  DEFAULT_CAMERA_USERNAME: z.string().optional(),
+  DEFAULT_CAMERA_PASSWORD: z.string().optional(),
 
   MEDIAMTX_API_URL: z.string().url().default("http://127.0.0.1:9997"),
   MEDIAMTX_WHEP_URL: z.string().url().default("http://127.0.0.1:8889"),

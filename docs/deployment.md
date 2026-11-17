@@ -185,6 +185,13 @@ and use a `PROTECT_HOST` that matches the certificate. For the RTSPS relay, set
 openssl s_client -connect <unvr>:7441 </dev/null 2>/dev/null | openssl x509 -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':'
 ```
 
+Cameras made by someone else (adopted over ONVIF) can instead be read directly, for cameras whose
+live video through the recorder stutters. Turn it on per camera under Admin > Live video. Set
+`DEFAULT_CAMERA_USERNAME` and `DEFAULT_CAMERA_PASSWORD` to the login most of your cameras share; a
+camera can have its own, saved encrypted with `TOKEN_ENC_KEY`. Unifeye must be able to reach the
+cameras on their RTSP port (usually 554). Each camera then serves at most two extra connections (the
+high and the low stream), shared by every viewer and closed 10 seconds after the last one leaves.
+
 `PROTECT_TLS_INSECURE=1` skips verification for the Protect connection only, is meant for a first
 local trial, and is refused when `NODE_ENV=production`.
 

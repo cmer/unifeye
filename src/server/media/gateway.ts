@@ -4,6 +4,7 @@ import type { Policy } from "../authz/policy";
 import { config } from "../config";
 import type { ProtectAdapter } from "../protect/types";
 import { HttpError, log, notFound, randomToken } from "../util";
+import type { DirectVideo } from "./direct";
 import { RelayUnavailable, type HlsReader, type ReaderKind, type ReaderRequest, type Relay } from "./relay";
 
 export type Quality = "wall" | "focus";
@@ -46,12 +47,14 @@ export class Media {
   private admitted = new Map<string, string>();
   /** One entry per session + subject + preview + stream: who it was opened for, when to re-issue, the current ticket and the relay's reader. */
   private hlsJar = new Map<string, { grant: Grant; exp: number; ticket: string; reader: HlsReader }>();
+  /** Streams currently read from the camera itself rather than the recorder: path -> camera id. */
+  private directPaths = new Map<string, string>();
   private sweeping = false;
   private pending = false;
   private again = false;
   lastSweepAt = 0;
 
-  constructor(private policy: Policy, private access: Access, private adapter: () => ProtectAdapter, private relay: Relay) {}
+  constructor(private policy: Policy, private access: Access, private adapter: () => ProtectAdapter, private relay: Relay, readonly direct: DirectVideo) {}
 
   relayHealthy() { return this.relay.healthy(); }
 
@@ -69,7 +72,12 @@ export class Media {
     // every 25 s and a WebRTC attempt may precede it, and none of that is another stream on screen.
     const mine = new Set([...this.live.values()].filter((l) => l.sessionId === a.sessionId).map((l) => l.path));
     if (!mine.has(path) && mine.size >= maxStreams()) throw new HttpError(429, "too_many_streams", "Too many live streams are open");
-    const src = await this.adapter().liveSource(cam.protectId, q).catch(() => { throw new HttpError(503, "nvr_unavailable"); });
+    // A camera switched to direct video is read from the camera itself; if that isn't possible right
+    // now (offline, or it recently failed), the recorder's stream is used instead.
+    const login = this.direct.login(cameraId);
+    let src = login ? await this.adapter().directSource(cam.protectId, q, login).catch(() => null) : null;
+    if (src) this.directPaths.set(path, cameraId); else this.directPaths.delete(path);
+    src ??= await this.adapter().liveSource(cam.protectId, q).catch(() => { throw new HttpError(503, "nvr_unavailable"); });
     if (!src) throw new HttpError(409, "no_live_stream", "This camera has no live stream available");
     await this.relay.ensureStream(path, src).catch((e) => { log("error", "relay path setup failed", { error: e }); throw new HttpError(503, "relay_unavailable"); });
     const ticket = randomToken();
@@ -104,6 +112,7 @@ export class Media {
       // The hook may have admitted a reader before the offer failed (the camera stopped sending, for
       // example). Nobody will tear it down, so free its slot now instead of after the next sweeps.
       if (readerId) { this.live.delete(readerId); await this.relay.kick("webrtc", readerId); }
+      this.directFailed(path);
       throw new HttpError(r.outcome === "no_stream" ? 409 : 502, r.outcome === "no_stream" ? "no_live_stream" : "relay_error");
     }
     const secret = r.resource;
@@ -139,9 +148,19 @@ export class Media {
       this.hlsJar.set(key, jar);
     }
     const r = await jar.reader.fetch(file, search, jar.ticket).catch(relayDown);
+    // The camera itself didn't deliver: the player's retry starts over through the recorder.
+    if (r.outcome !== "ok" && file.endsWith(".m3u8") && this.directPaths.has(path)) { this.directFailed(path); this.hlsJar.delete(key); }
     if (r.outcome !== "ok") throw new HttpError(r.outcome === "not_found" ? 404 : 502, r.outcome === "not_found" ? "not_found" : "relay_error");
     return new Response(r.body, { status: 200, headers: { "content-type": r.contentType ?? "application/octet-stream", "cache-control": "no-store" } });
   }
+  /** A stream read from the camera itself sent nothing: read that camera through the recorder for a while. */
+  private directFailed(path: string) {
+    const cameraId = this.directPaths.get(path);
+    if (!cameraId) return;
+    this.directPaths.delete(path);
+    this.direct.failed(cameraId);
+  }
+
   /**
    * The player stopped an HLS stream. HLS has no teardown of its own: without this, the stream keeps
    * its slot until the relay closes the idle reader and a sweep notices (30 to 60 s), so changing

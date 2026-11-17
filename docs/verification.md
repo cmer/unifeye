@@ -19,7 +19,7 @@ should be assumed to work.
 
 ## Verified
 
-**Automated tests (`pnpm test`, 259 tests):**
+**Automated tests (`pnpm test`, 275 tests):**
 
 The media tests run against an in-memory relay that asks the gateway (`Media.admit`) before
 admitting a reader. They show what the gateway decides, not how MediaMTX behaves. How the MediaMTX
@@ -122,6 +122,17 @@ gateway) is pinned separately in
   per channel, left out, and the clip is marked `busy` with its real (five minutes shorter) length.
   A piece with nothing recorded is not retried and is marked `unrecorded`. A clip where every piece
   fails ends with "The recorder is busy. Try again in a few minutes."
+- Video straight from the camera (`tests/api.test.ts`, "video straight from the camera", and
+  `tests/rtsp-check.test.ts` against a pretend camera on a local socket): administrators only, only
+  cameras that offer it, refused while viewing as someone else; the login is checked with the camera
+  before saving and a wrong one saves nothing; the password is stored encrypted and appears in no
+  response or audit entry; the default login is used when a camera has none; live video uses the
+  camera's address, falls back to the recorder after a failed attempt, tries the camera again after
+  the settings are saved, and stops asking the camera once turned off. The check sends only DESCRIBE
+  on one connection, answers Digest (with and without qop) and Basic, and tells a wrong login, H.265,
+  a missing stream and an unreachable camera apart. Cameras that only stream through the recorder are
+  never offered it and the camera is never asked; one that stops offering it after being switched on
+  plays through the recorder and can still be switched off.
 - Preview: subject's permissions on data and media, administrator stays the actor, all mutations and
   admin routes blocked, forged, foreign and expired contexts rejected, two tabs kept apart, both
   identities audited, subject's profile untouched.
@@ -294,6 +305,16 @@ Read from the running stack, its audit log and its logs. Nothing was changed.
   there; a client changing the first `X-Forwarded-For` entry does not get a fresh sign-in budget.
   All four fail on the previous code. Not yet checked on production.
 
+**Camera check against real cameras (2026-11-17, production network, read-only):**
+
+- Protect reports a plain `rtsp://` address without a login for all 42 cameras (Reolink
+  `h264Preview_01_main` / `_sub`, Dahua door stations `cam/realmonitor`). On the door stations
+  Protect's low-quality address is the main stream (`subtype=0`), so their wall tiles would pull the
+  full stream.
+- `checkRtsp` against Polar Bears (Reolink, 10.48.20.205): both streams answered H.264 with AAC sound
+  for the right login, and "login" for a wrong one.
+- Not yet checked: playing a camera this way in the browser through MediaMTX and the retiming FFmpeg.
+
 **Live start-up with retimed sound (2026-11-17, real UNVR, MediaMTX 1.21.4 on macOS, read-only):**
 
 - Production logs over four hours: about two thirds of cold starts had the retiming FFmpeg exit with
@@ -326,6 +347,7 @@ Read from the running stack, its audit log and its logs. Nothing was changed.
 | Clip resizing and combining with real adaptive recordings | Synthetic files and mock mode only | Real low-resolution pieces that are not 4:3 or change size in a way the keyframe scan misses; players that still resize on a real joined file; file size; whether Protect's channel 0 export of a piece with no motion is low resolution, empty or an error (each case is handled, but only the mock was seen); how long combining takes on a small server |
 | Activity live updates in the browser | Checked through the API tests only | UI wiring |
 | Revocation bound under load | Checked with three streams | Slower with many sessions |
+| Video straight from the camera, end to end | Only the camera check ran against real cameras | The camera refuses a second reader or drops frames under the extra connection; MediaMTX logs the camera address (without the password); door stations' swapped stream addresses |
 | Recovery after a MediaMTX restart | Cache invalidation tested against the stub only | Which status MediaMTX returns for a path it no longer has; whether re-adding an identical path disturbs readers |
 
 ## Checking a real UNVR (read-only)

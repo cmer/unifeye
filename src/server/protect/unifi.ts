@@ -4,7 +4,19 @@ import { pipeline } from "node:stream/promises";
 import { Agent, request, type Dispatcher } from "undici";
 import { ProtectClient } from "unifi-protect";
 import { log } from "../util";
-import { NoRecordingError, ProtectUnavailableError, RecorderBusyError, type AdapterHealth, type EventQuery, type EventType, type LiveSource, type ProtectAdapter, type ProtectCamera, type ProtectEvent, type RecordingRanges } from "./types";
+import { checkRtsp, withLogin } from "./rtsp-check";
+import { NoRecordingError, ProtectUnavailableError, RecorderBusyError, type AdapterHealth, type CameraLogin, type DirectCheck, type EventQuery, type EventType, type LiveSource, type ProtectAdapter, type ProtectCamera, type ProtectEvent, type RecordingRanges } from "./types";
+
+/**
+ * The camera's own stream addresses, for cameras made by someone else (Protect adopts them over ONVIF
+ * and keeps the address it reads from, without the login). Only plain RTSP addresses are used.
+ */
+function directUrls(config: unknown): { main: string; sub: string } | null {
+  const t = (config as { thirdPartyCameraInfo?: { rtspUrl?: string | null; rtspUrlLQ?: string | null } | null }).thirdPartyCameraInfo;
+  const ok = (u?: string | null) => typeof u === "string" && /^rtsp:\/\/[^/@\s]+\//i.test(u);
+  if (!t || !ok(t.rtspUrl)) return null;
+  return { main: t.rtspUrl!, sub: ok(t.rtspUrlLQ) ? t.rtspUrlLQ! : t.rtspUrl! };
+}
 
 interface RawEvent { id: string; type: string; start: number; end?: number | null; camera?: string; cameraId?: string; smartDetectTypes?: string[]; thumbnailId?: string; modelKey?: string }
 const SMART: Record<string, EventType> = { person: "person", vehicle: "vehicle", package: "package", animal: "animal", licensePlate: "licensePlate" };
@@ -162,7 +174,7 @@ export class UnifiProtectAdapter implements ProtectAdapter {
     // another NVR, is not a camera anyone can watch here; leaving it out of the inventory hides it.
     const adopted = (cam: (typeof c.cameras)[number]) => { const cfg = cam.config as unknown as { isAdopted?: boolean; isAdoptedByOther?: boolean }; return cfg.isAdopted === true && cfg.isAdoptedByOther !== true; };
     return c.cameras.filter(adopted).map((cam) => {
-      const cfg = cam.config as unknown as { id: string; name?: string; type?: string; marketName?: string; channels?: { id: number; width: number; height: number; isRtspEnabled?: boolean; rtspAlias?: string }[]; featureFlags?: { smartDetectTypes?: string[]; isDoorbell?: boolean }; stats?: { video?: { recordingStart?: number | null; recordingEnd?: number | null } }; videoCodec?: string };
+      const cfg = cam.config as unknown as { id: string; name?: string; type?: string; marketName?: string; channels?: { id: number; width: number; height: number; isRtspEnabled?: boolean; rtspAlias?: string }[]; featureFlags?: { smartDetectTypes?: string[]; isDoorbell?: boolean }; stats?: { video?: { recordingStart?: number | null; recordingEnd?: number | null } }; videoCodec?: string; thirdPartyCameraInfo?: { rtspUrl?: string } | null };
       const q = ["high", "medium", "low"] as const;
       const types: EventType[] = ["motion", ...((cfg.featureFlags?.smartDetectTypes ?? []).map((t) => SMART[t]).filter(Boolean) as EventType[])];
       if (cfg.featureFlags?.isDoorbell) types.push("ring");
@@ -170,6 +182,7 @@ export class UnifiProtectAdapter implements ProtectAdapter {
         protectId: cfg.id, name: cam.name, online: cam.isOnline, model: cfg.marketName ?? cfg.type, eventTypes: types,
         streams: (cfg.channels ?? []).filter((ch) => ch.isRtspEnabled && ch.rtspAlias && q[ch.id]).map((ch) => ({ quality: q[ch.id], width: ch.width, height: ch.height, codec: cfg.videoCodec })),
         recordingStartMs: cfg.stats?.video?.recordingStart ?? undefined, recordingEndMs: cfg.stats?.video?.recordingEnd ?? undefined,
+        ...(directUrls(cfg) ? { direct: true } : {}),
       };
     });
   }
@@ -207,6 +220,24 @@ export class UnifiProtectAdapter implements ProtectAdapter {
     // Protect's audio timestamps run 16 to 48 times too slow, which browsers' jitter buffers discard
     // after the first few packets (a moment of garbled sound, then silence). See LiveSource.
     return { kind: "rtsp", url: `rtsps://${host}:${port}/${pick.rtspAlias}?enableSrtp`, tlsFingerprint: this.o.rtspsFingerprint, retimeAudio: cfg.featureFlags?.hasMic !== false };
+  }
+
+  async directSource(id: string, quality: "wall" | "focus", login: CameraLogin): Promise<LiveSource | null> {
+    const cam = (await this.c()).camera(id);
+    const urls = cam?.isOnline ? directUrls(cam.config) : null;
+    if (!urls) return null;
+    // The camera's own sound has ordinary timestamps but may be AAC, which WebRTC cannot play, so it is
+    // still re-encoded to AAC and Opus. The video is passed through.
+    return { kind: "rtsp", url: withLogin(quality === "wall" ? urls.sub : urls.main, login), retimeAudio: true };
+  }
+
+  async checkDirect(id: string, login: CameraLogin): Promise<DirectCheck> {
+    const cam = (await this.c()).camera(id);
+    const urls = cam ? directUrls(cam.config) : null;
+    if (!urls) return { ok: false, reason: "unsupported" };
+    const main = await checkRtsp(urls.main, login);
+    if (!main.ok || urls.sub === urls.main) return main;
+    return checkRtsp(urls.sub, login);
   }
 
   async recordingRanges(id: string, fromMs: number, toMs: number): Promise<RecordingRanges> {

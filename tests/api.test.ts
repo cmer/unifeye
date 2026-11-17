@@ -635,3 +635,99 @@ describe("rate limits", () => {
     expect((await signIn(7, "198.51.100.16")).status).not.toBe(429);
   });
 });
+
+describe("video straight from the camera", () => {
+  const direct = (userId: string, camera: string, body: object) => call(userId, "PUT", `/admin/cameras/${f.cam[camera]}/direct`, { body });
+  const whep = (camera: string) => call(f.u.admin, "POST", `/media/live/${f.cam[camera]}/whep?q=focus`, { raw: "v=0 offer" });
+  const CAM_SRC = { kind: "rtsp" as const, url: "rtsp://admin:secret@10.0.0.9:554/h264Preview_01_main", retimeAudio: true };
+
+  it("is only for administrators and only for cameras that offer it", async () => {
+    expect((await direct(f.u.front, "Roof Terrace", { enabled: true, username: "admin", password: "p" })).status).toBe(403);
+    const r = await direct(f.u.admin, "Front Entrance", { enabled: true, username: "admin", password: "p" });
+    expect(r.status).toBe(400); expect(r.data.message).toBe("This camera can only stream through the recorder.");
+    expect((await call(f.u.admin, "PUT", "/admin/cameras/nope/direct", { body: { enabled: true } })).status).toBe(404);
+  });
+
+  it("checks the login with the camera before saving, and never stores or shows the password", async () => {
+    const wrong = await direct(f.u.admin, "Roof Terrace", { enabled: true, username: "admin", password: "wrong" });
+    expect(wrong.status).toBe(400); expect(wrong.data.message).toBe("The camera didn't accept the username or password.");
+    expect(f.db.select().from(schema.cameraDirect).all()).toEqual([]);
+    expect((await direct(f.u.admin, "Roof Terrace", { enabled: true, username: "admin", password: "s3cret!" })).status).toBe(200);
+    const row = f.db.select().from(schema.cameraDirect).get()!;
+    expect(row).toMatchObject({ enabled: true, username: "admin" });
+    expect(row.passwordEnc).not.toContain("s3cret");
+    const ov = await call(f.u.admin, "GET", "/admin/overview");
+    expect(JSON.stringify(ov.data)).not.toContain(row.passwordEnc!);
+    expect(ov.data.direct.cameras).toEqual([{ cameraId: f.cam["Roof Terrace"], enabled: true, username: "admin", ownPassword: true }]);
+    expect(ov.data.direct.capable.sort()).toEqual([f.cam["Roof Terrace"], f.cam["Parking Lot North"], f.cam["Rear Exit"]].sort());
+    const entry = f.db.select().from(schema.auditLog).where(eq(schema.auditLog.action, "camera.direct")).get()!;
+    expect(entry.detail).toEqual({ enabled: true, ownLogin: true });
+    // Turning it off needs no check; the saved login is kept for next time.
+    expect((await direct(f.u.admin, "Roof Terrace", { enabled: false })).status).toBe(200);
+    expect(f.db.select().from(schema.cameraDirect).get()).toMatchObject({ enabled: false, username: "admin", passwordEnc: row.passwordEnc });
+  });
+
+  it("uses the default login when the camera has none of its own", async () => {
+    const r = await direct(f.u.admin, "Rear Exit", { enabled: true });
+    expect(r.status).toBe(400); expect(r.data.message).toBe("Enter the camera's username and password.");
+    Object.assign(config(), { DEFAULT_CAMERA_USERNAME: "admin", DEFAULT_CAMERA_PASSWORD: "dflt" });
+    const spy = vi.spyOn(f.adapter, "checkDirect");
+    expect((await direct(f.u.admin, "Rear Exit", { enabled: true })).status).toBe(200);
+    expect(spy).toHaveBeenCalledWith("mock-12", { username: "admin", password: "dflt" });
+    expect(f.db.select().from(schema.cameraDirect).get()).toMatchObject({ enabled: true, username: null, passwordEnc: null });
+  });
+
+  it("reads live video from the camera, and falls back to the recorder when the camera fails", async () => {
+    const path = `c_${f.cam["Roof Terrace"]}_focus`;
+    expect((await direct(f.u.admin, "Roof Terrace", { enabled: true, username: "admin", password: "secret" })).status).toBe(200);
+    const src = vi.spyOn(f.adapter, "directSource").mockResolvedValue(CAM_SRC);
+    expect((await whep("Roof Terrace")).status).toBe(201);
+    expect(src).toHaveBeenCalledWith("mock-08", "focus", { username: "admin", password: "secret" });
+    expect(f.relay.streams.get(path)).toEqual(CAM_SRC);
+    // The camera sends nothing: the attempt fails and the next one goes through the recorder.
+    f.relay.whepFailsAfterAdmit = true;
+    expect((await whep("Roof Terrace")).status).toBe(502);
+    f.relay.whepFailsAfterAdmit = false;
+    expect((await whep("Roof Terrace")).status).toBe(201);
+    expect(f.relay.streams.get(path)?.kind).toBe("command");
+    // Saving the settings again tries the camera again.
+    expect((await direct(f.u.admin, "Roof Terrace", { enabled: true })).status).toBe(200);
+    expect((await whep("Roof Terrace")).status).toBe(201);
+    expect(f.relay.streams.get(path)).toEqual(CAM_SRC);
+    // Turned off: back to the recorder, without asking the camera.
+    src.mockClear();
+    expect((await direct(f.u.admin, "Roof Terrace", { enabled: false })).status).toBe(200);
+    expect((await whep("Roof Terrace")).status).toBe(201);
+    expect(src).not.toHaveBeenCalled();
+    expect(f.relay.streams.get(path)?.kind).toBe("command");
+  });
+
+  it("is refused while viewing as someone else", async () => {
+    const p = await call(f.u.admin, "POST", "/preview", { body: { userId: f.u.front } });
+    expect((await call(f.u.admin, "PUT", `/admin/cameras/${f.cam["Roof Terrace"]}/direct`, { body: { enabled: false }, preview: p.data.token })).status).toBe(403);
+  });
+});
+
+describe("cameras that can't send video on their own", () => {
+  const direct = (camera: string, body: object) => call(f.u.admin, "PUT", `/admin/cameras/${f.cam[camera]}/direct`, { body });
+  it("never offers it for cameras that only stream through the recorder", async () => {
+    const spy = vi.spyOn(f.adapter, "checkDirect");
+    for (const name of ["Front Entrance", "Lobby Front Desk", "Server Closet"]) expect((await direct(name, { enabled: true, username: "admin", password: "p" })).status).toBe(400);
+    expect(spy).not.toHaveBeenCalled();
+    expect(f.db.select().from(schema.cameraDirect).all()).toEqual([]);
+  });
+  it("uses the recorder when a camera switched on stops offering it, and can still be switched off", async () => {
+    expect((await direct("Rear Exit", { enabled: true, username: "admin", password: "p" })).status).toBe(200);
+    // The camera is replaced or re-adopted and the recorder no longer reports its own address.
+    vi.spyOn(f.adapter, "directSource").mockResolvedValue(null);
+    expect((await call(f.u.admin, "POST", `/media/live/${f.cam["Rear Exit"]}/whep?q=wall`, { raw: "v=0 offer" })).status).toBe(201);
+    expect(f.relay.streams.get(`c_${f.cam["Rear Exit"]}_wall`)?.kind).toBe("command");
+    const row = f.db.select().from(schema.cameras).where(eq(schema.cameras.id, f.cam["Rear Exit"])).get()!;
+    f.db.update(schema.cameras).set({ meta: { ...row.meta, direct: false } }).where(eq(schema.cameras.id, row.id)).run(); f.policy.invalidate();
+    const ov = await call(f.u.admin, "GET", "/admin/overview");
+    expect(ov.data.direct.capable).not.toContain(f.cam["Rear Exit"]);
+    expect(ov.data.direct.cameras).toContainEqual(expect.objectContaining({ cameraId: f.cam["Rear Exit"], enabled: true }));
+    expect((await direct("Rear Exit", { enabled: true })).status).toBe(400);
+    expect((await direct("Rear Exit", { enabled: false })).status).toBe(200);
+  });
+});

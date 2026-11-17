@@ -18,7 +18,15 @@ export interface ProtectCamera {
   /** Outer bounds of what the recorder holds for this camera, when known. */
   recordingStartMs?: number;
   recordingEndMs?: number;
+  /** A camera made by someone other than Ubiquiti, whose video Unifeye can also pull from the camera itself. */
+  direct?: boolean;
 }
+/** The login Unifeye uses to read video from a camera directly. Server-side only. */
+export interface CameraLogin { username: string; password: string }
+/** Why reading a camera directly did not work, or what it sends when it did. */
+export type DirectCheck =
+  | { ok: true; video: string; audio: string | null }
+  | { ok: false; reason: "unsupported" | "unreachable" | "login" | "no_stream" | "video_format"; detail?: string };
 export interface ProtectEvent {
   id: string;
   protectCameraId: string;
@@ -82,6 +90,13 @@ export interface ProtectAdapter {
   /** JPEG. `atMs` requests a still from the recording near that time, where supported. */
   snapshot(protectCameraId: string, opts?: { width?: number; atMs?: number; signal?: AbortSignal }): Promise<Buffer>;
   liveSource(protectCameraId: string, quality: "wall" | "focus"): Promise<LiveSource | null>;
+  /**
+   * The same live video read from the camera itself rather than re-streamed by the recorder, for
+   * cameras with `direct`. Null when the camera does not offer it or is offline. Never changes the camera.
+   */
+  directSource(protectCameraId: string, quality: "wall" | "focus", login: CameraLogin): Promise<LiveSource | null>;
+  /** Asks the camera to describe its streams with this login (no video is read). Used before turning direct video on. */
+  checkDirect(protectCameraId: string, login: CameraLogin): Promise<DirectCheck>;
   recordingRanges(protectCameraId: string, fromMs: number, toMs: number): Promise<RecordingRanges>;
   /** Writes an MP4 covering [startMs, endMs) to `destPath`. Throws NoRecordingError when nothing was recorded. */
   exportClip(protectCameraId: string, startMs: number, endMs: number, destPath: string, opts?: { quality?: "wall" | "focus"; signal?: AbortSignal }): Promise<void>;

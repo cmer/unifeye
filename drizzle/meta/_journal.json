@@ -36,6 +36,13 @@
       "when": 1794876910038,
       "tag": "0004_export_gap",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1794933163634,
+      "tag": "0005_camera_direct",
+      "breakpoints": true
     }
   ]
 }
