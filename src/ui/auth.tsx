@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { BrandMark } from "@/components/brand-mark";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,7 +12,7 @@ export function AuthShell({ title, children }: { title: string; children: React.
     <main className="grid h-full place-items-center overflow-auto p-6">
       <div className="w-full max-w-sm">
         <div className="mb-6 flex items-center justify-center gap-2">
-          <span className="grid size-8 place-items-center rounded-lg bg-primary text-sm font-bold text-primary-foreground">V</span>
+          <BrandMark className="size-8 rounded-lg" />
           <span className="text-lg font-semibold">Unifeye</span>
         </div>
         <h1 className="mb-5 text-center text-xl font-semibold">{title}</h1>

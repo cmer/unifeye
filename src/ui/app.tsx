@@ -3,6 +3,7 @@ import { Bell, Camera as CameraIcon, KeyRound, LayoutGrid, ListChecks, LogOut, M
 import { useTheme } from "next-themes";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { BrandMark } from "@/components/brand-mark";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -117,7 +118,7 @@ function AppSidebar() {
     <Sidebar>
       <SidebarHeader>
         <div className="flex items-center gap-2 px-2 py-1.5">
-          <span className="grid size-7 place-items-center rounded-md bg-primary text-sm font-bold text-primary-foreground">V</span>
+          <BrandMark className="size-7 rounded-md" />
           <span className="font-semibold">Unifeye</span>
           {me.mode === "mock" && <span className="ml-auto rounded-full border px-2 py-0.5 text-xs text-muted-foreground" title="Cameras, recordings and activity are simulated">Demo cameras</span>}
         </div>
