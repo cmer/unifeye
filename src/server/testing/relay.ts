@@ -18,6 +18,8 @@ export const HLS_SEGMENT = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
 export class MemoryRelay implements Relay {
   /** Simulates an unreachable relay. */
   down = false;
+  /** WebRTC offers are admitted by the hook, then fail (as when the camera stops sending): the reader is gone. */
+  whepFailsAfterAdmit = false;
   readonly streams = new Map<string, LiveSource>();
   /** Every ticket presented by a reader, in order. */
   readonly tickets: string[] = [];
@@ -56,6 +58,7 @@ export class MemoryRelay implements Relay {
     if (!this.streams.has(stream)) return { outcome: "no_stream" };
     const id = `webrtc-${++this.seq}`;
     if (!this.admit("webrtc", stream, ticket, id)) return { outcome: "failed" };
+    if (this.whepFailsAfterAdmit) return { outcome: "failed" };
     const resource = `whep-${id}-resource`;
     this.sessions.set(id, { kind: "webrtc", stream, resource });
     return { outcome: "created", sdp: "v=0 answer", resource, etag: `"${id}"` };

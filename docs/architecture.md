@@ -339,7 +339,8 @@ existing sessions are not extended, and a session that could not be re-validated
 WebRTC signalling is proxied; media flows from MediaMTX to the browser over ICE on port 8189
 (`WEBRTC_PORT` in Compose). If no media arrives within 4 seconds, the player tears the WebRTC session
 down and switches to HLS, and the tab skips WebRTC for 10 minutes (`src/ui/live.tsx`). Tearing down a WHEP session frees its slot at
-once. The per-session limit (`MAX_WALL_STREAMS` + 3) counts distinct streams (camera and quality),
+once. A tile that stops while its offer is still on its way tears the session down as soon as the
+answer arrives, and an offer that fails after the hook admitted its reader frees that slot at once. The per-session limit (`MAX_WALL_STREAMS` + 3) counts distinct streams (camera and quality),
 not relay readers, because an HLS player opens a new relay session each time it loads the top playlist. HLS has no teardown of its own,
 so when a tile stops an HLS stream the player sends `DELETE /api/media/live/:id/hls/:q`; Unifeye
 kicks that session's readers for the stream and frees the slot at once. Without it the slot stays

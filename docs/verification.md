@@ -227,6 +227,19 @@ since the move.
   QA stack: the control API is admitted through it, and `POST /api/internal/mediamtx-auth` on the
   web port returns 404. That check was local, not in the Compose stack.
 
+**Wall tiles refused with 429 after a restart (2026-11-17):**
+
+- On production, after the app restarted, most wall tiles got 429 on WebRTC setup and two got 502.
+  MediaMTX logs for the minute after: 26 WebRTC sessions closed with "deadline exceeded while
+  waiting connection" (offered, never used) against 9 that connected; the two 502s were cameras
+  whose source timed out. Each unused session kept a stream slot until MediaMTX dropped it and a
+  sweep noticed (30 s or more), so the session reached its limit of 12 streams.
+- Two leaks fixed. A tile that stopped while its offer was in flight never tore the session down;
+  it now does when the answer arrives (`src/ui/live.tsx`, not checked in a browser). An offer that
+  failed after the hook admitted its reader kept that reader's slot; `tests/api.test.ts` ("does not
+  hold a stream slot for a WebRTC offer that failed") fails on the previous code.
+  Not yet checked on production.
+
 **HLS stopping after 25 seconds (2026-11-17):**
 
 - On production, a camera's enlarged view on HLS showed repeated 502s for `video1_stream.m3u8` and
