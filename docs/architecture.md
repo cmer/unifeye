@@ -330,12 +330,17 @@ existing sessions are not extended, and a session that could not be re-validated
    timer; a signal that arrives during a sweep triggers another one straight after. Readers Unifeye
    does not know about are kicked.
 5. HLS is proxied entirely by Unifeye, so every playlist and segment request is authorized again.
+   MediaMTX asks the hook only when an HLS session starts (the top playlist, `index.m3u8`); the
+   media playlists and segments that follow are served to that session through its cookie. Unifeye
+   keeps one relay reader, and so one cookie, per session, subject, preview and stream, and renews
+   its ticket every 25 seconds (re-checking the stream limit) without replacing the reader. A new
+   reader would have no cookie, and MediaMTX refuses a playlist or segment from one with 401.
 
 WebRTC signalling is proxied; media flows from MediaMTX to the browser over ICE on port 8189
 (`WEBRTC_PORT` in Compose). If no media arrives within 4 seconds, the player tears the WebRTC session
 down and switches to HLS, and the tab skips WebRTC for 10 minutes (`src/ui/live.tsx`). Tearing down a WHEP session frees its slot at
 once. The per-session limit (`MAX_WALL_STREAMS` + 3) counts distinct streams (camera and quality),
-not relay readers, because HLS takes a new reader every 25 seconds. HLS has no teardown of its own,
+not relay readers, because an HLS player opens a new relay session each time it loads the top playlist. HLS has no teardown of its own,
 so when a tile stops an HLS stream the player sends `DELETE /api/media/live/:id/hls/:q`; Unifeye
 kicks that session's readers for the stream and frees the slot at once. Without it the slot stays
 taken until the relay closes the idle reader and a sweep notices (30 to 60 s), and changing views on

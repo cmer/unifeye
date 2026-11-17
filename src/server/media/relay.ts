@@ -36,12 +36,17 @@ export type HlsFile =
   | { outcome: "failed" };
 
 /**
- * One HLS reader as the relay sees it: a stream, the ticket that authorizes it, and whatever the
- * relay needs to recognise the same reader across requests (for MediaMTX, its session cookie).
- * That last part is the adapter's private state; nothing about it reaches `Media` or the browser.
+ * One HLS reader as the relay sees it: a stream, and whatever the relay needs to recognise the same
+ * reader across requests (for MediaMTX, its session cookie). It must live as long as the player does:
+ * a new reader is a stranger to the relay, and MediaMTX refuses everything but the top playlist from one.
+ * That state is the adapter's private business; nothing about it reaches `Media` or the browser.
  */
 export interface HlsReader {
-  fetch(file: string, search: string): Promise<HlsFile>;
+  /**
+   * `ticket` is the current one for this reader. Unifeye renews it while the stream plays; the relay
+   * presents it whenever it has to authorize the reader again (for MediaMTX, when a new session starts).
+   */
+  fetch(file: string, search: string, ticket: string): Promise<HlsFile>;
 }
 
 export interface Relay {
@@ -56,8 +61,8 @@ export interface Relay {
   /** Teardown. Returns the HTTP status to hand back to the browser. */
   whepClose(stream: string, resource: string, headers: Record<string, string>): Promise<number>;
 
-  /** Starts an HLS reader. Nothing is sent until its first `fetch`; the relay asks the auth hook with `ticket`. */
-  hlsReader(stream: string, ticket: string): HlsReader;
+  /** Starts an HLS reader. Nothing is sent until its first `fetch`, which carries the ticket for the auth hook. */
+  hlsReader(stream: string): HlsReader;
 
   /** Readers currently attached, by the id the relay gave the auth hook. */
   readers(kind: ReaderKind): Promise<{ id: string }[]>;
