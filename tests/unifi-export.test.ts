@@ -11,7 +11,7 @@ let agent: MockAgent, dir: string, adapter: UnifiProtectAdapter;
 
 beforeEach(async () => {
   agent = new MockAgent(); agent.disableNetConnect();
-  dir = await mkdtemp(join(tmpdir(), "vantage-export-"));
+  dir = await mkdtemp(join(tmpdir(), "unifeye-export-"));
   adapter = new UnifiProtectAdapter("nvr", { host: "nvr.test", username: "viewer", password: "pw", verifyTls: true, exportDispatcher: agent });
 });
 afterEach(async () => { await adapter.close(); await agent.close(); await rm(dir, { recursive: true, force: true }); });
@@ -43,6 +43,15 @@ describe("UniFi clip export", () => {
     pool.intercept({ path: exportPath(1000, 2000), method: "GET", headers: { cookie: "TOKEN=new" } }).reply(200, Buffer.alloc(4096, 1));
     await adapter.exportClip("cam1", 1000, 2000, join(dir, "c.mp4"), { quality: "focus" });
     expect((await readFile(join(dir, "c.mp4"))).length).toBe(4096);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it("reports a server error, timeout or overload as busy rather than nothing recorded", async () => {
+    signIn();
+    const pool = agent.get(ORIGIN);
+    for (const [s, code] of [[1000, 500], [3000, 503], [5000, 429], [7000, 408]]) pool.intercept({ path: exportPath(s, s + 1000), method: "GET" }).reply(code, "");
+    for (const s of [1000, 3000, 5000, 7000]) await expect(adapter.exportClip("cam1", s, s + 1000, join(dir, `busy${s}.mp4`), { quality: "focus" })).rejects.toMatchObject({ name: "RecorderBusyError" });
+    expect(adapter.health().state).not.toBe("down"); // a busy recorder is still reachable
     agent.assertNoPendingInterceptors();
   });
 

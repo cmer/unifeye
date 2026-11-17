@@ -2,13 +2,13 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig, setConfigForTests } from "@/server/config";
-import { MediaMtxRelay } from "@/server/media/mediamtx";
-import { RelayUnavailable } from "@/server/media/relay";
+import { authorizeHook, MediaMtxRelay, type HookBody } from "@/server/media/mediamtx";
+import { RelayUnavailable, type ReaderRequest } from "@/server/media/relay";
 import { TEST_ENV } from "@/server/testing/fixture";
 
 /**
  * Pins the requests the MediaMTX adapter sends, against a local stub that records them. The stub is
- * not MediaMTX: these tests say what Vantage sends and how it reads the answers it expects, not
+ * not MediaMTX: these tests say what Unifeye sends and how it reads the answers it expects, not
  * that MediaMTX accepts it. That was checked by hand against MediaMTX 1.21.4.
  */
 interface Seen { method: string; url: string; headers: Record<string, string | string[] | undefined>; body: string }
@@ -16,7 +16,7 @@ let server: Server, base = "", seen: Seen[] = [], down = false;
 let answer: (req: Seen, res: ServerResponse) => void;
 const ok = (res: ServerResponse, body: unknown = {}) => { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(body)); };
 const status = (code: number) => (_: Seen, res: ServerResponse) => { res.writeHead(code); res.end(); };
-const API_AUTH = "Basic " + Buffer.from("vantage-api:api").toString("base64");
+const API_AUTH = "Basic " + Buffer.from("unifeye-api:api").toString("base64");
 
 beforeAll(async () => {
   server = createServer(async (req, res) => {
@@ -60,9 +60,9 @@ describe("MediaMTX adapter: control API", () => {
     expect(JSON.parse(seen[0].body)).toEqual({ source: "rtsps://nvr/secret", sourceOnDemand: true, sourceOnDemandCloseAfter: "10s", rtspTransport: "tcp", sourceFingerprint: "AB:CD" });
     const pub = JSON.parse(seen[1].body);
     expect(pub).toMatchObject({ source: "publisher", runOnDemandRestart: true, runOnDemandCloseAfter: "10s" });
-    expect(pub.runOnDemand).toContain("-i rtsp://vantage-publisher:api@127.0.0.1:$RTSP_PORT/c_cam1_focus_src ");
+    expect(pub.runOnDemand).toContain("-i rtsp://unifeye-publisher:api@127.0.0.1:$RTSP_PORT/c_cam1_focus_src ");
     expect(pub.runOnDemand).toContain("-c:v copy -filter:a asetpts=N/SR/TB");
-    expect(pub.runOnDemand).toMatch(/rtsp:\/\/vantage-publisher:api@127\.0\.0\.1:\$RTSP_PORT\/\$MTX_PATH$/);
+    expect(pub.runOnDemand).toMatch(/rtsp:\/\/unifeye-publisher:api@127\.0\.0\.1:\$RTSP_PORT\/\$MTX_PATH$/);
     expect(pub.runOnDemand).not.toContain("rtsps://nvr/secret"); // the camera URL stays in MediaMTX's source, not in a command line
     await relay.ensureStream("c_cam1_focus", src);
     expect(seen).toHaveLength(2); // unchanged: no call
@@ -117,7 +117,7 @@ describe("MediaMTX adapter: forgetting configured paths when MediaMTX may have r
     await expect(relay.whepCreate("c_a_wall", "t", "o")).rejects.toBeInstanceOf(RelayUnavailable);
     expect(await again()).toEqual(["c_a_wall", "c_b_wall"]);
     down = true;
-    await expect(relay.hlsReader("c_a_wall", "t").fetch("index.m3u8", "")).rejects.toBeInstanceOf(RelayUnavailable);
+    await expect(relay.hlsReader("c_a_wall").fetch("index.m3u8", "", "t")).rejects.toBeInstanceOf(RelayUnavailable);
     expect(await again()).toEqual(["c_a_wall", "c_b_wall"]);
     down = true;
     await relay.kick("hls", "x");
@@ -133,10 +133,10 @@ describe("MediaMTX adapter: forgetting configured paths when MediaMTX may have r
     expect(await relay.whepCreate("c_a_wall", "t", "o")).toEqual({ outcome: "no_stream" });
     expect(await again()).toEqual(["c_a_wall"]);
     answer = status(404);
-    expect(await relay.hlsReader("c_b_wall", "t").fetch("index.m3u8", "")).toEqual({ outcome: "not_found" });
+    expect(await relay.hlsReader("c_b_wall").fetch("index.m3u8", "", "t")).toEqual({ outcome: "not_found" });
     expect(await again()).toEqual(["c_b_wall"]);
     answer = status(404);
-    expect(await relay.hlsReader("c_b_wall", "t").fetch("seg9.mp4", "")).toEqual({ outcome: "not_found" }); // a segment that aged out is not a missing path
+    expect(await relay.hlsReader("c_b_wall").fetch("seg9.mp4", "", "t")).toEqual({ outcome: "not_found" }); // a segment that aged out is not a missing path
     expect(await again()).toEqual([]);
   });
 });
@@ -175,33 +175,86 @@ describe("MediaMTX adapter: WHEP", () => {
 });
 
 describe("MediaMTX adapter: HLS", () => {
-  it("follows the redirect, keeps the session cookie for that reader, and sends the ticket every time", async () => {
+  it("follows the redirect, keeps the session cookie for that reader, and sends the current ticket every time", async () => {
     answer = (r, res) => {
       if (r.url === "/hls-listener/c_cam1_wall/index.m3u8?_HLS_msn=3") { res.writeHead(302, { location: "index.m3u8?session=s1", "set-cookie": ["mtx_hls=s1; Path=/c_cam1_wall/; HttpOnly", "other=2; Max-Age=60"] }); return res.end(); }
       res.writeHead(200, { "content-type": r.url.includes(".m3u8") ? "application/vnd.apple.mpegurl" : "video/mp4" }); res.end(r.url.includes(".m3u8") ? "#EXTM3U" : "bytes");
     };
-    const reader = relay.hlsReader("c_cam1_wall", "TICKET");
+    const reader = relay.hlsReader("c_cam1_wall");
     expect(seen).toHaveLength(0); // nothing is sent until a file is asked for
-    const list = await reader.fetch("index.m3u8", "?_HLS_msn=3");
+    const list = await reader.fetch("index.m3u8", "?_HLS_msn=3", "TICKET");
     expect(list).toMatchObject({ outcome: "ok", contentType: "application/vnd.apple.mpegurl" });
     expect(list.outcome === "ok" && await new Response(list.body).text()).toBe("#EXTM3U");
-    const seg = await reader.fetch("seg1.mp4", "");
+    const seg = await reader.fetch("seg1.mp4", "", "TICKET");
     expect(seg.outcome === "ok" && await new Response(seg.body).text()).toBe("bytes");
-    expect(lines()).toEqual(["GET /hls-listener/c_cam1_wall/index.m3u8?_HLS_msn=3", "GET /hls-listener/c_cam1_wall/index.m3u8?session=s1", "GET /hls-listener/c_cam1_wall/seg1.mp4"]);
-    expect(seen.map((r) => r.headers.authorization)).toEqual(["Bearer TICKET", "Bearer TICKET", "Bearer TICKET"]);
-    expect(seen.map((r) => r.headers.cookie)).toEqual([undefined, "mtx_hls=s1; other=2", "mtx_hls=s1; other=2"]);
+    // A renewed ticket goes with the same cookie: the session outlives the ticket that opened it.
+    await reader.fetch("seg2.mp4", "", "RENEWED");
+    expect(lines()).toEqual(["GET /hls-listener/c_cam1_wall/index.m3u8?_HLS_msn=3", "GET /hls-listener/c_cam1_wall/index.m3u8?session=s1", "GET /hls-listener/c_cam1_wall/seg1.mp4", "GET /hls-listener/c_cam1_wall/seg2.mp4"]);
+    expect(seen.map((r) => r.headers.authorization)).toEqual(["Bearer TICKET", "Bearer TICKET", "Bearer TICKET", "Bearer RENEWED"]);
+    expect(seen.map((r) => r.headers.cookie)).toEqual([undefined, "mtx_hls=s1; other=2", "mtx_hls=s1; other=2", "mtx_hls=s1; other=2"]);
     // Another reader of the same stream starts without that cookie.
     seen = [];
-    await relay.hlsReader("c_cam1_wall", "OTHER").fetch("seg1.mp4", "");
+    await relay.hlsReader("c_cam1_wall").fetch("seg1.mp4", "", "OTHER");
     expect(seen[0].headers.cookie).toBeUndefined(); expect(seen[0].headers.authorization).toBe("Bearer OTHER");
   });
   it("maps 404 to not_found, other errors to failed, and gives up on a redirect loop", async () => {
     answer = status(404);
-    expect(await relay.hlsReader("c_cam1_wall", "t").fetch("seg1.mp4", "")).toEqual({ outcome: "not_found" });
+    expect(await relay.hlsReader("c_cam1_wall").fetch("seg1.mp4", "", "t")).toEqual({ outcome: "not_found" });
     answer = status(401);
-    expect(await relay.hlsReader("c_cam1_wall", "t").fetch("index.m3u8", "")).toEqual({ outcome: "failed" });
+    expect(await relay.hlsReader("c_cam1_wall").fetch("index.m3u8", "", "t")).toEqual({ outcome: "failed" });
     seen = []; answer = (_, res) => { res.writeHead(302, { location: "/hls-listener/c_cam1_wall/index.m3u8" }); res.end(); };
-    expect(await relay.hlsReader("c_cam1_wall", "t").fetch("index.m3u8", "")).toEqual({ outcome: "failed" });
+    expect(await relay.hlsReader("c_cam1_wall").fetch("index.m3u8", "", "t")).toEqual({ outcome: "failed" });
     expect(seen).toHaveLength(4);
+  });
+});
+
+describe("MediaMTX adapter: auth hook", () => {
+  // The fixture's secrets are "hook" (in the hook URL) and "api". `admit` stands in for the gateway.
+  const asked: ReaderRequest[] = [];
+  const hook = (b: HookBody, secret: string | null = "hook", allow = true) => authorizeHook(secret, b, (r) => { asked.push(r); return allow; });
+  beforeEach(() => { asked.length = 0; });
+
+  it("hands a viewer to the gateway in relay-neutral terms, with the ticket however MediaMTX passed it", () => {
+    expect(hook({ action: "read", protocol: "webrtc", path: "c_cam1_wall", token: "tk", id: "r1", ip: "203.0.113.9" })).toBe(true);
+    expect(hook({ action: "read", protocol: "hls", path: "c_cam1_wall", password: "tk2", id: "r2" }, "hook", false)).toBe(false);
+    expect(asked).toEqual([{ kind: "webrtc", stream: "c_cam1_wall", ticket: "tk", id: "r1" }, { kind: "hls", stream: "c_cam1_wall", ticket: "tk2", id: "r2" }]);
+  });
+
+  it("refuses everything without the hook secret, before asking the gateway", () => {
+    for (const s of ["wrong", null]) {
+      expect(hook({ action: "api", user: "unifeye-api", password: "api" }, s)).toBe(false);
+      expect(hook({ action: "read", protocol: "webrtc", path: "c_cam1_wall", token: "tk", id: "r1" }, s)).toBe(false);
+    }
+    expect(asked).toEqual([]);
+  });
+
+  it("allows the control API only with its own credentials", () => {
+    expect(hook({ action: "api", user: "unifeye-api", password: "api" })).toBe(true);
+    expect(hook({ action: "api", user: "unifeye-api", password: "wrong" })).toBe(false);
+    expect(hook({ action: "api", user: "unifeye-publisher", password: "api" })).toBe(false);
+  });
+
+  it("lets its own FFmpeg, from a loopback or private address, publish a camera path and read only the internal `_src` path over RTSP", () => {
+    const own = (b: HookBody) => hook({ user: "unifeye-publisher", password: "api", ip: "127.0.0.1", ...b });
+    expect(own({ action: "publish", path: "c_cam1_wall" })).toBe(true);
+    expect(own({ action: "publish", path: "c_cam1_wall_src" })).toBe(false);
+    expect(own({ action: "publish", path: "c_cam1_wall", ip: "203.0.113.9" })).toBe(false);
+    expect(own({ action: "read", protocol: "rtsp", path: "c_cam1_wall_src" })).toBe(true);
+    expect(own({ action: "read", protocol: "rtsp", path: "c_cam1_wall" })).toBe(false);
+    expect(own({ action: "read", protocol: "rtsp", path: "c_cam1_wall_src", password: "wrong" })).toBe(false);
+    expect(own({ action: "read", protocol: "rtsp", path: "c_cam1_wall_src", ip: "203.0.113.9" })).toBe(false);
+    // MediaMTX may run on a container network, so private addresses count as its own too.
+    for (const ip of ["10.0.0.5", "172.20.0.3", "192.168.1.2", "::1", "fd00::5"]) expect(own({ action: "publish", path: "c_cam1_wall", ip }), ip).toBe(true);
+    for (const ip of ["172.32.0.1", "8.8.8.8", "2001:db8::1", undefined]) expect(own({ action: "publish", path: "c_cam1_wall", ip }), String(ip)).toBe(false);
+    expect(asked).toEqual([]);
+  });
+
+  it("refuses other readers and actions without asking the gateway", () => {
+    expect(hook({ action: "read", protocol: "rtsp", path: "c_cam1_wall", id: "r1" })).toBe(false);
+    for (const protocol of ["rtmp", "srt"]) expect(hook({ action: "read", protocol, path: "c_cam1_wall", token: "tk", id: "r1" })).toBe(false);
+    for (const action of ["playback", "metrics", "pprof"]) expect(hook({ action, token: "tk" })).toBe(false);
+    expect(hook({ action: "publish", user: "unifeye-publisher", password: "api", ip: "203.0.113.9" })).toBe(false);
+    expect(hook({ action: "read", protocol: "webrtc", path: "c_cam1_wall", token: "tk" })).toBe(false); // no reader id
+    expect(asked).toEqual([]);
   });
 });

@@ -1,4 +1,4 @@
-# Running Vantage behind Cloudflare Tunnel
+# Running Unifeye behind Cloudflare Tunnel
 
 Cloudflare Tunnel can stand in for the HTTPS reverse proxy described in
 [deployment.md](deployment.md#4-network): `cloudflared` makes an outbound connection to Cloudflare,
@@ -55,14 +55,14 @@ Add a **public hostname** to the tunnel:
 
 | Field | Value |
 | --- | --- |
-| Hostname | `vantage.example.com` |
+| Hostname | `unifeye.example.com` |
 | Service type | `HTTP` |
 | URL | `app:3000` when `cloudflared` runs in the Compose stack (below), `localhost:3000` when it runs on the host |
 
 Under the hostname's **Additional application settings > HTTP Settings**, leave **HTTP Host
 Header** empty and **Disable Chunked Encoding** off.
 
-### 2. Run `cloudflared` next to Vantage
+### 2. Run `cloudflared` next to Unifeye
 
 Create `compose.override.yaml` next to `compose.yaml`. Docker Compose reads it automatically:
 
@@ -77,7 +77,7 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    networks: [vantage]
+    networks: [unifeye]
     depends_on: [app]
 ```
 
@@ -90,16 +90,16 @@ CLOUDFLARE_TUNNEL_TOKEN=eyJ...
 `cloudflared` reaches the app as `app:3000` over the Compose network. The app's own port stays bound
 to `127.0.0.1`, so the tunnel is the only way in from outside the host.
 
-### 3. Configure Vantage
+### 3. Configure Unifeye
 
 In `.env`:
 
 ```sh
-APP_URL=https://vantage.example.com   # exactly the tunnel hostname, with https://
+APP_URL=https://unifeye.example.com   # exactly the tunnel hostname, with https://
 WEBRTC_PUBLIC_HOST=192.168.1.10       # see "Choose how live video reaches people"
 ```
 
-`APP_URL` must match the hostname people use. Vantage rejects data-changing requests whose `Origin`
+`APP_URL` must match the hostname people use. Unifeye rejects data-changing requests whose `Origin`
 header does not match it, and your identity provider's redirect URIs are built from it.
 
 Then `docker compose up -d`.
@@ -107,18 +107,12 @@ Then `docker compose up -d`.
 ### 4. Register the hostname with your identity provider
 
 Use the tunnel hostname in the redirect, post-logout and back-channel logout URIs from
-[deployment.md](deployment.md#1-register-vantage-with-your-identity-provider).
+[deployment.md](deployment.md#register-unifeye-with-your-identity-provider).
 
 ## Cloudflare settings for the hostname
 
-### Block the internal hook
-
-MediaMTX calls `/api/internal/mediamtx-auth` over the Compose network. Browsers never need it. It is
-protected by `MEDIAMTX_HOOK_SECRET`, but block it at the edge as well. In **Security > WAF > Custom
-rules**, create:
-
-- Expression: `(http.host eq "vantage.example.com" and starts_with(http.request.uri.path, "/api/internal/"))`
-- Action: **Block**
+Point the tunnel at port 3000 only. MediaMTX calls Unifeye's auth hook on port 3001 over the Compose
+network, and that port is not served through the tunnel, so there is nothing to block.
 
 ### Let the identity provider's back-channel logout through
 
@@ -126,17 +120,25 @@ Your identity provider's server, not a browser, POSTs to `/api/auth/backchannel-
 features that challenge bots can block it:
 
 - **Bot Fight Mode** (Free plan) cannot be skipped per path. If logouts at the provider do not end
-  Vantage sessions straight away, turn Bot Fight Mode off for this zone. Without back-channel logout,
+  Unifeye sessions straight away, turn Bot Fight Mode off for this zone. Without back-channel logout,
   sessions still end within `OIDC_RECHECK_SECONDS` (default 5 minutes).
 - **Super Bot Fight Mode** and WAF challenge rules (paid plans): add a skip rule for
   `starts_with(http.request.uri.path, "/api/auth/backchannel-logout")`.
 
 ### Cloudflare Access (optional)
 
-You can put a Cloudflare Access application in front of the hostname as a second gate. People then
-sign in to Cloudflare first and to your identity provider second, unless both use the same provider.
-If you do, add a second Access application for the path `/api/auth/backchannel-logout` with a
-**Bypass** policy, for the same reason as above.
+There are two ways to use Access:
+
+- **As the sign-in itself** (`SIGN_IN_METHODS=cloudflare`, optionally `cloudflare,local`). Access
+  signs people in and Unifeye trusts its signed token; there is no second sign-in. See
+  [Cloudflare Access](deployment.md#cloudflare-access) in the deployment guide, including the
+  Transform Rule that adds `X-Unifeye-Origin-Secret`. Do not add any
+  Bypass policy in this setup: a request that reaches Unifeye without Access's token is treated as
+  coming from outside Cloudflare.
+- **As a second gate in front of your identity provider** (`SIGN_IN_METHODS=oidc`). People sign in
+  to Cloudflare first and to your identity provider second, unless both use the same provider. Add
+  a second Access application for the path `/api/auth/backchannel-logout` with a **Bypass** policy,
+  for the same reason as above.
 
 ### Leave page rewriting off
 
@@ -153,13 +155,14 @@ and Cloudflare does not cache it. Do not add a "Cache Everything" rule for this 
 
 - **100-second response limit.** Cloudflare returns error 524 if the app has not started answering
   within 100 seconds. Clip exports run as background jobs and are not affected. Seeking recorded
-  video waits while Vantage fetches that minute from the recorder. This is normally a few seconds,
+  video waits while Unifeye fetches that minute from the recorder. This is normally a few seconds,
   but a slow or overloaded UNVR could exceed the limit and the seek would fail.
-- **Rate limits are per client address.** `cloudflared` passes each visitor's address in
-  `X-Forwarded-For`, and Vantage counts requests per address per minute. Video requests are limited
-  to 600 per minute. A 9-tile wall on HLS makes about 270 per minute (measured locally at about 30 per
-  tile). Off-site viewers usually each have their own address. People behind one office or VPN
-  address share the limit, so two full HLS walls from the same address use most of it.
+- **Rate limits are per person once signed in.** Unifeye counts signed-in requests per session, so
+  people behind one office or VPN address do not share a limit. HLS has its own budget, 1,440
+  requests a minute with the default `MAX_WALL_STREAMS`; a 9-tile wall on HLS makes about 540
+  (about 60 per tile: a video and a sound playlist and a segment of each every 4 seconds). Sign-in
+  pages are limited per address, taken from the last `X-Forwarded-For` entry, which `cloudflared`
+  sets to the visitor's address.
 - **Cloudflare's terms on video.** Cloudflare's self-serve terms restrict using its network mainly to
   serve video, outside its own video products. A few people occasionally watching cameras over HLS
   is a small amount of traffic, but a wall streaming HLS all day through the tunnel is more. Keeping
@@ -167,12 +170,12 @@ and Cloudflare does not cache it. Do not add a "Cache Everything" rule for this 
 
 ## Check it
 
-1. From a phone on mobile data, open `https://vantage.example.com` and sign in.
+1. From a phone on mobile data, open `https://unifeye.example.com` and sign in.
 2. Open a view with live tiles. The first time, tiles show a still image for about 4 seconds, then
    play. Open another view: tiles start without the wait.
 3. On the office network, tiles should play almost at once (WebRTC). Hover over a tile and click
    its speaker to check sound.
-4. `curl -i https://vantage.example.com/api/internal/mediamtx-auth` should be blocked by Cloudflare
-   (403) rather than answered by Vantage.
-5. Sign out at your identity provider, then reload Vantage in another tab. You should be signed out
+4. `curl -i -X POST https://unifeye.example.com/api/internal/mediamtx-auth` should return 404: the
+   hook is not served through the tunnel.
+5. Sign out at your identity provider, then reload Unifeye in another tab. You should be signed out
    (straight away with back-channel logout, otherwise within `OIDC_RECHECK_SECONDS`).

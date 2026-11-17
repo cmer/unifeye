@@ -1,9 +1,13 @@
 "use client";
-import { Bell, Camera as CameraIcon, LayoutGrid, ListChecks, LogOut, Moon, PanelLeft, ShieldCheck, Star, Sun, Eye, WifiOff } from "lucide-react";
+import { Bell, Camera as CameraIcon, KeyRound, LayoutGrid, ListChecks, LogOut, Moon, PanelLeft, ShieldCheck, Star, Sun, Eye, WifiOff } from "lucide-react";
 import { useTheme } from "next-themes";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { BrandMark } from "@/components/brand-mark";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuBadge, SidebarMenuButton, SidebarMenuItem, SidebarProvider, useSidebar } from "@/components/ui/sidebar";
 import { Activity } from "./activity";
 import { Admin } from "./admin";
@@ -53,7 +57,7 @@ export function App() {
     // Browser-only values (address, saved sidebar state) are read once after hydration.
     /* eslint-disable react-hooks/set-state-in-effect */
     setLoc(here());
-    setOpen(localStorage.getItem("vantage.sidebar") === "1");
+    setOpen(localStorage.getItem("unifeye.sidebar") === "1");
     /* eslint-enable react-hooks/set-state-in-effect */
     const pop = () => setLoc(here());
     addEventListener("popstate", pop);
@@ -80,7 +84,7 @@ export function App() {
     : <Wall key={seg[1] ?? "all"} viewId={seg[0] === "view" ? seg[1] : undefined} />;
   return (
     <AppCtx.Provider value={ctx}>
-      <SidebarProvider open={open} onOpenChange={(o) => { setOpen(o); localStorage.setItem("vantage.sidebar", o ? "1" : "0"); }}>
+      <SidebarProvider open={open} onOpenChange={(o) => { setOpen(o); localStorage.setItem("unifeye.sidebar", o ? "1" : "0"); }}>
         <AppSidebar />
         <SidebarInset className="relative flex h-svh min-w-0 flex-col overflow-hidden">
           {ctx.me.preview && (
@@ -106,6 +110,7 @@ function AppSidebar() {
   const { me, loc, nav } = useApp();
   const { theme, resolvedTheme, setTheme } = useTheme();
   const { isMobile, setOpenMobile } = useSidebar();
+  const [pw, setPw] = useState(false);
   const go = (to: string) => { nav(to); if (isMobile) setOpenMobile(false); };
   const at = (p: string) => loc.path === p || loc.path.startsWith(p + "/");
   void theme;
@@ -113,8 +118,8 @@ function AppSidebar() {
     <Sidebar>
       <SidebarHeader>
         <div className="flex items-center gap-2 px-2 py-1.5">
-          <span className="grid size-7 place-items-center rounded-md bg-primary text-sm font-bold text-primary-foreground">V</span>
-          <span className="font-semibold">Vantage</span>
+          <BrandMark className="size-7 rounded-md" />
+          <span className="font-semibold">Unifeye</span>
           {me.mode === "mock" && <span className="ml-auto rounded-full border px-2 py-0.5 text-xs text-muted-foreground" title="Cameras, recordings and activity are simulated">Demo cameras</span>}
         </div>
       </SidebarHeader>
@@ -151,11 +156,39 @@ function AppSidebar() {
         <div className="flex items-center gap-2 px-2 py-1">
           <span className="grid size-8 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{me.user.name.split(" ").map((x) => x[0]).join("").slice(0, 2).toUpperCase()}</span>
           <span className="min-w-0 flex-1 truncate text-sm font-medium">{me.user.name}</span>
+          {me.user.signsInWith === "local" && !me.preview && <Button variant="ghost" size="icon" aria-label="Change password" title="Change password" onClick={() => setPw(true)}><KeyRound /></Button>}
           <Button variant="ghost" size="icon" aria-label="Switch between light and dark" onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}>{resolvedTheme === "dark" ? <Sun /> : <Moon />}</Button>
           <Button variant="ghost" size="icon" aria-label="Sign out" title="Sign out" onClick={async () => { try { setPreviewToken(null); const r = await api<{ redirect: string }>("/auth/logout", { method: "POST" }); location.assign(r.redirect); } catch (e) { fail(e); } }}><LogOut /></Button>
         </div>
       </SidebarFooter>
+      {pw && <ChangePassword onClose={() => setPw(false)} />}
     </Sidebar>
+  );
+}
+
+/** For people who sign in with a password. Their other devices are signed out afterwards. */
+function ChangePassword({ onClose }: { onClose: () => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget), next = String(f.get("next") ?? "");
+    if (next !== f.get("again")) return setError("The new passwords don't match.");
+    setBusy(true); setError(null);
+    try { await api("/me/password", { method: "POST", body: { current: f.get("current"), next } }); toast.success("Password changed. Your other devices are signed out."); onClose(); }
+    catch (err) { setBusy(false); setError(err instanceof Error ? err.message : "Something went wrong. Try again."); }
+  };
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Change password</DialogTitle><DialogDescription>Use at least 10 characters. A short phrase works well.</DialogDescription></DialogHeader>
+        <form id="change-password" className="grid gap-3" onSubmit={submit}>
+          {[["current", "Current password", "current-password"], ["next", "New password", "new-password"], ["again", "Type it again", "new-password"]].map(([id, label, ac]) => <div key={id} className="grid gap-1.5"><Label htmlFor={id}>{label}</Label><Input id={id} name={id} type="password" autoComplete={ac} required /></div>)}
+          {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+        </form>
+        <DialogFooter><Button variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" form="change-password" disabled={busy}>{busy ? "Saving…" : "Change password"}</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

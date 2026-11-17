@@ -9,7 +9,12 @@ type State = "idle" | "connecting" | "playing" | "unavailable" | "error";
 const WEBRTC_CONNECT_MS = 4000;
 /** After WebRTC media could not get through, use HLS straight away for this long before trying WebRTC again. */
 const WEBRTC_SKIP_MS = 10 * 60_000;
-const SKIP_KEY = "vantage.webrtc-unreachable-until";
+const SKIP_KEY = "unifeye.webrtc-unreachable-until";
+/**
+ * The server refused for now (429): this session holds as many streams as it may, or sent too many
+ * requests. Streams are released as tiles stop, so wait and try again. Not counted as a failed attempt.
+ */
+const BUSY_RETRY_MS = 5000;
 /**
  * WebRTC media goes to port 8189 directly, which is not reachable from every network (for example
  * through a tunnel that only carries HTTPS). Once one tile finds that out, the others, and this tab
@@ -34,10 +39,14 @@ const skipWebrtc = () => {
  */
 /** How live video is reaching the browser: WebRTC (real-time) or the HLS fallback (a few seconds behind). */
 export type Transport = "webrtc" | "hls";
+/** Where the video comes from: the camera itself, the recorder, or the recorder because the camera can't stream directly right now. */
+export type VideoSource = "camera" | "recorder" | "fallback";
+export interface LiveInfo { via: Transport; source: VideoSource | null }
+const sourceOf = (h: Headers): VideoSource | null => { const v = h.get("x-video-source"); return v === "camera" || v === "recorder" || v === "fallback" ? v : null; };
 
 export function LiveVideo({ cameraId, quality, active, online, className = "", onGone, onTransport, sound = false, onAudio, onMedia }: {
   cameraId: string; quality: "wall" | "focus"; active: boolean; online: boolean; className?: string; onGone?: () => void;
-  /** Reports the transport while video is playing, null otherwise. */ onTransport?: (t: Transport | null) => void;
+  /** Reports the transport and source while video is playing, null otherwise. */ onTransport?: (t: LiveInfo | null) => void;
   /** Play this camera's sound. Off by default; see `sound.tsx`. */ sound?: boolean;
   /** Reports whether the playing stream carries sound, null while unknown or not playing. */ onAudio?: (has: boolean | null) => void;
   /** The video element, for the level meter. */ onMedia?: (el: HTMLVideoElement | null) => void;
@@ -46,8 +55,10 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
   const [audio, setAudio] = useState<boolean | null>(null);
   const [raw, setState] = useState<State>("idle");
   const [attempt, setAttempt] = useState(0);
+  const [wake, setWake] = useState(0);
   const [still, setStill] = useState(0);
   const [via, setVia] = useState<Transport>("webrtc");
+  const [source, setSource] = useState<VideoSource | null>(null);
 
   const playingNow = active && online && raw === "playing";
   useEffect(() => {
@@ -61,9 +72,16 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
     const el = video.current!;
     let closed = false, unwatch: (() => void) | undefined, pc: RTCPeerConnection | undefined, resource: string | null = null, hls: { destroy(): void } | undefined, timer: ReturnType<typeof setTimeout> | undefined, timer2: ReturnType<typeof setTimeout> | undefined;
     const retry = () => { if (closed) return; setState("connecting"); timer = setTimeout(() => setAttempt((n) => n + 1), Math.min(3000 * (attempt + 1), 15000)); };
+    const busy = () => { if (closed) return; setState("connecting"); timer = setTimeout(() => setWake((n) => n + 1), BUSY_RETRY_MS); };
+    const stream = `/media/live/${cameraId}/hls/${quality}`;
+    let hlsOpen = false;
     const viaHls = async () => {
       if (closed) return;
-      const src = mediaUrl(`/api/media/live/${cameraId}/hls/${quality}/index.m3u8`);
+      hlsOpen = true;
+      // Ask once ourselves: the browser's own HLS player hides the status, and a refusal for now must wait, not fail.
+      try { await api(`${stream}/index.m3u8`, { onHeaders: (h) => { if (!closed) setSource(sourceOf(h)); } }); } catch (e) { if (closed) return; if (e instanceof ApiError && e.status === 429) return busy(); }
+      if (closed) return;
+      const src = mediaUrl(`/api${stream}/index.m3u8`);
       try {
         if (el.canPlayType("application/vnd.apple.mpegurl")) {
           // The browser's own HLS player (Safari, recent Chrome): same retry rule as hls.js below.
@@ -73,8 +91,8 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
         else {
           const { default: Hls } = await import("hls.js");
           if (closed || !Hls.isSupported()) return setState("error");
-          const h = new Hls({ lowLatencyMode: true, xhrSetup: (xhr) => { const t = previewToken(); if (t) xhr.setRequestHeader("x-vantage-preview", t); } });
-          h.on(Hls.Events.ERROR, (_e, d) => { if (d.fatal) { h.destroy(); if (attempt < 4) retry(); else setState("error"); } });
+          const h = new Hls({ lowLatencyMode: true, xhrSetup: (xhr) => { const t = previewToken(); if (t) xhr.setRequestHeader("x-unifeye-preview", t); } });
+          h.on(Hls.Events.ERROR, (_e, d) => { if (d.fatal) { h.destroy(); if (d.response?.code === 429) busy(); else if (attempt < 4) retry(); else setState("error"); } });
           // The playlist names its codecs, so whether there is sound is known before anything plays.
           h.on(Hls.Events.MANIFEST_PARSED, (_e, d) => { if (!closed) setAudio(d.audioTracks.length > 0 || d.levels.some((l) => !!l.audioCodec)); });
           h.loadSource(src); h.attachMedia(el); hls = h;
@@ -87,6 +105,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reflects the connection this effect is opening
     setState("connecting");
     setAudio(null);
+    setSource(null);
     el.muted = true; // every connection starts muted, so autoplay is always allowed; the sound effect below unmutes once playing
     if (webrtcSkipped()) { void viaHls(); return cleanup; }
     // Media never arrived: this network cannot reach the WebRTC port. Switch transport and remember it.
@@ -130,16 +149,18 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
           const t = setTimeout(done, 1500);
           pc!.onicegatheringstatechange = () => { if (pc!.iceGatheringState === "complete") { clearTimeout(t); done(); } };
         });
-        const ans = await api<{ sdp: string; location: string | null }>(`/media/live/${cameraId}/whep?q=${quality}`, { method: "POST", raw: pc.localDescription!.sdp });
+        const ans = await api<{ sdp: string; location: string | null }>(`/media/live/${cameraId}/whep?q=${quality}`, { method: "POST", raw: pc.localDescription!.sdp, onHeaders: (h) => { if (!closed) setSource(sourceOf(h)); } });
         resource = ans.location;
-        if (closed) return;
+        // The tile stopped while the offer was on its way, so cleanup had nothing to release yet.
+        // Release it now: otherwise the session holds one of this tab's stream slots until it times out.
+        if (closed) { if (resource) void api(resource.replace(/^\/api/, ""), { method: "DELETE" }).catch(() => {}); return; }
         await pc.setRemoteDescription({ type: "answer", sdp: ans.sdp });
         if (!connected) timer = setTimeout(unreachable, WEBRTC_CONNECT_MS);
       } catch (e) {
         if (closed) return;
         if (e instanceof ApiError && e.status === 404) onGone?.(); // access was removed: let the page refresh what it shows
         if (e instanceof ApiError && [404, 409, 401, 403].includes(e.status)) setState("unavailable");
-        else if (e instanceof ApiError && e.status === 429) setState("idle");
+        else if (e instanceof ApiError && e.status === 429) busy();
         else void viaHls();
       }
     })();
@@ -149,15 +170,17 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
       clearTimeout(timer); clearTimeout(timer2);
       pc?.close();
       hls?.destroy();
+      // HLS has no teardown of its own: without this the server holds the stream's slot for up to a minute.
+      if (hlsOpen) void api(stream, { method: "DELETE", keepalive: true }).catch(() => {});
       if (resource) void api(resource.replace(/^\/api/, ""), { method: "DELETE" }).catch(() => {});
       el.onplaying = null; el.onerror = null; el.srcObject = null; el.removeAttribute("src"); el.load();
     }
     return cleanup;
-  }, [cameraId, quality, active, online, attempt]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [cameraId, quality, active, online, attempt, wake]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const state: State = active && online ? raw : "idle";
   const shown = state === "playing" ? via : null;
-  useEffect(() => { onTransport?.(shown); }, [shown]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { onTransport?.(shown && { via: shown, source }); }, [shown, source]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => onTransport?.(null), []); // eslint-disable-line react-hooks/exhaustive-deps
   const hasAudio = state === "playing" ? audio : null;
   useEffect(() => { onAudio?.(hasAudio); }, [hasAudio]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -167,7 +190,8 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
   const fit = quality === "focus" ? "object-contain" : "object-cover"; // enlarged view letterboxes so the whole frame is always visible
   return (
     <div className={`absolute inset-0 bg-black ${className}`}>
-      {online && <img alt="" src={mediaUrl(`/api/cameras/${cameraId}/snapshot?w=${quality === "focus" ? 1280 : 640}&n=${still}`)} className={`absolute inset-0 size-full ${fit}`} onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} onLoad={(e) => { e.currentTarget.style.visibility = "visible"; }} />}
+      {/* Placeholder until video plays; hidden after, or it shows through the video's letterbox bars when the two differ in shape. */}
+      {online && <img alt="" src={mediaUrl(`/api/cameras/${cameraId}/snapshot?w=${quality === "focus" ? 1280 : 640}&n=${still}`)} className={`absolute inset-0 size-full ${fit} ${state === "playing" ? "opacity-0" : ""}`} onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} onLoad={(e) => { e.currentTarget.style.visibility = "visible"; }} />}
       <video ref={video} autoPlay muted playsInline className={`absolute inset-0 size-full ${fit} transition-opacity ${state === "playing" ? "opacity-100" : "opacity-0"}`} />
       {(!online || state === "unavailable" || state === "error") && (
         <div className="absolute inset-0 grid place-items-center bg-zinc-900 p-4 text-center text-sm text-zinc-400">

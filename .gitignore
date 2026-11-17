@@ -49,3 +49,7 @@ next-env.d.ts
 
 # QA sweep scratch
 /tmp
+
+# Local to a deployment: Compose overrides, and local edits saved by scripts/update.sh
+compose.override.yaml
+.local-changes-*.diff

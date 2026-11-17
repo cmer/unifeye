@@ -1,6 +1,6 @@
-# Vantage: one application instance plus MediaMTX. Start with:  docker compose up -d
+# Unifeye: one application instance plus MediaMTX. Start with:  docker compose up -d
 # Put an HTTPS reverse proxy in front of 127.0.0.1:3000. Only two things face the network:
-# that proxy, and the WebRTC media port 8189 (UDP and TCP).
+# that proxy, and the WebRTC media port (WEBRTC_PORT, 8189 by default, UDP and TCP).
 services:
   app:
     build: .
@@ -15,15 +15,20 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
-      - vantage-data:/data          # SQLite database and backups. Local disk only, never a network share.
-      - vantage-cache:/cache        # Disposable, size-bounded playback and clip cache.
+      - unifeye-data:/data          # SQLite database and backups. Local disk only, never a network share.
+      - unifeye-cache:/cache        # Disposable, size-bounded playback and clip cache.
       - ./certs:/certs:ro
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     stop_grace_period: 20s
-    networks: [vantage]
+    networks: [unifeye]
+    # Optional: let clip resizing use the GPU (docs/deployment.md, "GPU"). Intel Quick Sync or AMD:
+    # devices: ["/dev/dri:/dev/dri"]
+    # group_add: ["${RENDER_GID:?getent group render | cut -d: -f3}"]
+    # NVIDIA (needs the NVIDIA Container Toolkit on the host):
+    # deploy: { resources: { reservations: { devices: [{ driver: nvidia, count: 1, capabilities: [gpu, video] }] } } }
 
   mediamtx:
     # The -ffmpeg variant is required: it re-encodes camera sound (Protect's audio timestamps are unusable
@@ -32,29 +37,33 @@ services:
     restart: unless-stopped
     user: "1000:1000"
     environment:
-      MTX_AUTHHTTPADDRESS: http://app:3000/api/internal/mediamtx-auth?secret=${MEDIAMTX_HOOK_SECRET:?set MEDIAMTX_HOOK_SECRET}
+      # Unifeye answers the auth hook on its own port (3001), which is never published or proxied.
+      MTX_AUTHHTTPADDRESS: http://app:3001/mediamtx-auth?secret=${MEDIAMTX_HOOK_SECRET:?set MEDIAMTX_HOOK_SECRET}
       # The address browsers use to reach this host for WebRTC media (LAN IP or DNS name).
       MTX_WEBRTCADDITIONALHOSTS: ${WEBRTC_PUBLIC_HOST:?set WEBRTC_PUBLIC_HOST}
+      # The WebRTC media port. MediaMTX advertises the port it listens on, so the published port must match it.
+      MTX_WEBRTCLOCALUDPADDRESS: :${WEBRTC_PORT:-8189}
+      MTX_WEBRTCLOCALTCPADDRESS: :${WEBRTC_PORT:-8189}
     volumes:
       - ./docker/mediamtx.yml:/mediamtx.yml:ro
     ports:
-      - "8189:8189/udp"             # WebRTC media. The API (9997), WHEP (8889), HLS (8888) and RTSP stay internal.
-      - "8189:8189/tcp"
+      - "${WEBRTC_PORT:-8189}:${WEBRTC_PORT:-8189}/udp"   # WebRTC media. The API (9997), WHEP (8889), HLS (8888) and RTSP stay internal.
+      - "${WEBRTC_PORT:-8189}:${WEBRTC_PORT:-8189}/tcp"
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    networks: [vantage]
+    networks: [unifeye]
     healthcheck:
-      # MediaMTX answers / with 404, so check that the WHEP and HLS listeners Vantage uses accept connections.
+      # MediaMTX answers / with 404, so check that the WHEP and HLS listeners Unifeye uses accept connections.
       test: ["CMD-SHELL", "nc -z 127.0.0.1 8889 && nc -z 127.0.0.1 8888"]
       interval: 30s
       timeout: 5s
       retries: 3
 
 volumes:
-  vantage-data:
-  vantage-cache:
+  unifeye-data:
+  unifeye-cache:
 
 networks:
-  vantage:
+  unifeye:

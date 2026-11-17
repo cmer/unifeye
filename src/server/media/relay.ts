@@ -1,17 +1,22 @@
 import type { LiveSource } from "../protect/types";
 
 /**
- * Everything Vantage says to the media relay. `Media` (gateway.ts) decides who may watch what and
+ * Everything Unifeye says to the media relay, and what it hears back. `Media` (gateway.ts) decides who may watch what and
  * owns tickets, grants and the sweep; a relay only carries those decisions out. The production
  * adapter is MediaMTX (mediamtx.ts); tests use the in-memory one (testing/relay.ts).
  *
- * The other direction is not part of this interface: the relay asks `Media.hook()` before it
- * admits any reader, and the reader id it reports there is the id used by `readers` and `kick`.
+ * The other direction: before admitting any reader, the relay asks `Media.admit()` with a
+ * `ReaderRequest`, and the reader id in it is the id used by `readers` and `kick`. How a relay
+ * receives that question, and how it recognises its own internal traffic (for MediaMTX, the auth
+ * hook's body, its usernames and internal paths), stays inside the adapter.
  *
  * A `stream` is the relay-side name of one camera at one quality; `Media` chooses the names.
  * Every method except `healthy` and `kick` throws `RelayUnavailable` when the relay cannot be reached.
  */
 export type ReaderKind = "webrtc" | "hls";
+
+/** A viewer asking the relay to read `stream` with `ticket`. `id` is the relay's reader id. */
+export interface ReaderRequest { kind: ReaderKind; stream: string; ticket: string; id: string }
 
 export class RelayUnavailable extends Error {
   constructor() { super("media relay unavailable"); }
@@ -31,12 +36,17 @@ export type HlsFile =
   | { outcome: "failed" };
 
 /**
- * One HLS reader as the relay sees it: a stream, the ticket that authorizes it, and whatever the
- * relay needs to recognise the same reader across requests (for MediaMTX, its session cookie).
- * That last part is the adapter's private state; nothing about it reaches `Media` or the browser.
+ * One HLS reader as the relay sees it: a stream, and whatever the relay needs to recognise the same
+ * reader across requests (for MediaMTX, its session cookie). It must live as long as the player does:
+ * a new reader is a stranger to the relay, and MediaMTX refuses everything but the top playlist from one.
+ * That state is the adapter's private business; nothing about it reaches `Media` or the browser.
  */
 export interface HlsReader {
-  fetch(file: string, search: string): Promise<HlsFile>;
+  /**
+   * `ticket` is the current one for this reader. Unifeye renews it while the stream plays; the relay
+   * presents it whenever it has to authorize the reader again (for MediaMTX, when a new session starts).
+   */
+  fetch(file: string, search: string, ticket: string): Promise<HlsFile>;
 }
 
 export interface Relay {
@@ -51,8 +61,8 @@ export interface Relay {
   /** Teardown. Returns the HTTP status to hand back to the browser. */
   whepClose(stream: string, resource: string, headers: Record<string, string>): Promise<number>;
 
-  /** Starts an HLS reader. Nothing is sent until its first `fetch`; the relay asks the auth hook with `ticket`. */
-  hlsReader(stream: string, ticket: string): HlsReader;
+  /** Starts an HLS reader. Nothing is sent until its first `fetch`, which carries the ticket for the auth hook. */
+  hlsReader(stream: string): HlsReader;
 
   /** Readers currently attached, by the id the relay gave the auth hook. */
   readers(kind: ReaderKind): Promise<{ id: string }[]>;

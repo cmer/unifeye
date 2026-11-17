@@ -2,9 +2,10 @@ import { sql } from "drizzle-orm";
 import { check, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 /**
- * Vantage owns everything in this file. Protect stays authoritative for cameras, video and events;
+ * Unifeye owns everything in this file. Protect stays authoritative for cameras, video and events;
  * the `cameras` table holds only stable references plus a disposable metadata cache.
- * There are deliberately no credential or password tables: OIDC is the only way to sign in.
+ * Passwords exist only for `local` accounts (see `localCredentials`); every other identity is
+ * proven by the identity provider or Cloudflare Access, and Unifeye stores no secret for it.
  */
 const id = () => text("id").primaryKey();
 const ts = (name: string) => integer(name, { mode: "number" }); // UTC milliseconds
@@ -18,6 +19,11 @@ export const users = sqliteTable(
     email: text("email"), // profile attribute only, never an identity key
     name: text("name").notNull().default(""),
     role: text("role", { enum: ["admin", "staff"] }).notNull().default("staff"),
+    /**
+     * How this person signs in. Fixed at creation; a person whose method is turned off is inactive.
+     * No CHECK constraint on purpose: adding one makes drizzle rebuild `users`, which would cascade.
+     */
+    authMethod: text("auth_method", { enum: ["oidc", "local", "cloudflare"] }).notNull().default("oidc"),
     status: text("status", { enum: ["active", "disabled"] }).notNull().default("active"),
     allowPrivateViews: integer("allow_private_views", { mode: "boolean" }).notNull().default(false),
     /** The group-claim values from this person's latest verified ID token, kept so a mapping change applies at once. */
@@ -28,6 +34,37 @@ export const users = sqliteTable(
     version: integer("version").notNull().default(1),
   },
   (t) => [uniqueIndex("users_issuer_subject").on(t.issuer, t.subject), check("users_role", sql`${t.role} in ('admin','staff')`), check("users_status", sql`${t.status} in ('active','disabled')`)],
+);
+
+/**
+ * Username and password for a `local` person. The username is stored normalised (lowercase) and is
+ * the sign-in key; it is unrelated to email. `passwordHash` is null until the person uses their first
+ * password link. Hash format: `scrypt$N$r$p$salt$hash` (base64url).
+ */
+export const localCredentials = sqliteTable(
+  "local_credentials",
+  {
+    userId: text("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+    username: text("username").notNull(),
+    passwordHash: text("password_hash"),
+    passwordSetAt: ts("password_set_at"),
+    createdAt: ts("created_at").notNull(),
+  },
+  (t) => [uniqueIndex("local_credentials_username").on(t.username)],
+);
+
+/** One-time links for choosing a password. Only a SHA-256 of the link's secret is stored. */
+export const passwordLinks = sqliteTable(
+  "password_links",
+  {
+    id: id(), // sha-256 of the secret in the link
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    createdBy: text("created_by"), // null when made from the command line
+    createdAt: ts("created_at").notNull(),
+    expiresAt: ts("expires_at").notNull(),
+    usedAt: ts("used_at"),
+  },
+  (t) => [index("password_links_user").on(t.userId)],
 );
 
 export const sessions = sqliteTable(
@@ -113,7 +150,7 @@ export const groupMembers = sqliteTable(
 export const cameras = sqliteTable(
   "cameras",
   {
-    id: id(), // Vantage id; safe to expose to authorized clients
+    id: id(), // Unifeye id; safe to expose to authorized clients
     nvrId: text("nvr_id").notNull(),
     protectId: text("protect_id").notNull(), // stable Protect camera id, scoped to the NVR
     name: text("name").notNull(), // cached native name
@@ -125,6 +162,19 @@ export const cameras = sqliteTable(
   },
   (t) => [uniqueIndex("cameras_nvr_protect").on(t.nvrId, t.protectId)],
 );
+
+/**
+ * Cameras an administrator switched to reading live video from the camera itself instead of the
+ * recorder's re-stream. A row without its own login uses DEFAULT_CAMERA_USERNAME / _PASSWORD.
+ */
+export const cameraDirect = sqliteTable("camera_direct", {
+  cameraId: text("camera_id").primaryKey().references(() => cameras.id, { onDelete: "cascade" }),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(false),
+  username: text("username"),
+  /** Encrypted with TOKEN_ENC_KEY. Never sent to a browser. */
+  passwordEnc: text("password_enc"),
+  updatedAt: ts("updated_at").notNull(),
+});
 
 export const tags = sqliteTable("tags", { id: id(), name: text("name").notNull(), createdAt: ts("created_at").notNull() }, (t) => [
   uniqueIndex("tags_name").on(t.name),
@@ -302,6 +352,13 @@ export const exportJobs = sqliteTable(
     progress: integer("progress").notNull().default(0),
     filePath: text("file_path"),
     error: text("error"),
+    /** Length of the finished clip, in milliseconds. */
+    durationMs: integer("duration_ms"),
+    /**
+     * Why a finished clip is noticeably shorter than asked, or null: part of the time was not
+     * recorded, or the recorder kept failing to export part of it.
+     */
+    gap: text("gap", { enum: ["unrecorded", "busy"] }),
     createdAt: ts("created_at").notNull(),
     expiresAt: ts("expires_at").notNull(),
   },

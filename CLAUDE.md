@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Vantage is a read-only viewer for UniFi Protect cameras. Staff sign in through OIDC (the only sign-in; no local accounts), administrators grant cameras, tag them and build shared views. Vantage must never write to the recorder: no camera settings, recordings, events or Protect users. Enabling an RTSP stream on a camera counts as a write and is out of bounds.
+Unifeye is a read-only viewer for UniFi Protect cameras. Staff sign in through OIDC, Cloudflare Access or administrator-issued password accounts (`SIGN_IN_METHODS`; passwords are off by default), administrators grant cameras, tag them and build shared views. Unifeye must never write to the recorder: no camera settings, recordings, events or Protect users. Enabling an RTSP stream on a camera counts as a write and is out of bounds.
 
 `docs/architecture.md` is the authoritative description of the permission model, standing access, views, sign-in and media enforcement. Read the relevant section before changing any of those areas, and update it when behaviour changes. `docs/verification.md` records what has and has not been verified; keep it honest when adding tests or checking against real hardware.
 
@@ -25,7 +25,7 @@ Package manager is pnpm; Node 22.20 or newer.
 | Lint | `pnpm lint` |
 | Production build (Next standalone plus the bundled CLI) | `pnpm build` |
 | Generate a migration after editing `src/server/db/schema.ts` | `pnpm db:generate` |
-| Ops CLI: `migrate`, `backup`, `verify <file>`, `restore <file> [--force]` | `pnpm vantage <command>` |
+| Ops CLI: `migrate`, `backup`, `verify <file>`, `restore <file> [--force]` | `pnpm unifeye <command>` |
 
 Local setup: `cp .env.development.example .env.development.local`, then run `pnpm dev:idp` and `pnpm dev` in separate terminals. Sign in as "Avery Chen", the bootstrap administrator; demo data is seeded on that first sign-in. Live video also needs FFmpeg and a MediaMTX 1.21.4 binary started with `docker/mediamtx.yml` (the exact command is in `README.md`).
 
@@ -50,7 +50,7 @@ Errors are matched by shape (`status` + `code`), not `instanceof`, because the s
 
 Two seams have a real and a fake implementation:
 
-- `ProtectAdapter` (`src/server/protect/types.ts`): `unifi.ts` for a real UNVR, `mock.ts` for simulated cameras. `VANTAGE_MODE` (`mock` by default) picks one.
+- `ProtectAdapter` (`src/server/protect/types.ts`): `unifi.ts` for a real UNVR, `mock.ts` for simulated cameras. `UNIFEYE_MODE` (`mock` by default) picks one.
 - `Relay` (`src/server/media/relay.ts`): `mediamtx.ts` is the only file that knows MediaMTX's URLs and conventions; `src/server/testing/relay.ts` is the in-memory one used by tests.
 
 ### Authorization invariants
@@ -59,7 +59,7 @@ These are the rules most likely to be broken by an innocent-looking change:
 
 - `Policy` (`src/server/authz/policy.ts`) is the only place that decides who sees which camera. Deny by default; grants are allow-only; tags and view sharing never grant a camera. It caches in memory, so anything that changes users, groups, grants, tags, views or the camera inventory must call `policy.invalidate()`.
 - A forbidden camera must be indistinguishable from a missing one (same 404, same body) on every route, including media, events and exports. Counts and "has more" flags reflect authorized cameras only.
-- All changes to Vantage data go through `Admin` (`src/server/admin.ts`): validation, transaction, audit entry, cache invalidation.
+- All changes to Unifeye data go through `Admin` (`src/server/admin.ts`): validation, transaction, audit entry, cache invalidation.
 - Anything that outlives its request (live streams, WHEP sessions, HLS state, clip exports, the event feed) keeps a grant record, and `Access` (`src/server/authz/access.ts`) is the only place that decides whether it still holds. `Access` also owns the single "access may have changed" signal; holders subscribe to it rather than to `Policy`, `Sessions` or `Previews` directly.
 - The actor is built from the server-side session only. Nothing the client sends about identity, role or camera lists is trusted.
 - "See as staff" (preview): the administrator stays the actor, reads use the subject's permissions, every write and admin route is refused, and an invalid preview token fails the request rather than falling back to administrator access.
@@ -67,7 +67,7 @@ These are the rules most likely to be broken by an innocent-looking change:
 
 ### Media
 
-The browser never talks to MediaMTX for authorization. A Vantage route checks the camera, then issues a short-lived ticket; MediaMTX calls back to `/api/internal/mediamtx-auth` for every reader, and the gateway (`src/server/media/gateway.ts`) answers. HLS is proxied entirely through Vantage so each playlist and segment is re-authorized. The gateway sweeps admitted readers on every access signal and on a timer, and kicks any reader it does not know. After a restart it kicks everyone (fail closed).
+The browser never talks to MediaMTX for authorization. A Unifeye route checks the camera, then issues a short-lived ticket; MediaMTX calls back for every reader on a separate internal port (`HOOK_PORT`, 3001, served by `src/server/media/hook-server.ts`, never published or proxied). `authorizeHook` in `mediamtx.ts` answers MediaMTX's own traffic and hands each viewer to the gateway (`Media.admit` in `src/server/media/gateway.ts`), which decides. Keep MediaMTX names (usernames, `_src` paths, hook fields) out of the gateway. HLS is proxied entirely through Unifeye so each playlist and segment is re-authorized. The gateway sweeps admitted readers on every access signal and on a timer, and kicks any reader it does not know. After a restart it kicks everyone (fail closed).
 
 ### Database
 
@@ -83,7 +83,7 @@ React 19 client components in `src/ui/`, shadcn/ui primitives in `src/components
 
 ### Writing user-facing copy
 
-People who use Vantage are not technical. Write every label, message, error and empty state the way Apple writes its interface text:
+People who use Unifeye are not technical. Write every label, message, error and empty state the way Apple writes its interface text:
 
 - Keep it short. One idea per sentence; cut any word the reader doesn't need.
 - Use plain, everyday words. No jargon or internal terms: say "recorder", never "UNVR", "RTSP", "WHEP", "HLS", "OIDC", "ticket" or "grant".

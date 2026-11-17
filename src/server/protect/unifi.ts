@@ -4,8 +4,19 @@ import { pipeline } from "node:stream/promises";
 import { Agent, request, type Dispatcher } from "undici";
 import { ProtectClient } from "unifi-protect";
 import { log } from "../util";
-import { retimeVideoToAudio } from "./ffmpeg";
-import { NoRecordingError, ProtectUnavailableError, type AdapterHealth, type EventQuery, type EventType, type LiveSource, type ProtectAdapter, type ProtectCamera, type ProtectEvent, type RecordingRanges } from "./types";
+import { checkRtsp, withLogin } from "./rtsp-check";
+import { NoRecordingError, ProtectUnavailableError, RecorderBusyError, type AdapterHealth, type CameraLogin, type DirectCheck, type EventQuery, type EventType, type LiveSource, type ProtectAdapter, type ProtectCamera, type ProtectEvent, type RecordingRanges } from "./types";
+
+/**
+ * The camera's own stream addresses, for cameras made by someone else (Protect adopts them over ONVIF
+ * and keeps the address it reads from, without the login). Only plain RTSP addresses are used.
+ */
+function directUrls(config: unknown): { main: string; sub: string } | null {
+  const t = (config as { thirdPartyCameraInfo?: { rtspUrl?: string | null; rtspUrlLQ?: string | null } | null }).thirdPartyCameraInfo;
+  const ok = (u?: string | null) => typeof u === "string" && /^rtsp:\/\/[^/@\s]+\//i.test(u);
+  if (!t || !ok(t.rtspUrl)) return null;
+  return { main: t.rtspUrl!, sub: ok(t.rtspUrlLQ) ? t.rtspUrlLQ! : t.rtspUrl! };
+}
 
 interface RawEvent { id: string; type: string; start: number; end?: number | null; camera?: string; cameraId?: string; smartDetectTypes?: string[]; thumbnailId?: string; modelKey?: string }
 const SMART: Record<string, EventType> = { person: "person", vehicle: "vehicle", package: "package", animal: "animal", licensePlate: "licensePlate" };
@@ -32,6 +43,8 @@ const SMART: Record<string, EventType> = { person: "person", vehicle: "vehicle",
  * bounds only; live video needs an RTSP stream that is already enabled on the camera, because
  * enabling one would be a write.
  */
+const STILL_MISSES = 3, STILL_SKIP_MS = 30 * 60_000;
+
 export class UnifiProtectAdapter implements ProtectAdapter {
   readonly mode = "real" as const;
   private client?: ProtectClient;
@@ -45,6 +58,14 @@ export class UnifiProtectAdapter implements ProtectAdapter {
   /** Connection pool and session headers for streamed exports (see `exportClip`). */
   private dl?: Dispatcher;
   private dlAuth?: Promise<Record<string, string>>;
+  /**
+   * Stills from recordings, per camera. Protect 7.3 answers "Recording not found" for most third-party
+   * cameras even where a recording exists (2026-11-17: 37 of 42, though a short export of the same
+   * moment works). A camera that has never given a still is skipped for `STILL_SKIP_MS` after
+   * `STILL_MISSES` misses in a row, then tried once more. One that has given a still is never skipped,
+   * so gaps in its recording do not turn its previews off.
+   */
+  private stills = new Map<string, { ok: boolean; misses: number; until: number }>();
 
   constructor(readonly nvrId: string, private o: { host: string; username: string; password: string; verifyTls: boolean; rtspsFingerprint?: string; /** Tests only: replaces the export connection pool. */ exportDispatcher?: Dispatcher }) {}
 
@@ -153,7 +174,7 @@ export class UnifiProtectAdapter implements ProtectAdapter {
     // another NVR, is not a camera anyone can watch here; leaving it out of the inventory hides it.
     const adopted = (cam: (typeof c.cameras)[number]) => { const cfg = cam.config as unknown as { isAdopted?: boolean; isAdoptedByOther?: boolean }; return cfg.isAdopted === true && cfg.isAdoptedByOther !== true; };
     return c.cameras.filter(adopted).map((cam) => {
-      const cfg = cam.config as unknown as { id: string; name?: string; type?: string; marketName?: string; channels?: { id: number; width: number; height: number; isRtspEnabled?: boolean; rtspAlias?: string }[]; featureFlags?: { smartDetectTypes?: string[]; isDoorbell?: boolean }; stats?: { video?: { recordingStart?: number | null; recordingEnd?: number | null } }; videoCodec?: string };
+      const cfg = cam.config as unknown as { id: string; name?: string; type?: string; marketName?: string; channels?: { id: number; width: number; height: number; isRtspEnabled?: boolean; rtspAlias?: string }[]; featureFlags?: { smartDetectTypes?: string[]; isDoorbell?: boolean }; stats?: { video?: { recordingStart?: number | null; recordingEnd?: number | null } }; videoCodec?: string; thirdPartyCameraInfo?: { rtspUrl?: string } | null };
       const q = ["high", "medium", "low"] as const;
       const types: EventType[] = ["motion", ...((cfg.featureFlags?.smartDetectTypes ?? []).map((t) => SMART[t]).filter(Boolean) as EventType[])];
       if (cfg.featureFlags?.isDoorbell) types.push("ring");
@@ -161,6 +182,7 @@ export class UnifiProtectAdapter implements ProtectAdapter {
         protectId: cfg.id, name: cam.name, online: cam.isOnline, model: cfg.marketName ?? cfg.type, eventTypes: types,
         streams: (cfg.channels ?? []).filter((ch) => ch.isRtspEnabled && ch.rtspAlias && q[ch.id]).map((ch) => ({ quality: q[ch.id], width: ch.width, height: ch.height, codec: cfg.videoCodec })),
         recordingStartMs: cfg.stats?.video?.recordingStart ?? undefined, recordingEndMs: cfg.stats?.video?.recordingEnd ?? undefined,
+        ...(directUrls(cfg) ? { direct: true } : {}),
       };
     });
   }
@@ -168,8 +190,16 @@ export class UnifiProtectAdapter implements ProtectAdapter {
   async snapshot(id: string, opts: { width?: number; atMs?: number; signal?: AbortSignal } = {}): Promise<Buffer> {
     const w = Math.min(Math.max(opts.width ?? 640, 160), 1920), h = Math.round((w * 9) / 16);
     if (opts.atMs != null) {
+      const st = this.stills.get(id) ?? { ok: false, misses: 0, until: 0 };
+      if (Date.now() < st.until) throw new NoRecordingError();
       const r = await this.get(`/cameras/${encodeURIComponent(id)}/recording-snapshot?ts=${Math.floor(opts.atMs)}&w=${w}&h=${h}`, { signal: opts.signal });
-      if (r.statusCode !== 200 || !r.body.length) throw new NoRecordingError();
+      if (r.statusCode !== 200 || !r.body.length) {
+        st.misses++;
+        if (!st.ok && st.misses >= STILL_MISSES) st.until = Date.now() + STILL_SKIP_MS;
+        this.stills.set(id, st);
+        throw new NoRecordingError();
+      }
+      this.stills.set(id, { ok: true, misses: 0, until: 0 });
       return r.body;
     }
     const cam = (await this.c()).camera(id);
@@ -192,6 +222,24 @@ export class UnifiProtectAdapter implements ProtectAdapter {
     return { kind: "rtsp", url: `rtsps://${host}:${port}/${pick.rtspAlias}?enableSrtp`, tlsFingerprint: this.o.rtspsFingerprint, retimeAudio: cfg.featureFlags?.hasMic !== false };
   }
 
+  async directSource(id: string, quality: "wall" | "focus", login: CameraLogin): Promise<LiveSource | null> {
+    const cam = (await this.c()).camera(id);
+    const urls = cam?.isOnline ? directUrls(cam.config) : null;
+    if (!urls) return null;
+    // The camera's own sound has ordinary timestamps but may be AAC, which WebRTC cannot play, so it is
+    // still re-encoded to AAC and Opus. The video is passed through.
+    return { kind: "rtsp", url: withLogin(quality === "wall" ? urls.sub : urls.main, login), retimeAudio: true };
+  }
+
+  async checkDirect(id: string, login: CameraLogin): Promise<DirectCheck> {
+    const cam = (await this.c()).camera(id);
+    const urls = cam ? directUrls(cam.config) : null;
+    if (!urls) return { ok: false, reason: "unsupported" };
+    const main = await checkRtsp(urls.main, login);
+    if (!main.ok || urls.sub === urls.main) return main;
+    return checkRtsp(urls.sub, login);
+  }
+
   async recordingRanges(id: string, fromMs: number, toMs: number): Promise<RecordingRanges> {
     const cam = (await this.listCameras()).find((x) => x.protectId === id);
     const a = Math.max(fromMs, cam?.recordingStartMs ?? Infinity), b = Math.min(toMs, cam?.recordingEndMs ?? Date.now(), Date.now());
@@ -201,7 +249,8 @@ export class UnifiProtectAdapter implements ProtectAdapter {
   /**
    * Streams Protect's MP4 export to `destPath` without holding it in memory. A long clip can take
    * minutes before Protect sends the first byte, so the wait for headers is generous; a stalled body
-   * fails after two minutes of silence. A 401 signs in again once.
+   * fails after two minutes of silence. A 401 signs in again once. A server error, timeout or "too
+   * many requests" throws RecorderBusyError; any other refusal, or an empty clip, NoRecordingError.
    */
   async exportClip(id: string, startMs: number, endMs: number, destPath: string, opts: { quality?: "wall" | "focus"; signal?: AbortSignal } = {}) {
     const channel = opts.quality === "focus" ? 0 : 2;
@@ -211,15 +260,15 @@ export class UnifiProtectAdapter implements ProtectAdapter {
         const auth = await this.exportAuth();
         const r = await request(url, { dispatcher: this.exportAgent(), headers: auth, signal: opts.signal });
         if (r.statusCode === 401 && attempt === 0) { await r.body.dump(); this.dlAuth = undefined; continue; }
-        if (r.statusCode !== 200) { await r.body.dump(); throw new NoRecordingError(); }
+        // A server error, timeout or "too many requests" is the recorder struggling (it builds whole
+        // exports at once, and a long clip asks for several), not a sign that nothing was recorded.
+        if (r.statusCode !== 200) { await r.body.dump(); throw r.statusCode === 408 || r.statusCode === 429 || r.statusCode >= 500 ? new RecorderBusyError(r.statusCode) : new NoRecordingError(); }
         await pipeline(r.body, createWriteStream(destPath, { mode: 0o600 }), { signal: opts.signal });
         if ((await stat(destPath)).size < 1024) throw new NoRecordingError();
         this.ok();
-        // Adaptive recording's Low channel comes out with a short, fast video clock (see retimeVideoToAudio).
-        await retimeVideoToAudio(destPath, opts.signal).catch((err) => { if (!opts.signal?.aborted) log("warn", "could not retime export", { error: err }); });
         return;
       } catch (e) {
-        if (e instanceof NoRecordingError || opts.signal?.aborted) throw e;
+        if (e instanceof NoRecordingError || e instanceof RecorderBusyError || opts.signal?.aborted) throw e;
         this.failed(e);
         throw new ProtectUnavailableError((e as Error).message);
       }
@@ -251,18 +300,30 @@ export class UnifiProtectAdapter implements ProtectAdapter {
     return { cookie: cookie.split(";")[0], "x-csrf-token": csrf };
   }
 
+  /** Set when the recorder refused the `cameras` filter; from then on events are filtered here only. */
+  private noCameraFilter = false;
   async listEvents(q: EventQuery): Promise<ProtectEvent[]> {
-    const ids = new Set(q.protectCameraIds), out: ProtectEvent[] = [];
+    const ids = new Set(q.protectCameraIds), out: ProtectEvent[] = [], seen = new Set<string>();
+    // Ask for the requested cameras only, so a busy recorder's other cameras don't use up the page
+    // budget. Results are still filtered here, in case a recorder ignores the filter.
+    const filter = () => !this.noCameraFilter && ids.size <= 50 ? [...ids].map((id) => `&cameras=${encodeURIComponent(id)}`).join("") : "";
     let end = q.toMs;
     // Page newest-first until enough authorized events are collected or the window is exhausted.
-    for (let page = 0; page < 10 && out.length < q.limit; page++) {
-      const r = await this.get(`/events?start=${Math.floor(q.fromMs)}&end=${Math.floor(end)}&limit=100&orderDirection=DESC&types=motion&types=ring&types=smartDetectZone&types=smartDetectLine&types=smartAudioDetect`);
+    for (let page = 0; page < Math.ceil(q.limit / 100) + 10 && out.length < q.limit; page++) {
+      const path = `/events?start=${Math.floor(q.fromMs)}&end=${Math.floor(end)}&limit=100&orderDirection=DESC&types=motion&types=ring&types=smartDetectZone&types=smartDetectLine&types=smartAudioDetect`;
+      const cams = filter();
+      let r = await this.get(path + cams);
+      if (cams && r.statusCode === 400) {
+        this.noCameraFilter = true;
+        log("warn", "recorder refused the camera filter on events; filtering locally");
+        r = await this.get(path);
+      }
       if (r.statusCode !== 200) throw new ProtectUnavailableError(`events query failed (${r.statusCode})`);
       const rows = r.json<RawEvent[]>();
       if (!Array.isArray(rows) || !rows.length) break;
       for (const raw of rows) {
         const e = this.map(raw);
-        if (e && ids.has(e.protectCameraId) && (!q.types?.length || q.types.includes(e.type)) && !out.some((x) => x.id === e.id)) out.push(e);
+        if (e && ids.has(e.protectCameraId) && (!q.types?.length || q.types.includes(e.type)) && !seen.has(e.id)) { seen.add(e.id); out.push(e); }
       }
       const oldest = Math.min(...rows.map((x) => x.start));
       if (rows.length < 100 || oldest <= q.fromMs || oldest >= end) break;

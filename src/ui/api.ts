@@ -1,10 +1,10 @@
 "use client";
 
-/** Thin client for the Vantage API. The server decides everything; this only carries the session. */
+/** Thin client for the Unifeye API. The server decides everything; this only carries the session. */
 export interface Camera { id: string; name: string; tags: string[]; missing: boolean; online: boolean; eventTypes: string[]; hasLive: boolean }
 export interface ViewSummary { id: string; name: string; type: "dynamic" | "static"; visibility: "private" | "curated"; columns: number; count: number; editable: boolean }
 export interface Me {
-  user: { id: string; name: string; role: "admin" | "staff" };
+  user: { id: string; name: string; role: "admin" | "staff"; signsInWith: "oidc" | "local" | "cloudflare" };
   csrf: string;
   preview: { subject: { id: string; name: string } } | null;
   subject: { id: string; name: string; role: string; canCreateViews: boolean };
@@ -23,21 +23,22 @@ export class ApiError extends Error {
 
 let csrf = "";
 export const setCsrf = (v: string) => { csrf = v; };
-const PV = "vantage.preview";
+const PV = "unifeye.preview";
 /** The preview token lives in this tab only, so two tabs can never confuse who is being previewed. */
 export const previewToken = () => (typeof sessionStorage === "undefined" ? null : sessionStorage.getItem(PV));
 export const setPreviewToken = (t: string | null) => { if (t) sessionStorage.setItem(PV, t); else sessionStorage.removeItem(PV); };
 /** For <img>, <video> and EventSource, which cannot send headers. */
 export const mediaUrl = (path: string) => { const t = previewToken(); return t ? `${path}${path.includes("?") ? "&" : "?"}pv=${encodeURIComponent(t)}` : path; };
 
-export async function api<T = unknown>(path: string, init: { method?: string; body?: unknown; raw?: string; signal?: AbortSignal } = {}): Promise<T> {
+/** `keepalive`: the request still goes out when the page is closing (releasing a stream on the way out). */
+export async function api<T = unknown>(path: string, init: { method?: string; body?: unknown; raw?: string; signal?: AbortSignal; keepalive?: boolean; onHeaders?: (h: Headers) => void } = {}): Promise<T> {
   const headers: Record<string, string> = {};
   const method = init.method ?? "GET", pv = previewToken();
   if (method !== "GET") headers["x-csrf-token"] = csrf;
-  if (pv) headers["x-vantage-preview"] = pv;
+  if (pv) headers["x-unifeye-preview"] = pv;
   if (init.body !== undefined) headers["content-type"] = "application/json";
   if (init.raw !== undefined) headers["content-type"] = "application/sdp";
-  const res = await fetch(`/api${path}`, { method, headers, body: init.raw ?? (init.body === undefined ? undefined : JSON.stringify(init.body)), signal: init.signal, credentials: "same-origin" });
+  const res = await fetch(`/api${path}`, { method, headers, body: init.raw ?? (init.body === undefined ? undefined : JSON.stringify(init.body)), signal: init.signal, keepalive: init.keepalive, credentials: "same-origin" });
   if (res.status === 401) {
     location.assign(`/api/auth/login?returnTo=${encodeURIComponent(location.pathname + location.search)}`);
     throw new ApiError(401, "unauthenticated", "Signing in…");
@@ -47,6 +48,7 @@ export async function api<T = unknown>(path: string, init: { method?: string; bo
     if (res.status === 409 && j.error === "preview_ended") { setPreviewToken(null); location.assign("/admin"); }
     throw new ApiError(res.status, j.error ?? "error", j.message ?? "Something went wrong");
   }
+  init.onHeaders?.(res.headers);
   const type = res.headers.get("content-type") ?? "";
   return (type.includes("json") ? await res.json() : type.includes("sdp") ? { sdp: await res.text(), location: res.headers.get("location") } : undefined) as T;
 }

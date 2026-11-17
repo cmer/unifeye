@@ -1,6 +1,6 @@
 "use client";
 import { ArrowDown, ArrowUp, ListChecks, Plus, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,9 +10,10 @@ import { api, type Camera } from "./api";
 import { Empty, fail, Page, PageHeader, Select, useApp } from "./app";
 
 export interface Overview {
-  users: { id: string; name: string; email: string | null; role: "admin" | "staff"; status: "active" | "disabled"; allowPrivateViews: boolean; lastLoginAt: number | null; providerGroups: string[]; groupIds: string[]; cameraCount: number; landing: { viewId: string | null; reason: string; viewName: string | null; groupName: string | null } }[];
+  users: { id: string; name: string; email: string | null; username: string | null; passwordSet: boolean; signsInWith: "oidc" | "local" | "cloudflare"; methodOn: boolean; role: "admin" | "staff"; status: "active" | "disabled"; allowPrivateViews: boolean; lastLoginAt: number | null; providerGroups: string[]; groupIds: string[]; cameraCount: number; landing: { viewId: string | null; reason: string; viewName: string | null; groupName: string | null } }[];
   groups: { id: string; name: string; defaultPriority: number; isAllStaff: boolean; providerValues: string[]; memberIds: string[]; syncedMemberIds: string[] }[];
   groupSync: { claim: string | null };
+  signIn: { oidc: boolean; local: boolean; cloudflare: boolean; oidcName: string };
   cameras: Camera[];
   tags: { id: string; name: string }[];
   cameraTags: { cameraId: string; tagId: string }[];
@@ -20,6 +21,7 @@ export interface Overview {
   groupGrants: { groupId: string; cameraId: string }[];
   views: { id: string; name: string; sharedWithAll: boolean }[];
   defaults: { scope: string; userId: string | null; groupId: string | null; viewId: string }[];
+  direct: { capable: string[]; defaultUsername: string | null; defaultPassword: boolean; canSavePassword: boolean; cameras: { cameraId: string; enabled: boolean; username: string | null; ownPassword: boolean }[] };
 }
 interface Detail { id: string; name: string; type: "dynamic" | "static"; visibility: "private" | "curated"; columns: number; version: number; editable: boolean; cameras: Camera[]; definition: { tagIds: string[]; cameraIds: string[] }; sharing: { all: boolean; userIds: string[]; groupIds: string[] } | null }
 export const Card = ({ title, hint, children }: { title: string; hint?: string; children?: React.ReactNode }) => <section className="mb-3.5 rounded-xl border p-4"><h3 className="text-[15px] font-semibold">{title}</h3>{hint && <p className="mt-1 text-sm text-muted-foreground">{hint}</p>}{children && <div className="mt-3">{children}</div>}</section>;
@@ -42,9 +44,13 @@ export function ManageViews() {
   const id = sel && me.views.some((v) => v.id === sel) ? sel : me.views[0]?.id ?? null;
 
   const d = loaded && loaded.id === id ? loaded : null;
-  const load = useCallback(() => { if (id) api<Detail>(`/views/${id}`).then(setD).catch(fail); }, [id]);
+  // `act` holds the `load` from the render that started it, so read the current view through a ref.
+  // Otherwise creating a view would refetch the previous one after the new one loads and blank the page.
+  const idRef = useRef(id);
+  useEffect(() => { idRef.current = id; }, [id]);
+  const load = useCallback(() => { const want = idRef.current; if (want) api<Detail>(`/views/${want}`).then((r) => { if (r.id === idRef.current) setD(r); }).catch(fail); }, []);
   const loadOv = useCallback(() => { if (me.isAdmin) api<Overview>("/admin/overview").then(setOv).catch(fail); }, [me.isAdmin]);
-  useEffect(load, [load]);
+  useEffect(load, [load, id]);
   useEffect(() => { api<{ tags: typeof tags }>("/tags").then((r) => setTags(r.tags)).catch(fail); api<{ cameras: Camera[] }>("/cameras").then((r) => setCams(r.cameras)).catch(fail); loadOv(); }, [loadOv]);
 
   const act = async (fn: () => Promise<unknown>, ok?: string) => { try { await fn(); if (ok) toast.success(ok); await reload(); load(); loadOv(); } catch (e) { fail(e); load(); } };
@@ -53,10 +59,10 @@ export function ManageViews() {
     const next = { name: d.name, type: d.type, columns: d.columns, tagIds: d.definition.tagIds, cameraIds: d.definition.cameraIds, ...patch };
     return act(() => api(`/views/${d.id}`, { method: "PUT", body: { ...next, tagIds: next.type === "dynamic" ? next.tagIds : [], cameraIds: next.type === "static" ? next.cameraIds : [], version: d.version } }));
   };
-  const create = () => act(async () => { const r = await api<{ id: string }>("/views", { method: "POST", body: { name: "Untitled view", type: "dynamic", tagIds: [], visibility: me.isAdmin ? "curated" : "private" } }); setSel(r.id); });
+  const create = () => act(async () => { const r = await api<{ id: string }>("/views", { method: "POST", body: { name: "Untitled view", type: "dynamic", tagIds: [], visibility: me.isAdmin ? "curated" : "private" } }); await reload(); setSel(r.id); });
   const convert = (type: "dynamic" | "static") => {
     if (!d || d.type === type) return;
-    // Switching kinds is always an explicit, confirmed choice. Vantage never converts a view on its own.
+    // Switching kinds is always an explicit, confirmed choice. Unifeye never converts a view on its own.
     if (type === "static") { if (confirm("Switch to a fixed list? The current cameras stay, but tag changes will no longer update this view.")) void save({ type, cameraIds: d.cameras.map((c) => c.id), tagIds: [] }); }
     else if (confirm("Switch to tags? The cameras you picked will be cleared.")) void save({ type, cameraIds: [], tagIds: [] });
   };
@@ -69,10 +75,10 @@ export function ManageViews() {
     <Page>
       <PageHeader title="Manage views">{canCreate && <Button onClick={create}><Plus />New view</Button>}</PageHeader>
       <Tabs value={tab} onValueChange={(v) => setTab(String(v))} className="mb-4"><TabsList><TabsTrigger value="views">Views</TabsTrigger><TabsTrigger value="start">Starting view</TabsTrigger></TabsList></Tabs>
-      {tab === "start" ? <StartingView ov={ov} act={act} /> : !d ? <Empty icon={<ListChecks />} title="No views yet">{canCreate ? "Create one, or save a filter from the camera wall." : "No views have been shared with you."}</Empty> : (
+      {tab === "start" ? <StartingView ov={ov} act={act} /> : !id ? <Empty icon={<ListChecks />} title="No views yet">{canCreate ? "Create one, or save a filter from the camera wall." : "No views have been shared with you."}</Empty> : (
         <div className="grid items-start gap-4 md:grid-cols-[15rem_1fr]">
-          <div className="rounded-xl border p-1.5">{me.views.map((v) => <button key={v.id} onClick={() => setSel(v.id)} className={`flex h-9 w-full items-center gap-2 rounded-md px-2.5 text-left text-sm ${v.id === d.id ? "bg-accent font-medium" : "hover:bg-accent/60"}`}><span className="flex-1 truncate">{v.name}</span><span className="text-xs text-muted-foreground">{v.visibility === "private" ? "Private" : v.type === "dynamic" ? "Follows tags" : "Fixed list"}</span></button>)}</div>
-          <div key={`${d.id}:${d.version}`}>
+          <div className="rounded-xl border p-1.5">{me.views.map((v) => <button key={v.id} onClick={() => setSel(v.id)} className={`flex h-9 w-full items-center gap-2 rounded-md px-2.5 text-left text-sm ${v.id === id ? "bg-accent font-medium" : "hover:bg-accent/60"}`}><span className="flex-1 truncate">{v.name}</span><span className="text-xs text-muted-foreground">{v.visibility === "private" ? "Private" : v.type === "dynamic" ? "Follows tags" : "Fixed list"}</span></button>)}</div>
+          {!d ? <div /> : <div key={`${d.id}:${d.version}`}>
             <Card title={d.name} hint={ro ? "You can't edit this view." : undefined}>
               <Row label="Name"><Input aria-label="View name" defaultValue={d.name} disabled={ro} className="max-w-xs" onBlur={(e) => { const n = e.target.value.trim(); if (n && n !== d.name) void save({ name: n }); }} /></Row>
               <Row label="Cameras"><Seg value={d.type} disabled={ro} onChange={convert} options={[["dynamic", "Follow tags"], ["static", "Fixed list"]]} /><span className="text-sm text-muted-foreground">{d.type === "dynamic" ? "Updates as tags change." : "Only the cameras you pick."}</span></Row>
@@ -85,7 +91,7 @@ export function ManageViews() {
               ) : (
                 <div className="my-2.5 flex items-start gap-2"><span className="w-28 shrink-0 pt-1.5 text-sm text-muted-foreground">In this order</span>
                   <div className="max-w-md flex-1">
-                    {d.cameras.map((c, i) => (
+                    {d.cameras.map((c) => (
                       <div key={c.id} className="mb-1.5 flex items-center gap-2 rounded-lg border py-1 pr-1 pl-3 text-sm"><i className={`size-1.5 rounded-full ${c.missing ? "bg-zinc-400" : c.online ? "bg-green-500" : "bg-red-500"}`} /><span className="flex-1 truncate">{c.name}{c.missing && <span className="text-muted-foreground"> (removed)</span>}</span>
                         <Button variant="ghost" size="icon-sm" disabled={ro} aria-label="Move up" onClick={() => move(d.definition.cameraIds.indexOf(c.id), -1)}><ArrowUp /></Button><Button variant="ghost" size="icon-sm" disabled={ro} aria-label="Move down" onClick={() => move(d.definition.cameraIds.indexOf(c.id), 1)}><ArrowDown /></Button><Button variant="ghost" size="icon-sm" disabled={ro} aria-label="Remove" onClick={() => save({ cameraIds: d.definition.cameraIds.filter((x) => x !== c.id) })}><X /></Button></div>
                     ))}
@@ -105,7 +111,7 @@ export function ManageViews() {
                   </Card>
                 </>
               ) : <Card title="Sharing" hint="Shared with you by an administrator." />}
-          </div>
+          </div>}
         </div>
       )}
     </Page>
@@ -120,7 +126,7 @@ function StartingView({ ov, act }: { ov: Overview | null; act: (fn: () => Promis
   const opts = (list: { id: string; name: string }[]) => <><option value="">None</option>{list.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}</>;
   return (
     <>
-      <Card title="Your starting view" hint={me.landing.reason === "none" ? "You don't have any cameras yet." : `Vantage opens to ${mine ?? "all your cameras"}. ${landingReason(me.landing, true)}`.trim()}>
+      <Card title="Your starting view" hint={me.landing.reason === "none" ? "You don't have any cameras yet." : `Unifeye opens to ${mine ?? "all your cameras"}. ${landingReason(me.landing, true)}`.trim()}>
         {me.subject.canCreateViews && !me.preview && <Row label="My choice"><Select aria-label="My starting view" defaultValue="" onChange={(e) => set({ scope: "personal", viewId: e.target.value || null })}>{opts(me.views)}</Select><span className="text-sm text-muted-foreground">Used unless an administrator sets one for you.</span></Row>}
       </Card>
       {me.isAdmin && ov && (

@@ -2,13 +2,14 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { audit } from "./audit";
 import { applyProviderGroups } from "./auth/claims";
+import { insertLocalUser, issuePasswordLink, usernameSchema } from "./auth/local";
 import type { Sessions } from "./auth/session";
 import { subjectOf, type Actor } from "./authz/actor";
 import type { Policy } from "./authz/policy";
 import type { Views, ViewRow } from "./authz/views";
-import { groupsClaim } from "./config";
+import { config, groupsClaim, signInMethods } from "./config";
 import { schema, type Db } from "./db";
-import { badRequest, conflict, forbidden, newId, notFound } from "./util";
+import { badRequest, conflict, encrypt, forbidden, newId, notFound } from "./util";
 
 const S = schema;
 const tagName = z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9_]{0,39}$/, "Tags can only use lowercase letters, numbers and underscores.");
@@ -24,7 +25,7 @@ const viewInput = z.object({
 export type ViewInput = z.input<typeof viewInput>;
 
 /**
- * Every change to Vantage-owned data goes through this class. Each method:
+ * Every change to Unifeye-owned data goes through this class. Each method:
  *  refuses to run during a staff preview, checks the caller's role on the server,
  *  validates input, writes inside a transaction, records an audit entry, and
  *  invalidates the permission cache so the change reaches open sessions and streams.
@@ -84,6 +85,33 @@ export class Admin {
     if (on) this.db.insert(S.cameraTags).values({ cameraId, tagId }).onConflictDoNothing().run();
     else this.db.delete(S.cameraTags).where(and(eq(S.cameraTags.cameraId, cameraId), eq(S.cameraTags.tagId, tagId))).run();
     this.log(a, on ? "camera.tag" : "camera.untag", "camera", cameraId, { tagId });
+    this.done();
+  }
+
+  /**
+   * Reads a camera's live video from the camera itself instead of the recorder, optionally with its own
+   * login. `password`: undefined keeps the saved one, null or "" goes back to the default. The caller
+   * checks the camera accepts the login first (`Media`); nothing here talks to the camera or the recorder.
+   */
+  setCameraDirect(a: Actor, cameraId: string, input: { enabled: boolean; username?: string | null; password?: string | null }) {
+    this.admin(a, "camera.direct");
+    if (!this.db.select({ id: S.cameras.id }).from(S.cameras).where(eq(S.cameras.id, cameraId)).get()) throw notFound();
+    const v = z.object({
+      enabled: z.boolean(),
+      username: z.string().trim().max(64, "Usernames can be up to 64 characters.").nullish(),
+      password: z.string().max(128, "Passwords can be up to 128 characters.").nullish(),
+    }).parse(input);
+    const key = config().TOKEN_ENC_KEY;
+    if (v.password && !key) throw badRequest("Unifeye can't save camera passwords until TOKEN_ENC_KEY is set on the server.");
+    const cur = this.db.select().from(S.cameraDirect).where(eq(S.cameraDirect.cameraId, cameraId)).get();
+    const row = {
+      cameraId, enabled: v.enabled, updatedAt: Date.now(),
+      username: v.username !== undefined ? v.username || null : cur?.username ?? null,
+      passwordEnc: v.password ? encrypt(v.password, key!) : v.password === undefined ? cur?.passwordEnc ?? null : null,
+    };
+    this.db.insert(S.cameraDirect).values(row).onConflictDoUpdate({ target: S.cameraDirect.cameraId, set: row }).run();
+    // Never the password, not even its length.
+    this.log(a, "camera.direct", "camera", cameraId, { enabled: row.enabled, ownLogin: !!row.username || !!row.passwordEnc });
     this.done();
   }
 
@@ -159,6 +187,35 @@ export class Admin {
     if (p.status === "disabled") this.sessions.revokeUser(userId, "user_disabled");
     else if (p.role) this.sessions.revokeUser(userId, "role_changed");
     this.done();
+  }
+
+  // ---- password accounts --------------------------------------------------
+  /**
+   * Adds a person who signs in with a username and password. The account has no password until the
+   * person opens the returned one-time link and chooses one; the administrator never sees it.
+   */
+  createPasswordUser(a: Actor, input: { name?: unknown; username?: unknown; role?: unknown }) {
+    this.admin(a, "user.create");
+    if (!signInMethods().local) throw badRequest("Passwords are turned off.");
+    const p = z.object({ name, username: usernameSchema, role: z.enum(["admin", "staff"]).default("staff") }).parse(input);
+    const out = this.db.transaction((tx) => {
+      const id = insertLocalUser(tx, p);
+      return { id, link: issuePasswordLink(tx, id, a.userId) };
+    }, { behavior: "immediate" });
+    this.log(a, "user.create", "user", out.id, { username: p.username, role: p.role });
+    this.done();
+    return out;
+  }
+  /** A new one-time password link. The current password keeps working until the link is used. */
+  passwordLink(a: Actor, userId: string) {
+    this.admin(a, "user.password_link");
+    if (!signInMethods().local) throw badRequest("Passwords are turned off.");
+    const out = this.db.transaction((tx) => {
+      if (!tx.select().from(S.localCredentials).where(eq(S.localCredentials.userId, userId)).get()) throw notFound();
+      return issuePasswordLink(tx, userId, a.userId);
+    }, { behavior: "immediate" });
+    this.log(a, "user.password_link", "user", userId);
+    return { link: out };
   }
 
   // ---- camera grants ----------------------------------------------------

@@ -3,30 +3,40 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import * as oidc from "openid-client";
 import { audit } from "../audit";
 import type { Policy } from "../authz/policy";
-import { config, groupsClaim } from "../config";
+import { config, groupsClaim, signInMethods } from "../config";
 import { schema, type Db } from "../db";
-import { decrypt, hashToken, HttpError, log, newId, randomToken } from "../util";
+import { decrypt, hashToken, HttpError, log, randomToken } from "../util";
 import { claimValues, recordProviderGroups } from "./claims";
+import { provisionExternal, type UserRow } from "./provision";
 import type { Sessions, SessionRow } from "./session";
 
 const LOGOUT_EVENT = "http://schemas.openid.net/event/backchannel-logout";
-export const LOGIN_TXN_COOKIE = "vantage_login";
+export const LOGIN_TXN_COOKIE = "unifeye_login";
 const TXN_TTL_MS = 10 * 60_000;
 
 export class AdmissionError extends Error {
   constructor(public reason: string) { super(reason); }
 }
 
-/** Only same-site relative paths survive; anything else becomes "/". Stops open redirects. */
+/**
+ * Only same-site relative paths survive; anything else becomes "/". Stops open redirects.
+ * Only printable ASCII is accepted: URL parsers drop tabs and newlines, so "/\t/evil.example" would
+ * otherwise become "//evil.example", and anything outside Latin-1 cannot go in a Location header.
+ * Browsers percent-encode paths, so real return addresses are ASCII. The result must also resolve
+ * to the same origin, as a second check.
+ */
 export function safeReturnTo(v: string | null | undefined): string {
-  if (!v || !v.startsWith("/") || v.startsWith("//") || v.includes("\\") || v.includes("\n") || v.startsWith("/api/")) return "/";
+  if (!v || v.length > 2000 || !v.startsWith("/") || v.startsWith("//") || v.includes("\\") || !/^[\x21-\x7e]+$/.test(v) || v.startsWith("/api/")) return "/";
+  const base = "http://unifeye.invalid";
+  try { if (new URL(v, base).origin !== base) return "/"; } catch { return "/"; }
   return v;
 }
 
 /**
- * OpenID Connect: the only way to sign in. Works with any standards-compliant provider. Authorization Code + PKCE (S256) with a server-side
- * exchange. Endpoints and signing keys come from discovery on the configured issuer.
- * There is no local account, password or fallback path anywhere in this application.
+ * OpenID Connect sign-in (SIGN_IN_METHODS `oidc`). Works with any standards-compliant provider.
+ * Authorization Code + PKCE (S256) with a server-side exchange. Endpoints and signing keys come from
+ * discovery on the configured issuer. There is no fallback: if the provider is down, nobody signs in
+ * this way. Password accounts (`local`) are separate people, never a fallback for these.
  */
 export class Oidc {
   private cfg?: { at: number; value: Promise<oidc.Configuration> };
@@ -39,7 +49,7 @@ export class Oidc {
   /** Discovery result, cached for ten minutes. A failure is not cached, so recovery is automatic. */
   async configuration(): Promise<oidc.Configuration> {
     const c = config();
-    if (!c.OIDC_ISSUER || !c.OIDC_CLIENT_ID) throw new HttpError(503, "sso_not_configured", "Single sign-on is not configured");
+    if (!signInMethods(c).oidc || !c.OIDC_ISSUER || !c.OIDC_CLIENT_ID) throw new HttpError(503, "sso_not_configured", "Single sign-on is not configured");
     if (this.cfg && Date.now() - this.cfg.at < 600_000) return this.cfg.value;
     const insecure = c.OIDC_ALLOW_INSECURE_ISSUER && c.NODE_ENV !== "production";
     const value = oidc.discovery(new URL(c.OIDC_ISSUER), c.OIDC_CLIENT_ID, undefined, c.OIDC_CLIENT_SECRET ? oidc.ClientSecretBasic(c.OIDC_CLIENT_SECRET) : oidc.None(), insecure ? { execute: [oidc.allowInsecureRequests] } : undefined);
@@ -97,7 +107,7 @@ export class Oidc {
     const claims = tokens.claims();
     if (!claims || !tokens.id_token) return fail("no_id_token");
     // openid-client trusts an ID token that arrives directly from the token endpoint over TLS and
-    // does not check its signature. Vantage verifies it explicitly against the issuer's keys.
+    // does not check its signature. Unifeye verifies it explicitly against the issuer's keys.
     try {
       await jwtVerify(tokens.id_token, this.keys(cfg), { issuer: cfg.serverMetadata().issuer, audience: c.OIDC_CLIENT_ID!, clockTolerance: 30 });
     } catch (e) {
@@ -119,32 +129,20 @@ export class Oidc {
     const name = typeof claims.name === "string" && claims.name ? claims.name : typeof claims.preferred_username === "string" ? claims.preferred_username : "";
     const email = typeof claims.email === "string" ? claims.email : null;
     // Identity is the exact (issuer, subject) pair. Email is never used to find or link an account.
-    let policyChanged = false;
-    const user = this.db.transaction((tx) => {
-      let u = tx.select().from(schema.users).where(and(eq(schema.users.issuer, iss), eq(schema.users.subject, sub))).get();
-      if (!u) {
-        // First admitted sign-in: a profile with no cameras, no groups and no administrator rights.
-        const row = { id: newId(), issuer: iss, subject: sub, email, name, role: "staff" as const, status: "active" as const, allowPrivateViews: false, providerGroups: [] as string[], createdAt: t, updatedAt: t, lastLoginAt: null, version: 1 };
-        tx.insert(schema.users).values(row).run();
-        u = row;
-        policyChanged = true;
-        audit(this.db, { actorId: u.id, action: "user.provisioned", targetType: "user", targetId: u.id, ip: ctx.ip });
-      }
-      // One-time bootstrap of the first administrator, by exact issuer + subject from deployment config.
-      const done = tx.select().from(schema.settings).where(eq(schema.settings.key, "bootstrap_admin_done")).get();
-      if (!done && c.BOOTSTRAP_ADMIN_ISSUER === iss && c.BOOTSTRAP_ADMIN_SUBJECT === sub) {
-        tx.update(schema.users).set({ role: "admin", updatedAt: t }).where(eq(schema.users.id, u.id)).run();
-        tx.insert(schema.settings).values({ key: "bootstrap_admin_done", value: { userId: u.id, at: t }, updatedAt: t }).run();
-        audit(this.db, { actorId: u.id, action: "admin.bootstrap", targetType: "user", targetId: u.id, ip: ctx.ip });
-        u = { ...u, role: "admin" };
-        policyChanged = true;
-      }
-      tx.update(schema.users).set({ name: name || u.name, email, lastLoginAt: t, updatedAt: t }).where(eq(schema.users.id, u.id)).run();
-      // Group sync: memberships follow the provider's group claim on every sign-in.
-      const gc = groupsClaim(c);
-      if (gc && recordProviderGroups(this.db, u.id, claimValues(claims, gc), { ip: ctx.ip })) policyChanged = true;
-      return u;
-    }, { behavior: "immediate" });
+    let policyChanged = false, user: UserRow;
+    try {
+      user = this.db.transaction((tx) => {
+        const r = provisionExternal(tx, this.db, { method: "oidc", issuer: iss, subject: sub, name, email }, ctx.ip);
+        policyChanged = r.changed;
+        // Group sync: memberships follow the provider's group claim on every sign-in.
+        const gc = groupsClaim(c);
+        if (gc && recordProviderGroups(this.db, r.user.id, claimValues(claims, gc), { ip: ctx.ip })) policyChanged = true;
+        return r.user;
+      }, { behavior: "immediate" });
+    } catch (e) {
+      if ((e as { reason?: unknown }).reason === "method_mismatch") return fail("method_mismatch", { sub });
+      throw e;
+    }
     // Only a new profile, the bootstrap promotion or a group-sync change alters what Policy caches.
     if (policyChanged) this.policy.invalidate();
     if (user.status !== "active") fail("user_disabled", { userId: user.id });
@@ -155,7 +153,7 @@ export class Oidc {
     return { token, session, user, returnTo: safeReturnTo(txn!.returnTo) };
   }
 
-  /** Ends the Vantage session immediately and returns the provider's end-session URL for the browser. */
+  /** Ends the Unifeye session immediately and returns the provider's end-session URL for the browser. */
   async logout(session: SessionRow): Promise<string> {
     const c = config();
     let hint: string | undefined;

@@ -22,16 +22,54 @@ const list = z
 
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-  /** `mock` serves simulated cameras; `real` talks to the UNVR. Sign-in is OIDC in both. */
-  VANTAGE_MODE: z.enum(["mock", "real"]).default("mock"),
+  /** `mock` serves simulated cameras; `real` talks to the UNVR. Sign-in works the same in both. */
+  UNIFEYE_MODE: z.enum(["mock", "real"]).default("mock"),
   APP_URL: z.string().url().default("http://localhost:3000"),
-  DATABASE_PATH: z.string().default("./data/vantage.sqlite"),
+  DATABASE_PATH: z.string().default("./data/unifeye.sqlite"),
   BACKUP_DIR: z.string().default("./data/backups"),
   BACKUP_RETENTION_DAYS: int(14, 1),
   BACKUP_HOUR_UTC: int(8, 0),
   MEDIA_CACHE_DIR: z.string().default("./data/cache"),
   MEDIA_CACHE_MAX_MB: int(2048, 16),
   AUDIT_RETENTION_DAYS: int(365, 1),
+
+  /**
+   * How people sign in, comma separated: `oidc` (your identity provider), `local` (usernames and
+   * passwords that administrators hand out) and `cloudflare` (Cloudflare Access in front of Unifeye).
+   * `oidc` and `cloudflare` cannot be combined. Turning a method off locks out the people who use it.
+   */
+  SIGN_IN_METHODS: z
+    .string()
+    .optional()
+    .transform((v) => [...new Set((v || "oidc").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean))])
+    .pipe(z.array(z.enum(["oidc", "local", "cloudflare"])).min(1, "SIGN_IN_METHODS needs at least one method")),
+  /** Shown on the sign-in page as "Continue with …" when passwords are also on. */
+  OIDC_DISPLAY_NAME: z.string().trim().min(1).max(60).default("your work account"),
+  /** Cloudflare Access team domain, for example `acme.cloudflareaccess.com`. */
+  CF_ACCESS_TEAM_DOMAIN: z
+    .string()
+    .optional()
+    .transform((v) => v?.trim().toLowerCase().replace(/^https:\/\//, "").replace(/\/+$/, "") || undefined)
+    .pipe(z.string().regex(/^[a-z0-9-]+\.cloudflareaccess\.com$/i, "CF_ACCESS_TEAM_DOMAIN must look like acme.cloudflareaccess.com").optional()),
+  /** Application Audience (AUD) tag of the Access application, or several, comma separated. */
+  CF_ACCESS_AUD: list,
+  /**
+   * A Cloudflare session that has not been seen with a valid Access token for this long is
+   * suspended, so streams stop soon after Cloudflare stops letting the person through.
+   */
+  CF_ACCESS_RECHECK_SECONDS: int(300, 60),
+  /**
+   * A secret Cloudflare adds to every request it forwards (a Transform Rule setting the
+   * `X-Unifeye-Origin-Secret` request header). A valid Access token alone does not prove a request
+   * came through Cloudflare, because its holder can attach it themselves. Required when passwords
+   * are on too, since then Unifeye is reachable without Cloudflare by design.
+   */
+  CF_ACCESS_ORIGIN_SECRET: z.string().optional(),
+  /**
+   * Optional second address for password sign-in, such as the address used on the local network
+   * when APP_URL goes through Cloudflare Access. Password links point here when it is set.
+   */
+  LOCAL_APP_URL: z.string().url().optional(),
 
   OIDC_ISSUER: z.string().url().optional(),
   OIDC_CLIENT_ID: z.string().optional(),
@@ -54,7 +92,7 @@ const schema = z.object({
     .optional()
     .transform((v) => [...new URLSearchParams((v ?? "").replace(/^\?/, "")).entries()].filter(([k]) => k)),
   /**
-   * Group sync: the ID token claim whose values put people into Vantage groups (each group lists
+   * Group sync: the ID token claim whose values put people into Unifeye groups (each group lists
    * the values it accepts). Same formats as OIDC_ADMIT_CLAIM. Defaults to OIDC_ADMIT_CLAIM.
    * Set to `none` to turn the sync off.
    */
@@ -88,25 +126,54 @@ const schema = z.object({
   PROTECT_NVR_ID: z.string().default("default"),
   /** SHA-256 fingerprint of the UNVR certificate, so MediaMTX can verify the RTSPS source. */
   PROTECT_RTSPS_FINGERPRINT: z.string().optional(),
+  /**
+   * Login for reading video straight from cameras made by someone else, for the cameras an
+   * administrator switches over in Admin. A camera can have its own login instead (stored encrypted
+   * with TOKEN_ENC_KEY).
+   */
+  DEFAULT_CAMERA_USERNAME: z.string().optional(),
+  DEFAULT_CAMERA_PASSWORD: z.string().optional(),
 
   MEDIAMTX_API_URL: z.string().url().default("http://127.0.0.1:9997"),
   MEDIAMTX_WHEP_URL: z.string().url().default("http://127.0.0.1:8889"),
   MEDIAMTX_HLS_URL: z.string().url().default("http://127.0.0.1:8888"),
-  /** Shared secret MediaMTX presents when calling the Vantage auth hook. */
+  /**
+   * Where Unifeye answers MediaMTX's auth hook. A separate listener from the web app, never published
+   * or put behind the reverse proxy. Inside a container it must listen on all interfaces (0.0.0.0).
+   */
+  HOOK_HOST: z.string().default("127.0.0.1"),
+  HOOK_PORT: int(3001, 1),
+  /** Shared secret MediaMTX presents when calling the Unifeye auth hook. */
   MEDIAMTX_HOOK_SECRET: z.string().optional(),
-  /** Username Vantage uses for the MediaMTX control API (checked by the same hook). */
+  /** Username Unifeye uses for the MediaMTX control API (checked by the same hook). */
   MEDIAMTX_API_SECRET: z.string().optional(),
   MAX_WALL_STREAMS: int(9, 1),
   CLIP_MAX_SECONDS: int(7200, 5),
   /** A long clip is fetched from the recorder in 5-minute pieces, this many at a time. */
   CLIP_EXPORT_PARALLEL: int(3, 1),
+  /**
+   * With adaptive recording, some pieces of a long clip are recorded only in low resolution. When
+   * on, they are re-encoded at the largest size so the picture stays one size in a player. (Pieces
+   * with some high-resolution video are always combined at full size; see `exportPiece`.)
+   */
+  CLIP_MATCH_RESOLUTION: bool(true),
+  /**
+   * Encoder for that re-encode. `auto` tries a GPU (VAAPI for Intel Quick Sync and AMD, then NVIDIA
+   * NVENC, then Apple VideoToolbox) and falls back to the CPU. A named encoder that fails also
+   * falls back to the CPU.
+   */
+  VIDEO_ENCODER: z.enum(["auto", "cpu", "vaapi", "nvenc", "videotoolbox"]).default("auto"),
+  /** VAAPI render node. Unset: every /dev/dri/renderD* is tried. */
+  VAAPI_DEVICE: z.string().optional(),
   PLAYBACK_WINDOW_SECONDS: int(60, 10),
   EVENT_PREROLL_SECONDS: int(5, 0),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
 
 export type Config = z.infer<typeof schema>;
-/** Set by Vantage itself on every authorization request; overriding them would weaken the flow. */
+/** Set by Unifeye itself on every authorization request; overriding them would weaken the flow. */
+/** Shared secrets between Unifeye and MediaMTX must be long enough that guessing is hopeless. */
+const MIN_SECRET = 32;
 const RESERVED_AUTH_PARAMS = new Set(["client_id", "redirect_uri", "response_type", "response_mode", "scope", "state", "nonce", "code_challenge", "code_challenge_method", "request", "request_uri"]);
 let cached: Config | undefined;
 
@@ -115,18 +182,33 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const problems: string[] = [];
   const prod = c.NODE_ENV === "production";
   if (c.REVOCATION_SWEEP_SECONDS > 30) problems.push("REVOCATION_SWEEP_SECONDS must be 30 or less");
+  const m = signInMethods(c);
+  if (m.oidc && m.cloudflare) problems.push("SIGN_IN_METHODS cannot combine oidc and cloudflare");
+  if (m.cloudflare && (!c.CF_ACCESS_TEAM_DOMAIN || !c.CF_ACCESS_AUD.length)) problems.push("CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are required when SIGN_IN_METHODS includes cloudflare");
+  if (c.CF_ACCESS_RECHECK_SECONDS > 3600) problems.push("CF_ACCESS_RECHECK_SECONDS must be 3600 or less");
+  if (m.cloudflare && m.local && !c.CF_ACCESS_ORIGIN_SECRET) problems.push("CF_ACCESS_ORIGIN_SECRET is required when SIGN_IN_METHODS combines cloudflare and local");
+  if (c.CF_ACCESS_ORIGIN_SECRET && c.CF_ACCESS_ORIGIN_SECRET.length < MIN_SECRET) problems.push(`CF_ACCESS_ORIGIN_SECRET must be at least ${MIN_SECRET} characters (openssl rand -hex 24)`);
+  if (c.LOCAL_APP_URL && !m.local) problems.push("LOCAL_APP_URL needs SIGN_IN_METHODS to include local");
+  if (c.LOCAL_APP_URL && new URL(c.LOCAL_APP_URL).origin === new URL(c.APP_URL).origin) problems.push("LOCAL_APP_URL must be a different address from APP_URL");
   if (prod) {
-    for (const k of ["OIDC_ISSUER", "OIDC_CLIENT_ID", "TOKEN_ENC_KEY", "MEDIAMTX_HOOK_SECRET", "MEDIAMTX_API_SECRET"] as const)
+    for (const k of ["MEDIAMTX_HOOK_SECRET", "MEDIAMTX_API_SECRET"] as const)
       if (!c[k]) problems.push(`${k} is required in production`);
-    if (!c.OIDC_ADMIT_CLAIM && !c.OIDC_ADMIT_ANY) problems.push("OIDC_ADMIT_CLAIM is required in production (or set OIDC_ADMIT_ANY=1 if the provider already restricts who can sign in)");
+    if (m.oidc) {
+      for (const k of ["OIDC_ISSUER", "OIDC_CLIENT_ID", "TOKEN_ENC_KEY"] as const)
+        if (!c[k]) problems.push(`${k} is required in production`);
+      if (!c.OIDC_ADMIT_CLAIM && !c.OIDC_ADMIT_ANY) problems.push("OIDC_ADMIT_CLAIM is required in production (or set OIDC_ADMIT_ANY=1 if the provider already restricts who can sign in)");
+    }
+    if (c.LOCAL_APP_URL && !c.LOCAL_APP_URL.startsWith("https://")) problems.push("LOCAL_APP_URL must use https in production");
     if (c.OIDC_ISSUER && !c.OIDC_ISSUER.startsWith("https://")) problems.push("OIDC_ISSUER must use https");
     if (c.OIDC_ALLOW_INSECURE_ISSUER) problems.push("OIDC_ALLOW_INSECURE_ISSUER is not allowed in production");
     if (c.PROTECT_TLS_INSECURE) problems.push("PROTECT_TLS_INSECURE is not allowed in production");
     if (!c.APP_URL.startsWith("https://")) problems.push("APP_URL must use https in production");
+    for (const k of ["MEDIAMTX_HOOK_SECRET", "MEDIAMTX_API_SECRET"] as const)
+      if (c[k] && c[k].length < MIN_SECRET) problems.push(`${k} must be at least ${MIN_SECRET} characters (openssl rand -hex 24)`);
   }
-  if (c.VANTAGE_MODE === "real")
+  if (c.UNIFEYE_MODE === "real")
     for (const k of ["PROTECT_HOST", "PROTECT_USERNAME", "PROTECT_PASSWORD"] as const)
-      if (!c[k]) problems.push(`${k} is required when VANTAGE_MODE=real`);
+      if (!c[k]) problems.push(`${k} is required when UNIFEYE_MODE=real`);
   if (c.TOKEN_ENC_KEY && Buffer.from(c.TOKEN_ENC_KEY, "base64").length !== 32)
     problems.push("TOKEN_ENC_KEY must be base64 of exactly 32 bytes");
   for (const [k] of c.OIDC_AUTH_PARAMS)
@@ -137,6 +219,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     problems.push("BOOTSTRAP_ADMIN_ISSUER and BOOTSTRAP_ADMIN_SUBJECT must be set together");
   if (problems.length) throw new Error("Invalid configuration:\n- " + problems.join("\n- "));
   return c;
+}
+
+export type SignInMethod = "oidc" | "local" | "cloudflare";
+/** Which sign-in methods are turned on. */
+export function signInMethods(c: Config = config()): Record<SignInMethod, boolean> {
+  const on = new Set(c.SIGN_IN_METHODS);
+  return { oidc: on.has("oidc"), local: on.has("local"), cloudflare: on.has("cloudflare") };
+}
+/** The issuer Cloudflare Access puts in its tokens, which is also the issuer of a Cloudflare identity. */
+export const cloudflareIssuer = (c: Config = config()) => (c.CF_ACCESS_TEAM_DOMAIN ? `https://${c.CF_ACCESS_TEAM_DOMAIN}` : null);
+/** The origins a browser may send writes and password sign-ins from. */
+export function allowedOrigins(c: Config = config()): string[] {
+  return [new URL(c.APP_URL).origin, ...(c.LOCAL_APP_URL ? [new URL(c.LOCAL_APP_URL).origin] : [])];
 }
 
 /** The claim group sync reads, or null when the sync is off. */

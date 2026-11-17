@@ -1,8 +1,8 @@
 import { eq } from "drizzle-orm";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleApi } from "@/server/api";
 import { config } from "@/server/config";
@@ -19,8 +19,8 @@ function sess(userId: string, fresh = false) {
 }
 async function call(userId: string | null, method: string, path: string, o: { body?: unknown; raw?: string; preview?: string; csrf?: boolean; headers?: Record<string, string>; session?: { token: string; csrf: string } } = {}) {
   const h: Record<string, string> = { ...o.headers };
-  if (userId) { const t = o.session ?? sess(userId); h.cookie = `vantage_session=${t.token}`; if (o.csrf !== false && method !== "GET") h["x-csrf-token"] = t.csrf; }
-  if (o.preview) h["x-vantage-preview"] = o.preview;
+  if (userId) { const t = o.session ?? sess(userId); h.cookie = `unifeye_session=${t.token}`; if (o.csrf !== false && method !== "GET") h["x-csrf-token"] = t.csrf; }
+  if (o.preview) h["x-unifeye-preview"] = o.preview;
   if (o.body !== undefined) h["content-type"] = "application/json";
   const res = await handleApi(new Request(`http://localhost:3000/api${path}`, { method, headers: h, body: o.raw ?? (o.body === undefined ? undefined : JSON.stringify(o.body)) }));
   const text = res.headers.get("content-type")?.includes("json") ? await res.clone().text() : "";
@@ -31,7 +31,7 @@ const wait = async (fn: () => Promise<boolean>, ms = 15000) => { const end = Dat
 beforeEach(() => {
   tokens.clear();
   f = makeFixture();
-  (config() as { MEDIA_CACHE_DIR: string }).MEDIA_CACHE_DIR = mkdtempSync(join(tmpdir(), "vantage-test-"));
+  (config() as { MEDIA_CACHE_DIR: string }).MEDIA_CACHE_DIR = mkdtempSync(join(tmpdir(), "unifeye-test-"));
 });
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -41,11 +41,13 @@ describe("authentication boundary", () => {
     for (const [m, p] of [["GET", "/me"], ["GET", "/cameras"], ["GET", `/cameras/${cam}/snapshot`], ["GET", `/cameras/${cam}/recordings?from=1&to=2`], ["GET", `/cameras/${cam}/playback?t=1`], ["GET", `/cameras/${cam}/playback/info?t=1`], ["POST", `/media/live/${cam}/whep`], ["GET", `/media/live/${cam}/hls/wall/index.m3u8`], ["GET", "/events"], ["GET", "/events/stream"], ["GET", "/events/x/thumbnail"], ["POST", "/exports"], ["GET", "/exports/x"], ["GET", "/exports/x/download"], ["GET", "/admin/overview"], ["GET", "/views/x"]] as const)
       expect((await call(null, m, p)).status, `${m} ${p}`).toBe(401);
   });
-  it("has no local login, registration or password routes, and no credential tables", async () => {
-    for (const p of ["/auth/register", "/auth/password", "/auth/reset", "/auth/local", "/login"]) for (const m of ["GET", "POST"]) expect((await call(null, m, p)).status).toBe(404);
+  it("with passwords off (the default), has no password, registration or link routes at all", async () => {
+    const origin = { origin: "http://localhost:3000" };
+    for (const p of ["/auth/register", "/auth/password", "/auth/password-link", "/auth/password-link/check", "/auth/reset", "/auth/local", "/login"]) for (const m of ["GET", "POST"]) expect((await call(null, m, p, { body: m === "POST" ? {} : undefined, headers: origin })).status, `${m} ${p}`).toBe(404);
     expect((await call(null, "POST", "/auth/login", { body: { username: "a", password: "b" } })).status).toBe(404); // login is a GET redirect to the identity provider only
-    const ddl = (f.db.$client.prepare("select sql from sqlite_master where sql is not null").all() as { sql: string }[]).map((r) => r.sql).join("\n").toLowerCase();
-    expect(ddl).not.toMatch(/password|credential|recovery|totp/);
+    expect((await call(f.u.admin, "POST", "/admin/users", { body: { name: "X", username: "xx" } })).status).toBe(400);
+    expect((await call(f.u.front, "POST", "/me/password", { body: { current: "a", next: "b" } })).status).toBe(404);
+    expect(f.db.select().from(schema.localCredentials).all()).toEqual([]);
   });
   it("rejects cookie-authenticated writes without the CSRF token or from another origin", async () => {
     expect((await call(f.u.admin, "PUT", "/preferences", { body: { key: "theme", value: "dark" }, csrf: false })).data.error).toBe("bad_csrf_token");
@@ -56,7 +58,7 @@ describe("authentication boundary", () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("provider down"); }));
     const r = await call(f.u.front, "POST", "/auth/logout");
     expect(r.status).toBe(200);
-    expect(r.res.headers.get("set-cookie")).toMatch(/vantage_session=;.*Max-Age=0/);
+    expect(r.res.headers.get("set-cookie")).toMatch(/unifeye_session=;.*Max-Age=0/);
     expect((await call(f.u.front, "GET", "/me")).status).toBe(401);
   });
   it("staff cannot reach administration, whatever they send", async () => {
@@ -108,6 +110,15 @@ describe("a forbidden camera is indistinguishable from a missing one, on every r
     const a = await call(f.u.front, "GET", `/events/${foreign.id}`), b = await call(f.u.front, "GET", "/events/mock-01.1.999999");
     expect(a.status).toBe(404); expect(a.text).toBe(b.text);
     expect((await call(f.u.front, "GET", `/events/${foreign.id}/thumbnail`)).status).toBe(404);
+  });
+  it("one camera's timeline gets a busy day of events, not just the newest 200", async () => {
+    const cam = f.cam["Front Entrance"], protectId = f.policy.camera(f.u.front, cam).protectId, to = Date.now() - 60_000, from = to - 6 * 3600e3;
+    for (let i = 0; i < 400; i++) f.adapter.emit({ id: `busy.${i}`, protectCameraId: protectId, type: "motion", startMs: from + i * 50_000, endMs: from + i * 50_000 + 5000, hasThumbnail: false });
+    const r = (await call(f.u.front, "GET", `/events?cameraId=${cam}&from=${from}&to=${to}&limit=1000`)).data;
+    expect(r.events.filter((e: { id: string }) => e.id.startsWith("busy.")).length).toBe(400);
+    expect(r.events.some((e: { id: string }) => e.id === "busy.0")).toBe(true); // the oldest is still there
+    // Mixed feeds keep the smaller cap.
+    expect((await call(f.u.front, "GET", `/events?from=${from}&to=${to}&limit=1000`)).data.events).toHaveLength(200);
   });
   it("authorized media works: snapshot, recording ranges and a playback window with byte ranges", async () => {
     const cam = f.cam["Front Entrance"], t = Date.now() - 2 * 3600e3;
@@ -177,6 +188,111 @@ describe("long clip exports", () => {
     // Only the first piece keeps its lead; the joins drop the rest.
     expect((await probe(file)).duration).toBeCloseTo((endMs - startMs) / 1000 + 2.5, 0);
   }, 90_000);
+
+  it("play at one size when the recorder sends a low-resolution piece", async () => {
+    const cam = f.cam["Loading Dock"], t = Date.now() - 2 * 3600e3;
+    const rec = (await call(f.u.front, "GET", `/cameras/${cam}/recordings?from=${t - 3600e3}&to=${t}`)).data.ranges as [number, number][];
+    const [, b] = rec.find(([x, y]) => y - x >= 12 * 60_000)!, startMs = b - 11 * 60_000, endMs = b - 30_000;
+    // Adaptive recording: the middle five minutes had no motion, so only the low stream exists.
+    const real = f.adapter.exportClip.bind(f.adapter);
+    vi.spyOn(f.adapter, "exportClip").mockImplementation((id, s0, e0, dest, o) => real(id, s0, e0, dest, s0 === startMs + 5 * 60_000 ? { ...o, quality: "wall" } : o));
+    const { id } = (await call(f.u.front, "POST", "/exports", { body: { cameraId: cam, startMs, endMs } })).data;
+    await wait(async () => (await call(f.u.front, "GET", `/exports/${id}`)).data.status !== "running", 90_000);
+    expect((await call(f.u.front, "GET", `/exports/${id}`)).data.status).toBe("ready");
+    const file = f.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, id)).get()!.filePath!;
+    const { probe, videoSizes } = await import("@/server/protect/ffmpeg");
+    expect((await videoSizes(file)).sizes).toEqual([{ w: 1280, h: 720 }]);
+    expect((await probe(file)).duration).toBeCloseTo((endMs - startMs) / 1000, 0);
+    expect(readdirSync(dirname(file))).toEqual([basename(file)]); // no pieces or resized copies left behind
+  }, 120_000);
+
+  it("keep every minute of an adaptive recording, at the high resolution", async () => {
+    const cam = f.cam["Loading Dock"], protectId = f.db.select().from(schema.cameras).where(eq(schema.cameras.id, cam)).get()!.protectId, t = Date.now() - 2 * 3600e3;
+    f.adapter.adaptive.add(protectId); // high resolution only in seconds 12-21 of every half minute
+    const rec = (await call(f.u.front, "GET", `/cameras/${cam}/recordings?from=${t - 3600e3}&to=${t}`)).data.ranges as [number, number][];
+    const [, b] = rec.find(([x, y]) => y - x >= 12 * 60_000)!, startMs = Math.floor((b - 11 * 60_000) / 60_000) * 60_000, endMs = startMs + 6 * 60_000;
+    const { id } = (await call(f.u.front, "POST", "/exports", { body: { cameraId: cam, startMs, endMs } })).data;
+    await wait(async () => (await call(f.u.front, "GET", `/exports/${id}`)).data.status !== "running", 110_000);
+    expect((await call(f.u.front, "GET", `/exports/${id}`)).data.status).toBe("ready");
+    const file = f.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, id)).get()!.filePath!;
+    const { probe, videoSizes } = await import("@/server/protect/ffmpeg");
+    expect((await videoSizes(file)).sizes).toEqual([{ w: 1280, h: 720 }]);
+    // Six minutes, plus the 2 s the simulated recorder starts early; before, only the 108 s of
+    // high-resolution stretches came out.
+    expect((await probe(file)).duration).toBeCloseTo(6 * 60 + 2, 0);
+    expect(readdirSync(dirname(file))).toEqual([basename(file)]);
+  }, 120_000);
+
+  it("keep a stretch the recorder only has in low resolution", async () => {
+    const cam = f.cam["Loading Dock"], t = Date.now() - 2 * 3600e3;
+    const rec = (await call(f.u.front, "GET", `/cameras/${cam}/recordings?from=${t - 3600e3}&to=${t}`)).data.ranges as [number, number][];
+    const [, b] = rec.find(([x, y]) => y - x >= 12 * 60_000)!, startMs = b - 11 * 60_000, endMs = b - 30_000;
+    const real = f.adapter.exportClip.bind(f.adapter), { NoRecordingError } = await import("@/server/protect/types");
+    vi.spyOn(f.adapter, "exportClip").mockImplementation((id, s0, e0, dest, o) => s0 === startMs + 5 * 60_000 && o?.quality === "focus" ? Promise.reject(new NoRecordingError()) : real(id, s0, e0, dest, o));
+    const { id } = (await call(f.u.front, "POST", "/exports", { body: { cameraId: cam, startMs, endMs } })).data;
+    await wait(async () => (await call(f.u.front, "GET", `/exports/${id}`)).data.status !== "running", 90_000);
+    expect((await call(f.u.front, "GET", `/exports/${id}`)).data.status).toBe("ready");
+    const file = f.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, id)).get()!.filePath!;
+    const { probe, videoSizes } = await import("@/server/protect/ffmpeg");
+    expect((await videoSizes(file)).sizes).toEqual([{ w: 1280, h: 720 }]);
+    expect((await probe(file)).duration).toBeCloseTo((endMs - startMs) / 1000, 0);
+  }, 120_000);
+});
+
+describe("clip exports when the recorder fails part of the clip", () => {
+  const setup = async () => {
+    const cam = f.cam["Loading Dock"], t = Date.now() - 2 * 3600e3;
+    const rec = (await call(f.u.front, "GET", `/cameras/${cam}/recordings?from=${t - 3600e3}&to=${t}`)).data.ranges as [number, number][];
+    const [, b] = rec.find(([x, y]) => y - x >= 12 * 60_000)!, startMs = b - 11 * 60_000, endMs = b - 30_000;
+    f.s.recordings.retryDelaysMs = [10, 10];
+    const real = f.adapter.exportClip.bind(f.adapter), types = await import("@/server/protect/types");
+    return { cam, startMs, endMs, middle: startMs + 5 * 60_000, real, types };
+  };
+  const run = async (cam: string, startMs: number, endMs: number) => {
+    const { id } = (await call(f.u.front, "POST", "/exports", { body: { cameraId: cam, startMs, endMs } })).data;
+    await wait(async () => (await call(f.u.front, "GET", `/exports/${id}`)).data.status !== "running", 90_000);
+    const j = (await call(f.u.front, "GET", `/exports/${id}`)).data;
+    const file = f.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, id)).get()!.filePath!;
+    return { j, file };
+  };
+
+  it("tries a piece again and keeps all of it when the recorder recovers", async () => {
+    const { cam, startMs, endMs, middle, real, types } = await setup();
+    let fails = 2;
+    vi.spyOn(f.adapter, "exportClip").mockImplementation((id, s0, e0, dest, o) => s0 === middle && fails > 0 ? (fails--, Promise.reject(new types.RecorderBusyError(503))) : real(id, s0, e0, dest, o));
+    const { j, file } = await run(cam, startMs, endMs);
+    expect(fails).toBe(0);
+    expect(j.status).toBe("ready"); expect(j.gap).toBeNull();
+    expect(j.durationMs / 1000).toBeCloseTo((endMs - startMs) / 1000, 0);
+    const { probe } = await import("@/server/protect/ffmpeg");
+    expect((await probe(file)).duration).toBeCloseTo((endMs - startMs) / 1000, 0);
+  }, 120_000);
+
+  it("says time is missing because the recorder was busy when a piece keeps failing", async () => {
+    const { cam, startMs, endMs, middle, real, types } = await setup();
+    let tries = 0;
+    vi.spyOn(f.adapter, "exportClip").mockImplementation((id, s0, e0, dest, o) => s0 === middle ? (tries++, Promise.reject(new types.RecorderBusyError(500))) : real(id, s0, e0, dest, o));
+    const { j } = await run(cam, startMs, endMs);
+    expect(tries).toBe(6); // three tries on the high channel, then three on the low one
+    expect(j.status).toBe("ready"); expect(j.gap).toBe("busy");
+    expect(j.durationMs / 1000).toBeCloseTo((endMs - startMs - 5 * 60_000) / 1000, 0);
+  }, 120_000);
+
+  it("says time wasn't recorded when the recorder has nothing for a piece, without retrying", async () => {
+    const { cam, startMs, endMs, middle, real, types } = await setup();
+    let tries = 0;
+    vi.spyOn(f.adapter, "exportClip").mockImplementation((id, s0, e0, dest, o) => s0 === middle ? (tries++, Promise.reject(new types.NoRecordingError())) : real(id, s0, e0, dest, o));
+    const { j } = await run(cam, startMs, endMs);
+    expect(tries).toBe(2); // once per channel
+    expect(j.status).toBe("ready"); expect(j.gap).toBe("unrecorded");
+  }, 120_000);
+
+  it("fails with a busy message when no piece could be exported", async () => {
+    const { cam, startMs, endMs, types } = await setup();
+    vi.spyOn(f.adapter, "exportClip").mockImplementation(() => Promise.reject(new types.RecorderBusyError(503)));
+    const { j } = await run(cam, startMs, endMs);
+    expect(j.status).toBe("failed"); expect(j.error).toBe("The recorder is busy. Try again in a few minutes.");
+  }, 60_000);
 });
 
 describe("clip exports made during See as staff", () => {
@@ -215,7 +331,7 @@ describe("clip exports made during See as staff", () => {
   });
 });
 
-// The relay here is the in-memory one from the fixture. It asks the real auth hook before admitting any reader.
+// The relay here is the in-memory one from the fixture. It asks the gateway (`Media.admit`) before admitting any reader.
 describe("media tickets and active-stream revocation", () => {
   const whep = (userId: string, camera: string, q = "") => call(userId, "POST", `/media/live/${f.cam[camera]}/whep${q}`, { raw: "v=0 offer" });
   const hls = (userId: string | null, camera: string, file: string) => call(userId, "GET", `/media/live/${f.cam[camera]}/hls/wall/${file}`);
@@ -227,23 +343,11 @@ describe("media tickets and active-stream revocation", () => {
     expect(r.status).toBe(201); expect(r.res.headers.get("location")).toMatch(/^\/api\/media\/live\/whep\//);
     expect(await r.res.text()).toBe("v=0 answer");
     expect(f.relay.tickets).toHaveLength(1);
-    const hook = (b: object, secret = "hook") => f.s.media.hook(secret, { action: "read", protocol: "webrtc", id: "mtx-x", ip: "203.0.113.9", ...b });
-    expect(hook({ path: `c_${cam}_wall`, token: f.relay.tickets[0] })).toBe(false); // single use: replay by anyone fails
-    expect(hook({ path: `c_${cam}_wall`, token: "guess" })).toBe(false);
-    expect(hook({ path: `c_${cam}_wall`, token: "" })).toBe(false); // direct, unauthenticated access to MediaMTX
-    expect(f.s.media.hook("hook", { action: "read", protocol: "rtsp", path: `c_${cam}_wall`, id: "r1" })).toBe(false); // raw RTSP readers are never allowed
-    expect(f.s.media.hook("wrong", { action: "api", user: "vantage-api", password: "api" })).toBe(false);
-    expect(f.s.media.hook("hook", { action: "api", user: "vantage-api", password: "api" })).toBe(true);
-    expect(f.s.media.hook("hook", { action: "publish", user: "vantage-publisher", password: "api", ip: "203.0.113.9" })).toBe(false);
-    // The relay's own FFmpeg, on loopback: may publish a camera path, and read only the internal `_src` path over RTSP.
-    const relayHook = (b: object) => f.s.media.hook("hook", { user: "vantage-publisher", password: "api", ip: "127.0.0.1", ...b });
-    expect(relayHook({ action: "publish", path: `c_${cam}_wall` })).toBe(true);
-    expect(relayHook({ action: "publish", path: `c_${cam}_wall_src` })).toBe(false);
-    expect(relayHook({ action: "read", protocol: "rtsp", path: `c_${cam}_wall_src` })).toBe(true);
-    expect(relayHook({ action: "read", protocol: "rtsp", path: `c_${cam}_wall` })).toBe(false);
-    expect(relayHook({ action: "read", protocol: "rtsp", path: `c_${cam}_wall_src`, password: "wrong" })).toBe(false);
-    expect(relayHook({ action: "read", protocol: "rtsp", path: `c_${cam}_wall_src`, ip: "203.0.113.9" })).toBe(false);
-    expect(relayHook({ action: "read", protocol: "webrtc", path: `c_${cam}_wall_src`, id: "r2" })).toBe(false); // browsers need a ticket, and none names `_src`
+    const admit = (o: { stream?: string; ticket: string; kind?: "webrtc" | "hls" }) => f.s.media.admit({ kind: "webrtc", stream: `c_${cam}_wall`, id: "mtx-x", ...o });
+    expect(admit({ ticket: f.relay.tickets[0] })).toBe(false); // single use: replay by anyone fails
+    expect(admit({ ticket: "guess" })).toBe(false);
+    expect(admit({ ticket: "" })).toBe(false); // direct, unauthenticated access to the relay
+    // How MediaMTX's own traffic and other protocols are answered is pinned in tests/mediamtx.test.ts.
     // The WHEP resource belongs to the session that created it.
     const secret = r.res.headers.get("location")!.split("/").pop();
     expect((await call(f.u.sec, "DELETE", `/media/live/whep/${secret}`)).status).toBe(404);
@@ -275,6 +379,31 @@ describe("media tickets and active-stream revocation", () => {
     expect((await call(f.u.front, "DELETE", `/media/live/whep/${dock.res.headers.get("location")!.split("/").pop()}`)).status).toBe(200);
     expect((await call(f.u.front, "GET", `/media/live/${f.cam["Loading Dock"]}/hls/focus/index.m3u8`)).status).toBe(200);
   });
+  it("does not hold a stream slot for a WebRTC offer that failed after the relay admitted it", async () => {
+    (config() as { MAX_WALL_STREAMS: number }).MAX_WALL_STREAMS = -1; // a limit of 2 streams
+    expect((await whep(f.u.front, "Front Entrance", "?q=wall")).status).toBe(201);
+    f.relay.whepFailsAfterAdmit = true;
+    expect((await whep(f.u.front, "Loading Dock", "?q=wall")).status).toBe(502);
+    f.relay.whepFailsAfterAdmit = false;
+    expect((await whep(f.u.front, "Loading Dock", "?q=focus")).status).toBe(201); // the failed one left no slot behind
+  });
+  it("releases an HLS stream's slot as soon as the player stops it, and only that session's", async () => {
+    (config() as { MAX_WALL_STREAMS: number }).MAX_WALL_STREAMS = -1; // a limit of 2 streams
+    const playlist = (u: string, camera: string, q = "wall") => call(u, "GET", `/media/live/${f.cam[camera]}/hls/${q}/index.m3u8`);
+    expect((await playlist(f.u.front, "Front Entrance")).status).toBe(200);
+    expect((await playlist(f.u.sec, "Front Entrance")).status).toBe(200); // another person watching the same camera
+    expect((await playlist(f.u.front, "Loading Dock")).status).toBe(200);
+    expect((await playlist(f.u.front, "Front Entrance", "focus")).status).toBe(429); // a third stream
+    const before = f.relay.ids("hls");
+    expect((await call(f.u.front, "DELETE", `/media/live/${f.cam["Loading Dock"]}/hls/wall`)).status).toBe(200);
+    expect(f.relay.ids("hls")).toHaveLength(before.length - 1); // that reader is gone from the relay
+    expect((await playlist(f.u.front, "Front Entrance", "focus")).status).toBe(200); // the slot is free at once
+    expect((await call(f.u.front, "DELETE", `/media/live/${f.cam["Front Entrance"]}/hls/wall`)).status).toBe(200);
+    expect((await playlist(f.u.sec, "Front Entrance")).status).toBe(200); // the other person's stream is untouched
+    expect(f.relay.kicked).toHaveLength(2);
+    expect((await call(f.u.front, "DELETE", "/media/live/no-such-camera/hls/wall")).status).toBe(200); // same answer for any id
+    expect((await call(f.u.front, "DELETE", `/media/live/${f.cam["Loading Dock"]}/hls/wall`, { csrf: false })).status).toBe(403);
+  });
   it("tells only administrators which cameras are recording, and not while previewing as staff", async () => {
     const r = await call(f.u.admin, "GET", "/recording");
     expect(r.status).toBe(200);
@@ -293,7 +422,7 @@ describe("media tickets and active-stream revocation", () => {
     const unknown = f.relay.intruder("webrtc");
     f.admin.setGrant(f.actor(f.u.admin), { userId: f.u.front }, f.cam["Loading Dock"], false);
     await kicked(dock);
-    await kicked(unknown); // readers Vantage did not admit are removed
+    await kicked(unknown); // readers Unifeye did not admit are removed
     expect(f.relay.kicked).not.toContain(entrance); expect(f.relay.kicked).not.toContain(lounge);
     f.admin.updateUser(f.actor(f.u.admin), f.u.upper, { status: "disabled" });
     await kicked(lounge);
@@ -317,7 +446,7 @@ describe("media tickets and active-stream revocation", () => {
     await kicked(lounge);
   });
 
-  it("serves the HLS fallback through the gateway, asking the hook for every file", async () => {
+  it("serves the HLS fallback through the gateway, asking the hook when the player opens a session", async () => {
     const list = await hls(f.u.front, "Front Entrance", "index.m3u8");
     expect(list.status).toBe(200);
     expect(list.res.headers.get("content-type")).toBe("application/vnd.apple.mpegurl");
@@ -327,16 +456,31 @@ describe("media tickets and active-stream revocation", () => {
     const seg = await hls(f.u.front, "Front Entrance", "seg1.mp4");
     expect(seg.status).toBe(200); expect(seg.res.headers.get("content-type")).toBe("video/mp4");
     expect((await seg.res.arrayBuffer()).byteLength).toBeGreaterThan(0);
-    expect(f.relay.tickets).toHaveLength(2); expect(f.relay.tickets[1]).toBe(f.relay.tickets[0]); // one reader, admitted twice
+    expect(f.relay.tickets).toHaveLength(1); // the segment belongs to the session the playlist opened
     expect(f.relay.ids("hls")).toHaveLength(1);
     expect((await hls(f.u.front, "Front Entrance", "missing.mp4")).status).toBe(404);
     // An HLS ticket is bound to its transport and path, and nobody else gets in on this reader.
     const cam = f.cam["Front Entrance"], ticket = f.relay.tickets[0];
-    expect(f.s.media.hook("hook", { action: "read", protocol: "webrtc", path: `c_${cam}_wall`, token: ticket, id: "x" })).toBe(false);
-    expect(f.s.media.hook("hook", { action: "read", protocol: "hls", path: `c_${cam}_focus`, token: ticket, id: "x" })).toBe(false);
+    expect(f.s.media.admit({ kind: "webrtc", stream: `c_${cam}_wall`, ticket, id: "x" })).toBe(false);
+    expect(f.s.media.admit({ kind: "hls", stream: `c_${cam}_focus`, ticket, id: "x" })).toBe(false);
     expect((await hls(null, "Front Entrance", "seg1.mp4")).status).toBe(401);
     expect((await hls(f.u.nobody, "Front Entrance", "seg1.mp4")).status).toBe(404);
     expect(f.relay.ids("hls")).toHaveLength(1);
+  });
+  it("keeps an HLS stream playing past the ticket's renewal", async () => {
+    // A player asks for the top playlist once, then only for media playlists and segments. Those
+    // belong to the relay session that first request opened, so renewing the ticket must keep it.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      expect((await hls(f.u.front, "Front Entrance", "index.m3u8")).status).toBe(200);
+      vi.setSystemTime(Date.now() + 26_000);
+      expect((await hls(f.u.front, "Front Entrance", "seg1.mp4")).status).toBe(200);
+      expect(f.relay.ids("hls")).toHaveLength(1);
+      // The renewal re-checked access and issued a new ticket, which the next new session presents.
+      const used = new Set(f.relay.tickets);
+      expect((await hls(f.u.front, "Front Entrance", "index.m3u8")).status).toBe(200);
+      expect(used.has(f.relay.tickets.at(-1)!)).toBe(false);
+    } finally { vi.useRealTimers(); }
   });
   it("refuses HLS files once access is revoked, without asking the relay", async () => {
     expect((await hls(f.u.front, "Loading Dock", "index.m3u8")).status).toBe(200);
@@ -372,7 +516,7 @@ describe("media tickets and active-stream revocation", () => {
     await kicked(hlsLounge);
     expect(f.relay.kicked).not.toContain(hlsEntrance); expect(f.relay.kicked).not.toContain(rtcEntrance);
   });
-  it("kicks a reader the relay admitted without Vantage, on either transport", async () => {
+  it("kicks a reader the relay admitted without Unifeye, on either transport", async () => {
     await whep(f.u.front, "Front Entrance");
     const a = f.relay.intruder("hls"), b = f.relay.intruder("webrtc");
     expect(await f.s.media.sweep()).toEqual({ kicked: 2 });
@@ -456,5 +600,139 @@ describe("See as staff (authorization preview)", () => {
     expect(log.some((r) => r.action === "preview.end" && r.previewSubjectId === f.u.sec)).toBe(true);
     expect(log.some((r) => r.action === "preview.exit" && r.previewSubjectId === f.u.front)).toBe(true);
     expect(log.some((r) => r.action === "preview.start" && r.outcome === "denied")).toBe(false);
+  });
+});
+
+describe("rate limits", () => {
+  const from = (address: string) => ({ "x-forwarded-for": address });
+  const statuses = async (n: number, fn: () => Promise<{ status: number }>) => { const s = new Set<number>(); for (let i = 0; i < n; i++) s.add((await fn()).status); return [...s]; };
+  const playlist = (userId: string, address: string) => call(userId, "GET", `/media/live/${f.cam["Front Entrance"]}/hls/wall/index.m3u8`, { headers: from(address) });
+
+  it("lets a full wall play over HLS: well past the old 600 a minute, in a budget of its own", async () => {
+    // Nine tiles at about 60 requests a minute each, plus still images for the rest of the wall.
+    expect(await statuses(700, () => playlist(f.u.front, "198.51.100.10"))).toEqual([200]);
+    expect((await call(f.u.front, "GET", `/cameras/${f.cam["Front Entrance"]}/snapshot`, { headers: from("198.51.100.10") })).status).toBe(200);
+  });
+  it("counts signed-in requests per session, so people behind one address each get the full limit", async () => {
+    (config() as { MAX_WALL_STREAMS: number }).MAX_WALL_STREAMS = -1; // 2 streams, so 240 HLS requests a minute
+    expect(await statuses(240, () => playlist(f.u.front, "198.51.100.11"))).toEqual([200]);
+    expect((await playlist(f.u.front, "198.51.100.11")).status).toBe(429);
+    expect((await playlist(f.u.front, "198.51.100.12")).status).toBe(429); // a new address does not reset a session
+    expect((await playlist(f.u.sec, "198.51.100.11")).status).toBe(200); // someone else at the same address
+    expect((await call(f.u.front, "GET", "/me", { headers: from("198.51.100.11") })).status).toBe(200); // other routes keep their own budget
+  });
+  it("counts requests without a valid session per address, without blocking people signed in there", async () => {
+    expect(await statuses(600, () => call(null, "GET", "/me", { headers: from("198.51.100.13") }))).toEqual([401]);
+    expect((await call(null, "GET", "/me", { headers: from("198.51.100.13") })).status).toBe(429);
+    expect((await call(f.u.front, "GET", "/me", { headers: from("198.51.100.13") })).status).toBe(200);
+    expect((await call(null, "GET", "/me", { headers: from("198.51.100.14") })).status).toBe(401);
+  });
+  it("takes the client address from the last X-Forwarded-For entry, so a client cannot pick a fresh one", async () => {
+    const signIn = (i: number, real: string) => call(null, "GET", "/auth/login", { headers: from(`203.0.113.${i % 250}, ${real}`) });
+    let i = 0;
+    expect(await statuses(30, () => signIn(++i, "198.51.100.15"))).not.toContain(429); // a different first entry every time
+    expect((await signIn(7, "198.51.100.15")).status).toBe(429);
+    expect((await signIn(7, "198.51.100.16")).status).not.toBe(429);
+  });
+});
+
+describe("video straight from the camera", () => {
+  const direct = (userId: string, camera: string, body: object) => call(userId, "PUT", `/admin/cameras/${f.cam[camera]}/direct`, { body });
+  const whep = (camera: string) => call(f.u.admin, "POST", `/media/live/${f.cam[camera]}/whep?q=focus`, { raw: "v=0 offer" });
+  const CAM_SRC = { kind: "rtsp" as const, url: "rtsp://admin:secret@10.0.0.9:554/h264Preview_01_main", retimeAudio: true };
+
+  it("is only for administrators and only for cameras that offer it", async () => {
+    expect((await direct(f.u.front, "Roof Terrace", { enabled: true, username: "admin", password: "p" })).status).toBe(403);
+    const r = await direct(f.u.admin, "Front Entrance", { enabled: true, username: "admin", password: "p" });
+    expect(r.status).toBe(400); expect(r.data.message).toBe("This camera can only stream through the recorder.");
+    expect((await call(f.u.admin, "PUT", "/admin/cameras/nope/direct", { body: { enabled: true } })).status).toBe(404);
+  });
+
+  it("checks the login with the camera before saving, and never stores or shows the password", async () => {
+    const wrong = await direct(f.u.admin, "Roof Terrace", { enabled: true, username: "admin", password: "wrong" });
+    expect(wrong.status).toBe(400); expect(wrong.data.message).toBe("The camera didn't accept the username or password.");
+    expect(f.db.select().from(schema.cameraDirect).all()).toEqual([]);
+    expect((await direct(f.u.admin, "Roof Terrace", { enabled: true, username: "admin", password: "s3cret!" })).status).toBe(200);
+    const row = f.db.select().from(schema.cameraDirect).get()!;
+    expect(row).toMatchObject({ enabled: true, username: "admin" });
+    expect(row.passwordEnc).not.toContain("s3cret");
+    const ov = await call(f.u.admin, "GET", "/admin/overview");
+    expect(JSON.stringify(ov.data)).not.toContain(row.passwordEnc!);
+    expect(ov.data.direct.cameras).toEqual([{ cameraId: f.cam["Roof Terrace"], enabled: true, username: "admin", ownPassword: true }]);
+    expect(ov.data.direct.capable.sort()).toEqual([f.cam["Roof Terrace"], f.cam["Parking Lot North"], f.cam["Rear Exit"]].sort());
+    const entry = f.db.select().from(schema.auditLog).where(eq(schema.auditLog.action, "camera.direct")).get()!;
+    expect(entry.detail).toEqual({ enabled: true, ownLogin: true });
+    // Turning it off needs no check; the saved login is kept for next time.
+    expect((await direct(f.u.admin, "Roof Terrace", { enabled: false })).status).toBe(200);
+    expect(f.db.select().from(schema.cameraDirect).get()).toMatchObject({ enabled: false, username: "admin", passwordEnc: row.passwordEnc });
+  });
+
+  it("uses the default login when the camera has none of its own", async () => {
+    const r = await direct(f.u.admin, "Rear Exit", { enabled: true });
+    expect(r.status).toBe(400); expect(r.data.message).toBe("Enter the camera's username and password.");
+    Object.assign(config(), { DEFAULT_CAMERA_USERNAME: "admin", DEFAULT_CAMERA_PASSWORD: "dflt" });
+    const spy = vi.spyOn(f.adapter, "checkDirect");
+    expect((await direct(f.u.admin, "Rear Exit", { enabled: true })).status).toBe(200);
+    expect(spy).toHaveBeenCalledWith("mock-12", { username: "admin", password: "dflt" });
+    expect(f.db.select().from(schema.cameraDirect).get()).toMatchObject({ enabled: true, username: null, passwordEnc: null });
+  });
+
+  it("reads live video from the camera, and falls back to the recorder when the camera fails", async () => {
+    const path = `c_${f.cam["Roof Terrace"]}_focus`;
+    expect((await direct(f.u.admin, "Roof Terrace", { enabled: true, username: "admin", password: "secret" })).status).toBe(200);
+    const src = vi.spyOn(f.adapter, "directSource").mockResolvedValue(CAM_SRC);
+    const first = await whep("Roof Terrace");
+    expect(first.status).toBe(201); expect(first.res.headers.get("x-video-source")).toBe("camera");
+    expect(src).toHaveBeenCalledWith("mock-08", "focus", { username: "admin", password: "secret" });
+    expect(f.relay.streams.get(path)).toEqual(CAM_SRC);
+    // The camera sends nothing: the attempt fails and the next one goes through the recorder.
+    f.relay.whepFailsAfterAdmit = true;
+    expect((await whep("Roof Terrace")).status).toBe(502);
+    f.relay.whepFailsAfterAdmit = false;
+    const fallback = await whep("Roof Terrace");
+    expect(fallback.status).toBe(201); expect(fallback.res.headers.get("x-video-source")).toBe("fallback");
+    expect(f.relay.streams.get(path)?.kind).toBe("command");
+    const hls = await call(f.u.admin, "GET", `/media/live/${f.cam["Roof Terrace"]}/hls/focus/index.m3u8`);
+    expect(hls.status).toBe(200); expect(hls.res.headers.get("x-video-source")).toBe("fallback");
+    // Saving the settings again tries the camera again.
+    expect((await direct(f.u.admin, "Roof Terrace", { enabled: true })).status).toBe(200);
+    expect((await whep("Roof Terrace")).status).toBe(201);
+    expect(f.relay.streams.get(path)).toEqual(CAM_SRC);
+    // Turned off: back to the recorder, without asking the camera.
+    src.mockClear();
+    expect((await direct(f.u.admin, "Roof Terrace", { enabled: false })).status).toBe(200);
+    const off = await whep("Roof Terrace");
+    expect(off.status).toBe(201); expect(off.res.headers.get("x-video-source")).toBe("recorder");
+    expect(src).not.toHaveBeenCalled();
+    expect(f.relay.streams.get(path)?.kind).toBe("command");
+  });
+
+  it("is refused while viewing as someone else", async () => {
+    const p = await call(f.u.admin, "POST", "/preview", { body: { userId: f.u.front } });
+    expect((await call(f.u.admin, "PUT", `/admin/cameras/${f.cam["Roof Terrace"]}/direct`, { body: { enabled: false }, preview: p.data.token })).status).toBe(403);
+  });
+});
+
+describe("cameras that can't send video on their own", () => {
+  const direct = (camera: string, body: object) => call(f.u.admin, "PUT", `/admin/cameras/${f.cam[camera]}/direct`, { body });
+  it("never offers it for cameras that only stream through the recorder", async () => {
+    const spy = vi.spyOn(f.adapter, "checkDirect");
+    for (const name of ["Front Entrance", "Lobby Front Desk", "Server Closet"]) expect((await direct(name, { enabled: true, username: "admin", password: "p" })).status).toBe(400);
+    expect(spy).not.toHaveBeenCalled();
+    expect(f.db.select().from(schema.cameraDirect).all()).toEqual([]);
+  });
+  it("uses the recorder when a camera switched on stops offering it, and can still be switched off", async () => {
+    expect((await direct("Rear Exit", { enabled: true, username: "admin", password: "p" })).status).toBe(200);
+    // The camera is replaced or re-adopted and the recorder no longer reports its own address.
+    vi.spyOn(f.adapter, "directSource").mockResolvedValue(null);
+    expect((await call(f.u.admin, "POST", `/media/live/${f.cam["Rear Exit"]}/whep?q=wall`, { raw: "v=0 offer" })).status).toBe(201);
+    expect(f.relay.streams.get(`c_${f.cam["Rear Exit"]}_wall`)?.kind).toBe("command");
+    const row = f.db.select().from(schema.cameras).where(eq(schema.cameras.id, f.cam["Rear Exit"])).get()!;
+    f.db.update(schema.cameras).set({ meta: { ...row.meta, direct: false } }).where(eq(schema.cameras.id, row.id)).run(); f.policy.invalidate();
+    const ov = await call(f.u.admin, "GET", "/admin/overview");
+    expect(ov.data.direct.capable).not.toContain(f.cam["Rear Exit"]);
+    expect(ov.data.direct.cameras).toContainEqual(expect.objectContaining({ cameraId: f.cam["Rear Exit"], enabled: true }));
+    expect((await direct("Rear Exit", { enabled: true })).status).toBe(400);
+    expect((await direct("Rear Exit", { enabled: false })).status).toBe(200);
   });
 });

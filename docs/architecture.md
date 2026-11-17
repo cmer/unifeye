@@ -5,12 +5,13 @@
 ```mermaid
 flowchart LR
   B[Browser] -- HTTPS: pages, API, WHEP signalling, HLS, playback --> P[HTTPS reverse proxy]
-  P --> A[Vantage app<br/>Next.js on Node]
+  P --> A[Unifeye app<br/>Next.js on Node]
   B -. WebRTC media, UDP/TCP 8189 .-> M[MediaMTX]
   A -- control API, WHEP, HLS (internal) --> M
   M -- auth hook for every reader --> A
   A -- OIDC: discovery, token, JWKS --> Z[OIDC provider]
   Z -- back-channel logout --> A
+  A -. Access signing keys .-> CF[Cloudflare Access, optional]
   A -- read-only HTTPS + WebSocket --> N[UNVR Pro / Protect]
   M -- RTSPS pull, on demand --> N
   A --- D[(SQLite /data)]
@@ -20,11 +21,12 @@ flowchart LR
 Only the reverse proxy and MediaMTX's WebRTC media port face the network. MediaMTX's API, WHEP,
 HLS and RTSP listeners are internal. Protect credentials and RTSPS URLs never leave the server.
 
-| Data | Owner | What Vantage does |
+| Data | Owner | What Unifeye does |
 | --- | --- | --- |
 | Cameras, names, capabilities, live video, recordings, events | UniFi Protect | Reads and relays. Stores only a stable reference `(nvr id, Protect camera id)` and a disposable metadata cache. |
-| Identity, credentials, MFA, recovery | OIDC provider | Authenticates through OIDC. |
-| Profiles, roles, groups, tags, grants, views, sharing, defaults, sessions, preferences, audit | Vantage (SQLite) | Authoritative. |
+| Identity, credentials, MFA, recovery | OIDC provider or Cloudflare Access | Verifies what they assert. |
+| Password accounts (only with `local` on) | Unifeye (SQLite) | Usernames, scrypt hashes, one-time password links. |
+| Profiles, roles, groups, tags, grants, views, sharing, defaults, sessions, preferences, audit | Unifeye (SQLite) | Authoritative. |
 
 No video, snapshot or recording is stored in SQLite. Playback windows and clips live in a
 size- and age-bounded directory.
@@ -37,8 +39,8 @@ size- and age-bounded directory.
 | `src/server/authz/access.ts` | Standing access: whether access already handed out still holds, and the signal to re-check it. |
 | `src/server/authz/views.ts` | Saved views, sanitized resolution, landing precedence. |
 | `src/server/authz/preview.ts` | "See as staff". |
-| `src/server/admin.ts` | Every change to Vantage data: validation, transaction, audit, cache invalidation. |
-| `src/server/auth/` | OIDC sign-in, sessions, back-channel logout, lifecycle re-validation. |
+| `src/server/admin.ts` | Every change to Unifeye data: validation, transaction, audit, cache invalidation. |
+| `src/server/auth/` | Sign-in (`oidc.ts`, `local.ts`, `cloudflare.ts`, shared `provision.ts`), sessions, back-channel logout, lifecycle re-validation. |
 | `src/server/protect/` | Adapter contract, the real `unifi-protect` adapter, the mock adapter. |
 | `src/server/media/` | Media gateway and revocation sweep (`gateway.ts`), the relay interface (`relay.ts`) and its MediaMTX adapter (`mediamtx.ts`), playback windows, clip export. |
 | `src/server/testing/` | Test fixture and the in-memory relay used by the automated tests. |
@@ -148,6 +150,54 @@ empty with a way to other views; nothing is borrowed to fill it.
 
 ## Sign-in and sessions
 
+`SIGN_IN_METHODS` turns on any of three ways in. `oidc` and `cloudflare` cannot be combined.
+
+| Method | Who proves identity | Identity `(issuer, subject)` | Who creates the profile |
+| --- | --- | --- | --- |
+| `oidc` (default) | The identity provider | Provider issuer, ID token `sub` | First admitted sign-in |
+| `cloudflare` | Cloudflare Access | `https://<team>.cloudflareaccess.com`, Access token `sub` | First request through Access |
+| `local` | Unifeye (password) | `unifeye:local`, the profile's own id | An administrator, or `unifeye create-admin` |
+
+Rules that hold for all of them:
+
+- Each profile records its method (`users.auth_method`), fixed when it is created. A profile is
+  only ever matched for its own method, so two methods can never share or take over a profile, even
+  with the same issuer and subject. Nothing links profiles across methods, by email or otherwise;
+  the same human with a work account and a password account is two people.
+- `Policy.activeUser` treats a person whose method is turned off as inactive. Every session, grant,
+  preview and admin check goes through it, so removing a method from `SIGN_IN_METHODS` locks its
+  people out everywhere on the next request, and their media stops at the next sweep.
+- A sign-in always creates a new session and revokes the one the browser held before.
+- Signed-out browsers go to `GET /api/auth/login`, which picks the way in: Cloudflare (when the
+  request carries an Access token), straight to the identity provider (when it is the only method
+  besides Cloudflare), or the `/sign-in` page (when passwords are on; it also offers the provider).
+
+### Rate limits
+
+Fixed one-minute windows in `src/server/api.ts`. Signed-in requests count per session, so people
+behind one address (an office, a VPN) do not share a limit. Sign-in routes, and requests to
+signed-in routes that fail to authenticate (`unauth`, such as a wall left open after signing out),
+count per client address; a valid session is never refused because of its address.
+
+| Class | Per minute | Counted per |
+| --- | --- | --- |
+| `auth` (sign-in routes) | 30 | address |
+| `unauth` (failed authentication) | 600 | address |
+| `read` / `write` | 1,200 / 240 | session |
+| `media` (snapshots, WebRTC set-up, playback, thumbnails, exports) | 600 | session |
+| `hls` (playlists and segments) | 120 × (`MAX_WALL_STREAMS` + 3), 1,440 by default | session |
+
+An HLS stream on Protect cameras polls a video and a sound playlist and fetches a segment of each
+every 4 seconds, about 60 requests a minute (measured 2026-11-17: 29 playlist requests per tile per
+minute in Chrome). HLS has its own budget, sized from the stream limit, so a full wall on HLS
+fits beside its still-image refreshes.
+
+The client address is the last `X-Forwarded-For` entry: the one the nearest proxy appends. Earlier
+entries are whatever the client sent. Next fills the header from the connection when a request
+arrives without one, so a client that reaches Unifeye directly, with no proxy, can still choose it.
+
+### Company sign-in (`oidc`)
+
 - Authorization Code with PKCE (S256), state and nonce, in a single-use transaction that expires in
   ten minutes. The code is exchanged on the server.
 - The ID token is checked by `openid-client` and its signature is verified again explicitly against
@@ -173,19 +223,93 @@ empty with a way to other views; nothing is borrowed to fill it.
 - Provider tokens are encrypted with `TOKEN_ENC_KEY` (AES-256-GCM). Only the ID token (for logout)
   and a refresh token (for re-validation) are kept.
 
-### How revocation reaches Vantage
+### Password accounts (`local`)
 
-| Event | Mechanism | Delay until Vantage knows |
+- Only administrators create them (`POST /api/admin/users`, through `Admin`), plus the operator
+  from the command line (`unifeye create-admin`, `unifeye password-link`). There is no sign-up and
+  no email.
+- An account starts with no password. Creating it returns a one-time link to
+  `/set-password#<secret>`, valid 24 hours. Only the SHA-256 of the secret is stored, the secret sits
+  in the URL fragment so it never reaches server or proxy logs, and the page removes it from the
+  address bar. Making a new link invalidates earlier unused ones. A link is consumed inside the write
+  transaction that sets the password, so it works exactly once. Using a link ends all of the person's
+  sessions. A forgotten password is the same flow: an administrator makes a new link. The current
+  password keeps working until the link is used.
+- Links point at `LOCAL_APP_URL` when set (the address these people use), otherwise `APP_URL`.
+- Passwords: at least 10 characters, at most 200, not a well-known password, not containing the
+  username. No composition rules. Stored as `scrypt$N$r$p$salt$hash` with N=2^15, r=8, p=3 (32 MB,
+  one of OWASP's equivalent settings) and a 16-byte salt; verified with a constant-time compare. Two
+  checks run at a time (libuv's four worker threads are shared with file I/O), up to twenty more
+  wait in line, and beyond that a sign-in is refused with "try again in a moment" before it is
+  counted.
+- Sign-in (`POST /api/auth/password`) gives the same answer, after the same scrypt work, for an
+  unknown username, a wrong password and an account with no password yet. Each username (real or
+  not) is locked after five failed tries, for 30 seconds doubling to 15 minutes; the count is taken
+  before the slow check so parallel guesses cannot slip past it. Counts are in memory, forgotten
+  after 30 quiet minutes, and at most 100,000 usernames are tracked; when full, the oldest idle
+  entries go first and a running lock is never dropped, so flooding junk usernames cannot clear one.
+  Every lock is audited. The per-address sign-in rate limit also applies. A correct password for
+  a disabled account says so.
+- Password routes take small JSON bodies only (a `Content-Length` of at most 4 KB).
+- Return addresses (`returnTo`) must be same-site paths in printable ASCII: no `//`, backslashes,
+  spaces or control characters (URL parsers drop tabs and newlines), and they must resolve to the
+  same origin.
+- The password routes exist only while `local` is on. They carry no session, so instead of the
+  CSRF token they require a JSON body and an `Origin` naming `APP_URL` or `LOCAL_APP_URL`.
+- People change their own password with the current one (`POST /api/me/password`, CSRF as usual);
+  their other sessions end and any unused password link is cancelled. Wrong guesses there have
+  their own lock, so they cannot lock the person out of signing in. Not available while previewing.
+- Password accounts have no admission claim and no group sync. Groups are manual.
+
+### Cloudflare Access (`cloudflare`)
+
+- Access sits in front of Unifeye and adds `Cf-Access-Jwt-Assertion` to every request it lets
+  through. Unifeye verifies it on every request: RS256 against
+  `https://<team>/cdn-cgi/access/certs`, issuer `https://<team>`, audience in `CF_ACCESS_AUD`, not
+  expired, and a non-empty `sub` (service tokens have none and are refused). The `CF_Authorization`
+  cookie is never read.
+- A valid Access token does not prove the request came through Cloudflare: its holder can attach it
+  to a request sent straight to the server, for example from the local network, and keep using it
+  after Cloudflare has revoked them until the token expires. So Cloudflare also adds a secret
+  request header at its edge (a Transform Rule setting `X-Unifeye-Origin-Secret` to
+  `CF_ACCESS_ORIGIN_SECRET`). When the secret is configured, which is required alongside `local`, a
+  request carrying an Access token but not the secret is refused outright (`forged`), never treated
+  as local. So is a request carrying the secret header without an Access token: Cloudflare forwarded
+  something Access did not cover, and that must not reach password sign-in from the internet.
+- The request's path decides which identities it may carry:
+  - With an Access token (and the secret) it came through Cloudflare. Only the session of exactly the identity in
+    that token is accepted; a different identity, a password session or an invalid token is a 401.
+    Password sign-in and password links are refused.
+  - Without one it reached Unifeye some other way. A Cloudflare session is never accepted there.
+    With `local` on, password sessions and password sign-in work, which is how local-network
+    access is meant to be used; with `local` off, nothing works without the header.
+- `GET /api/auth/login` with a valid token creates the session (and the profile on first use). An
+  invalid token goes to the signed-out page; it never falls back to the password page.
+- Revocation: Cloudflare stops forwarding requests for a person whose Access session ended or was
+  revoked, but sends no notice. Every valid request refreshes the session's validation time, and a
+  session not seen through Cloudflare for `CF_ACCESS_RECHECK_SECONDS` (default 300) is suspended,
+  which stops its media at the next sweep. The app reloads `/me` every 30 seconds, so an open page
+  keeps an active session fresh.
+- Sign-out ends the Unifeye session and sends the browser to `/cdn-cgi/access/logout`.
+- First administrator: sign in once, read the issuer and subject from `unifeye users`, set
+  `BOOTSTRAP_ADMIN_ISSUER` and `BOOTSTRAP_ADMIN_SUBJECT`, restart and sign in again.
+
+### How revocation reaches Unifeye
+
+| Event | Mechanism | Delay until Unifeye knows |
 | --- | --- | --- |
-| Sign out in Vantage | Session revoked directly | Immediate |
+| Sign out in Unifeye | Session revoked directly | Immediate |
 | Provider session ended or user signed out | Back-channel logout, if the provider sends it | The provider's delivery time |
 | User disabled or deleted at the provider | Refresh-token check on a schedule; providers usually send no back-channel logout for these | Up to `OIDC_RECHECK_SECONDS` (default 5 minutes) |
-| Disabled in Vantage, grant or group change | Policy invalidation | Immediate |
+| Access session ended or revoked in Cloudflare | No request carries a valid Access token any more; the session is suspended | Up to `CF_ACCESS_RECHECK_SECONDS` (default 5 minutes) |
+| Password set from a link, or changed | Person's sessions revoked directly (all, or all but the current one) | Immediate |
+| Sign-in method turned off | Its people are inactive in `Policy` (after the restart that applies the setting) | Immediate |
+| Disabled in Unifeye, grant or group change | Policy invalidation | Immediate |
 | "See as staff" exited or no longer allowed | Preview ended directly | Immediate |
 | Session or preview time limit passes | Noticed by the next request, or by the timer | Up to `REVOCATION_SWEEP_SECONDS` |
 
 Every row ends in the access signal described under [Standing access](#standing-access). Once
-Vantage knows, pages and API calls fail at once and playing media stops within
+Unifeye knows, pages and API calls fail at once and playing media stops within
 `REVOCATION_SWEEP_SECONDS` (default 10, maximum 30). Clip downloads and the event feed stop on the
 same signal. If the provider is unreachable, no one can sign in,
 existing sessions are not extended, and a session that could not be re-validated for
@@ -193,25 +317,36 @@ existing sessions are not extended, and a session that could not be re-validated
 
 ## Media enforcement
 
-1. The browser asks a Vantage route for live video. The route authenticates the session, resolves
+1. The browser asks a Unifeye route for live video. The route authenticates the session, resolves
    the effective subject and checks the camera with the policy.
-2. Vantage calls MediaMTX itself with a random ticket bound to session, subject, camera, path and
+2. Unifeye calls MediaMTX itself with a random ticket bound to session, subject, camera, path and
    transport, valid for 30 seconds and single-use for WebRTC.
-3. MediaMTX runs with `authMethod: http` and asks Vantage's hook before serving any reader. A
+3. MediaMTX runs with `authMethod: http` and asks Unifeye's hook before serving any reader. A
    request without a valid ticket is refused even if it reaches MediaMTX directly. The only RTSP
    reader admitted is the relay's own FFmpeg (publisher credentials, internal address), and only on
    the internal `_src` paths described under Sound; no ticket ever names one of those.
 4. Each admitted MediaMTX session is recorded with its grant. A sweep re-checks all of them with
    `Access` and kicks failures through the control API. It runs on every access signal and on a
-   timer; a signal that arrives during a sweep triggers another one straight after. Readers Vantage
+   timer; a signal that arrives during a sweep triggers another one straight after. Readers Unifeye
    does not know about are kicked.
-5. HLS is proxied entirely by Vantage, so every playlist and segment request is authorized again.
+5. HLS is proxied entirely by Unifeye, so every playlist and segment request is authorized again.
+   MediaMTX asks the hook only when an HLS session starts (the top playlist, `index.m3u8`); the
+   media playlists and segments that follow are served to that session through its cookie. Unifeye
+   keeps one relay reader, and so one cookie, per session, subject, preview and stream, and renews
+   its ticket every 25 seconds (re-checking the stream limit) without replacing the reader. A new
+   reader would have no cookie, and MediaMTX refuses a playlist or segment from one with 401.
 
-WebRTC signalling is proxied; media flows from MediaMTX to the browser over ICE on port 8189. If no
-media arrives within 4 seconds, the player tears the WebRTC session down and switches to HLS, and the
-tab skips WebRTC for 10 minutes (`src/ui/live.tsx`). Tearing down a WHEP session frees its slot at
-once. The per-session limit (`MAX_WALL_STREAMS` + 3) counts distinct streams (camera and quality),
-not relay readers, because HLS takes a new reader every 25 seconds.
+WebRTC signalling is proxied; media flows from MediaMTX to the browser over ICE on port 8189
+(`WEBRTC_PORT` in Compose). If no media arrives within 4 seconds, the player tears the WebRTC session
+down and switches to HLS, and the tab skips WebRTC for 10 minutes (`src/ui/live.tsx`). Tearing down a WHEP session frees its slot at
+once. A tile that stops while its offer is still on its way tears the session down as soon as the
+answer arrives, and an offer that fails after the hook admitted its reader frees that slot at once. The per-session limit (`MAX_WALL_STREAMS` + 3) counts distinct streams (camera and quality),
+not relay readers, because an HLS player opens a new relay session each time it loads the top playlist. HLS has no teardown of its own,
+so when a tile stops an HLS stream the player sends `DELETE /api/media/live/:id/hls/:q`; Unifeye
+kicks that session's readers for the stream and frees the slot at once. Without it the slot stays
+taken until the relay closes the idle reader and a sweep notices (30 to 60 s), and changing views on
+HLS refused the new tiles. A tile refused for now (429, the stream limit or the rate limit) waits
+5 seconds and tries again without counting it as a failed attempt.
 
 ### Sound
 
@@ -246,13 +381,53 @@ with a microphone (`featureFlags.hasMic`), the relay therefore takes two paths (
 MediaMTX pulls the camera into `<path>_src` as before, keeping the certificate fingerprint check,
 and an FFmpeg it starts on demand reads that path over loopback RTSP, copies the video, decodes the
 camera's first audio track and re-encodes it to AAC (for HLS) and Opus (for WebRTC) with timestamps
-counted from the samples, then publishes `<path>`, which is what readers get tickets for. It adds
-about half a second to start-up and one small FFmpeg process per stream being watched. Cameras
+counted from the samples, then publishes `<path>`, which is what readers get tickets for. FFmpeg
+probes until it has seen the first video frame (up to 10 s), because on a cold start the camera's
+sound arrives seconds before its picture; a shorter probe made FFmpeg exit and MediaMTX wait 5 s to
+retry. It adds one small FFmpeg process per stream being watched. Cameras
 without a microphone are pulled directly, as before.
+
+### Video straight from the camera
+
+Protect re-streams cameras made by someone else (adopted over ONVIF) with a broken sound track: its
+Opus timestamps run about 48 times too slow, and on Reolink cameras the recorder's live stream then
+drops every other two-second group of pictures. Recordings are not affected. For those cameras, an
+administrator can switch live video to come from the camera itself (Admin > Live video):
+
+- Protect's camera record keeps the camera's own stream addresses without a login
+  (`thirdPartyCameraInfo.rtspUrl` for the focused player, `rtspUrlLQ` for wall tiles). Only cameras
+  with a plain `rtsp://` address offer the switch (`ProtectCamera.direct`, cached in the camera meta).
+- The login is `DEFAULT_CAMERA_USERNAME` / `DEFAULT_CAMERA_PASSWORD`, or the camera's own from the
+  `camera_direct` table, whose password is encrypted with `TOKEN_ENC_KEY` and never sent to a browser
+  or written to the audit log.
+- Turning it on (or saving a login while on) first asks the camera to describe both streams
+  (`checkRtsp` in `src/server/protect/rtsp-check.ts`: one RTSP DESCRIBE per stream, answering a
+  Basic or Digest challenge, on one connection; no video is read). A wrong login, an unreachable
+  camera or video other than H.264 is refused with a plain message instead of becoming a blank tile.
+- `Media.issue` asks `DirectVideo` (`src/server/media/direct.ts`) for the login and the adapter for
+  `directSource`; the relay sets up the same two paths as for the recorder, with the camera address
+  in `<path>_src`. Sound always goes through the retiming FFmpeg, which also turns the camera's AAC
+  into Opus for WebRTC. Permission checks, tickets and the sweep are unchanged: only the source moves.
+- If a stream read from the camera fails (a WebRTC offer that finds no stream, or an HLS playlist
+  that does not load), that camera goes back to the recorder's stream for two minutes, so the
+  player's retry plays. Saving the camera's settings again tries the camera at once.
+- The WebRTC offer and every HLS response carry `x-video-source`: `camera`, `recorder`, or
+  `fallback` (switched to the camera but using the recorder right now). The player's "Live" popup
+  shows it as the source. It is sent only after the camera check, so it reveals nothing extra.
+- One MediaMTX pull per stream is shared by every viewer and closes ten seconds after the last one
+  leaves, so a camera serves at most two extra connections however many people watch it.
+
+Not every camera can do this: UniFi cameras, and any camera whose record has no plain RTSP address,
+only ever stream through the recorder, and the switch is not offered for them. This is decided per
+camera on every sync, not by brand. If a camera that was switched on stops offering it (replaced,
+re-adopted, or moved to a recorder-only connection), `directSource` returns nothing and viewers get
+the recorder's stream; Admin keeps listing it so it can be switched off.
+
+Talking to the camera reads video only; Unifeye never changes camera settings.
 
 ### The relay seam
 
-Everything Vantage says to MediaMTX goes through one interface, `Relay` (`src/server/media/relay.ts`):
+Everything Unifeye says to MediaMTX goes through one interface, `Relay` (`src/server/media/relay.ts`):
 set up a stream, create, trickle and close a WHEP session, fetch an HLS file for a reader, list and
 kick readers, report health. The gateway (`Media`) receives a relay through its constructor and
 keeps the decisions:
@@ -267,17 +442,28 @@ keeps the decisions:
 | Which paths are already configured | MediaMTX adapter | Saves a control API call per request. |
 
 The adapter (`src/server/media/mediamtx.ts`) is the only file that knows MediaMTX's URLs, the
-Bearer-ticket convention and the WHEP `location` format. Its cache of configured paths is dropped
+Bearer-ticket convention, the WHEP `location` format, and the auth hook's body, usernames and
+internal `_src` paths. Its cache of configured paths is dropped
 when MediaMTX may have restarted: all of it when a request cannot connect or the health check
 fails, one stream when MediaMTX answers 404 to a WHEP offer or an HLS playlist for it. The path is
 then configured again the next time a ticket is issued for it, at most 25 seconds later for HLS.
 
-The other direction, MediaMTX asking the hook, is not part of the interface: it arrives at
-`/api/internal/mediamtx-auth` and is answered by the gateway.
+In the other direction, the relay asks the gateway before admitting a viewer, as a relay-neutral
+`ReaderRequest` (reader kind, stream, ticket, reader id) answered by `Media.admit`. MediaMTX asks
+through its auth hook, which arrives at `POST /mediamtx-auth` on a separate listener
+(`src/server/media/hook-server.ts`, `HOOK_HOST` and `HOOK_PORT`, 3001 by default).
+`authorizeHook` in the MediaMTX adapter checks the hook secret, answers MediaMTX's own traffic (its
+control API, and the FFmpeg it runs, with the publisher login from a loopback or private-network
+address, which may publish a camera path and read only its internal `_src` path over RTSP), refuses every other protocol and action, and hands viewers reading
+over WebRTC or HLS to the gateway. The hook is not served on the web
+port at all, so it cannot be reached through whatever reverse proxy or tunnel is in front of
+Unifeye; the hook port is never published. Every call must still carry `MEDIAMTX_HOOK_SECRET`.
+Production refuses to start unless both MediaMTX secrets are at least 32 characters. If the hook
+port cannot be opened, start-up aborts, since no video could play without it.
 
 Tests use an in-memory relay (`src/server/testing/relay.ts`). It admits no reader without asking
-the same hook, tracks readers so listing and kicking work, and can be switched to unreachable. It
-is a model of what Vantage can observe, not of MediaMTX itself.
+`Media.admit`, tracks readers so listing and kicking work, and can be switched to unreachable. It
+is a model of what Unifeye can observe, not of MediaMTX itself.
 
 ## "See as staff"
 
@@ -303,15 +489,19 @@ begins a few seconds early. The description's `leadMs` says by how much. The pla
 wall-clock time with it, hands over to the next window when the wall-clock window ends (not when the
 file ends), and starts the next window at its own lead, so nothing is replayed or skipped at a
 handover. When the file runs out first, the old load-on-end path applies.
+These decisions, and the overlay's per-frame sync described below, live in
+`src/ui/recorded-playback.ts`; the player only wires them to its video elements. Choosing a clip's
+ends on the timeline follows the rules in `src/ui/trim.ts`.
 
 Adaptive recording (Protect records the low channel, and the high channel only around motion) needs
-two corrections:
+two corrections. Both live in one module, `src/server/media/recorded.ts` (`fetchRecorded`), which
+playback windows and clip pieces share; the Protect adapters only export one channel as asked.
 
 - **Video clock.** Some cameras' low channel exports with a video clock that runs fast (a 60-second
   window holds about 38 seconds of video beside 60 seconds of audio), which made the picture race
-  ahead and then freeze. After each export, the UniFi adapter spreads the video frames evenly across
-  the audio's span with an FFmpeg stream copy (`retimeVideoToAudio` in `src/server/protect/ffmpeg.ts`).
-  Files that are already consistent are left alone.
+  ahead and then freeze. Every export is retimed before anything reads it: the video frames are
+  spread evenly across the audio's span with an FFmpeg stream copy (`retimeVideoToAudio` in
+  `src/server/protect/ffmpeg.ts`). Files that are already consistent are left alone.
 - **High-resolution stretches.** A channel 0 export of a window containing motion holds only the
   high-resolution stretches, joined, with nothing saying where they belong. When that export is more
   than a second shorter than the window, the window is also exported from the low channel, which
@@ -333,26 +523,79 @@ A clip longer than five minutes is therefore exported in five-minute pieces,
 `CLIP_EXPORT_PARALLEL` at a time (default 3), and joined with an FFmpeg stream copy
 (`exportPieces` in `src/server/media/recordings.ts`). Each piece starts on the keyframe before its
 start, so the overlap is cut from the end of the piece before it, using the same lead calculation as
-playback windows. A piece with nothing recorded is left out. The job reports the share of pieces
+playback windows. A piece with nothing recorded is left out.
+
+The recorder can fail an export without meaning "nothing recorded": the UniFi adapter reports a 5xx,
+408 or 429 answer as `RecorderBusyError` and keeps 404, other refusals and near-empty bodies as
+`NoRecordingError`. A clip piece whose export fails for any reason other than "nothing recorded" is
+tried twice more, after 10 s and then 30 s (`exporter` in `recordings.ts`); playback windows are not retried. A
+piece the recorder still fails is left out rather than failing the whole clip, and a clip where no
+piece could be exported fails with "The recorder is busy". When the job finishes, the clip's real
+length is stored (`duration_ms`). If it is at least 5 s (or 1%) shorter than asked, `gap` says why:
+`busy` when a piece was lost to recorder failures, otherwise `unrecorded`. The dialog then shows the
+real length and says that part of the time is missing. The job reports the share of pieces
 done, and the status route adds a rough time left (average piece time, times the pieces left, divided
 by the parallel count). When the job is ready the browser starts the download on its own, and the
 dialog stays open with a way to download it again.
+
+With adaptive recording, a channel 0 export of a piece that contains motion holds only the motion,
+so each piece is fetched as playback windows are (`fetchRecorded`): when the channel 0 export is more
+than a second short, the low channel is exported too and the high-resolution stretches are placed
+by their audio. A clip needs one file, so `fetchRecordedFile` combines them (`overlayStretches` in
+`src/server/protect/ffmpeg.ts`): the low recording, scaled up and repeated to the high frame rate,
+with the high-resolution frames laid over it inside their spans, and the low recording's sound,
+which has no gaps. This re-encodes the whole piece at full size (about 14 s for five minutes at
+2688x1512 on a fast desktop CPU; a GPU barely helps because the scaling runs on the CPU). If the audio
+cannot place the stretches, or the combine fails, the piece is saved in low resolution, so no time is
+missing. If channel 0 has nothing for a piece, the low channel is tried before the piece is left out.
+
+Pieces can still differ in size: one recorded only in low resolution (640x480 at 7 fps on the camera
+tested) sits next to combined or high-resolution ones, and a player resizes its picture at every change. With
+`CLIP_MATCH_RESOLUTION` (on by default), `SizeMatcher` (`src/server/media/match-size.ts`) reads each
+piece's picture sizes as it arrives (keyframes only: a size can change only there) and keeps the
+largest seen as the target. A piece with any smaller picture is re-encoded to the target, scaled to
+fit with black bars when the shape differs, one piece at a time while the others download. If a
+later piece is larger still, the resized ones are redone from their originals. Each frame keeps its
+time and the video its timescale, so a resized piece takes the original's place in the join and the
+cut points do not move. The encoder is chosen once per process (`src/server/protect/encoders.ts`):
+a GPU that passes a short test encode (VAAPI, NVENC, VideoToolbox), else libx264 or libx265 to
+match the camera's codec. A GPU encode that fails is retried on the CPU, and a piece that cannot be
+resized is joined at its own size, so the clip still saves. Progress counts the resizes, and the time
+left is the larger of the downloads' estimate and the queued resizes'.
 
 Times are UTC in storage and transport and shown in a selectable zone. Day boundaries follow the
 zone, so a day is 23, 24 or 25 hours long around daylight-saving changes.
 
 ## Known risks
 
+- Timeline previews (a still from the recording under the pointer) depend on Protect's
+  `recording-snapshot`, which on Protect 7.3.74 answers "Recording not found" for most third-party
+  cameras even where a recording exists (37 of 42 on 2026-11-17). Unifeye stops asking for a camera
+  that has never given one after three misses, for 30 minutes, and the player then shows only the time.
 - Recorded video, historical events and thumbnails use Protect's private HTTP API, which the
   `unifi-protect` library does not cover and Ubiquiti does not document. They may change between
   Protect releases.
 - No endpoint for recording gaps is known. On a real UNVR the timeline shows the overall recorded
   period, and a gap shows up as "Nothing recorded" when you seek into it.
 - Live video needs an RTSP stream already enabled on the camera in Protect. Enabling one would be a
-  write, so Vantage does not do it.
+  write, so Unifeye does not do it.
 - Live sound depends on rebuilding Protect's audio timestamps (see Sound). If a Protect release
   fixes them, the rebuild is still correct but no longer needed. Audio timing counts samples from
   the start of each stream, so sound and video may drift apart slightly over a long session. H.265
   cameras play only in browsers that support it.
+- With `cloudflare` alone and no `CF_ACCESS_ORIGIN_SECRET`, someone who can reach the server
+  directly can replay their own Access token until it expires, even after Cloudflare revoked them.
+  Set the secret, or make sure the server is reachable only through Cloudflare.
+- With `cloudflare` and `local` both on, password sign-in is open to anyone who can reach Unifeye
+  without going through Cloudflare. Keep the server reachable from outside only through Cloudflare
+  (Tunnel or firewall rules), so that path is the local network. The sign-in rate limit is keyed on
+  the last `X-Forwarded-For` address, which a client that reaches Unifeye directly can still set;
+  the per-username lockout does not depend on it.
+- Password lockouts are kept in memory. A restart clears them. Anyone who knows a username can keep
+  it locked by guessing wrong once every 15 minutes; locks are audited, and the operator can always
+  issue a password link from the command line (using it clears the lock). Someone can also fill
+  the password-check queue to make sign-in answer "try again in a moment" for everyone; the
+  per-address rate limit (spoofable by a client that reaches Unifeye with no proxy in between) is the only
+  brake on that.
 - SQLite means one application instance on local disk. Running replicas or placing the database on
   a network filesystem is not supported.

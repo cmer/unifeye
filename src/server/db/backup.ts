@@ -30,7 +30,7 @@ export function verifyDatabaseFile(file: string): { schemaVersion: number } {
 export async function backupDatabase(db: Db, dir: string, reason: "daily" | "manual" | "pre-migration"): Promise<BackupResult> {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
-  const final = join(dir, `vantage-${stamp}-${reason}.sqlite`);
+  const final = join(dir, `unifeye-${stamp}-${reason}.sqlite`);
   const tmp = `${final}.partial`;
   try {
     await db.$client.backup(tmp);
@@ -54,7 +54,7 @@ export function pruneBackups(dir: string, retentionDays: number, nowMs = Date.no
   if (!existsSync(dir)) return [];
   const removed: string[] = [];
   for (const f of readdirSync(dir)) {
-    if (!/^vantage-.*-daily\.sqlite$/.test(f)) continue;
+    if (!/^unifeye-.*-daily\.sqlite$/.test(f)) continue;
     const p = join(dir, f);
     if (nowMs - statSync(p).mtimeMs > retentionDays * 864e5) {
       rmSync(p);

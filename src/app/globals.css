@@ -132,6 +132,9 @@
 @keyframes clip-sweep { from { left: -40%; } to { left: 100%; } }
 @keyframes clip-shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
 .clip-sweep { animation: clip-sweep 1.4s ease-in-out infinite; }
+/* The timeline's playhead while live: a soft red ring that breathes. */
+@keyframes live-ring { 50% { box-shadow: 0 0 0 7px rgb(239 68 68 / 0.12); } }
+.live-dot { box-shadow: 0 0 0 4px rgb(239 68 68 / 0.35); animation: live-ring 1.6s ease-in-out infinite; }
 .clip-shimmer {
   background-image: linear-gradient(90deg, transparent 30%, color-mix(in oklab, var(--background) 45%, transparent) 50%, transparent 70%);
   background-size: 200% 100%;
@@ -140,6 +143,7 @@
 @media (prefers-reduced-motion: reduce) {
   .clip-sweep { animation: none; left: 0; width: 100%; opacity: 0.5; }
   .clip-shimmer { animation: none; }
+  .live-dot { animation: none; }
 }
 /* Native selects: draw our own chevron so it sits just inside the padding, like the other inputs. */
 .select-chevron {

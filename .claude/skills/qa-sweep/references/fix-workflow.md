@@ -12,7 +12,7 @@ One builder per issue, in its own worktree and stack slot.
    - anything over HTTP, media tickets, preview: `tests/api.test.ts` (through `handleApi`, with the fixture in `src/server/testing/`)
    - sign-in: `tests/oidc.test.ts`; MediaMTX wire format: `tests/mediamtx.test.ts`; migrations, backup, time zones: `tests/ops.test.ts`
    - There is no browser test suite. For a UI-only bug, move the logic into a testable function where that is natural; otherwise the browser reproduction in step 6 is the test, and the PR says so.
-4. Fix the root cause, not the symptom. Keep the fix where the rule lives: camera access in `src/server/authz/policy.ts`, standing access in `authz/access.ts`, views in `authz/views.ts`, every change to Vantage data in `src/server/admin.ts`, everything said to MediaMTX behind the relay in `src/server/media/`.
+4. Fix the root cause, not the symptom. Keep the fix where the rule lives: camera access in `src/server/authz/policy.ts`, standing access in `authz/access.ts`, views in `authz/views.ts`, every change to Unifeye data in `src/server/admin.ts`, everything said to MediaMTX behind the relay in `src/server/media/`.
 5. A schema change needs a new versioned migration from `pnpm db:generate`. Never edit an existing file under `drizzle/`, never push a schema.
 6. Run `pnpm test`, `pnpm typecheck` and `pnpm lint`. Then re-run the issue's reproduction in the browser on your stack at 390 px and 1280 px.
 7. Update `docs/` when behavior the docs describe changed. Never move anything from "not verified" to "verified" in `docs/verification.md` on the strength of mock-mode testing.

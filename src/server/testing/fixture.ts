@@ -2,17 +2,17 @@ import { eq } from "drizzle-orm";
 import { join } from "node:path";
 import type { Actor } from "../authz/actor";
 import { syncCameras } from "../cameras";
-import { config, loadConfig, setConfigForTests } from "../config";
+import { loadConfig, setConfigForTests } from "../config";
 import { openDb, schema, type Db } from "../db";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
-import { MOCK_CAMERAS } from "../protect/mock-data";
+import { MOCK_CAMERAS, MOCK_DIRECT } from "../protect/mock-data";
 import { MockProtectAdapter } from "../protect/mock";
 import { buildServices, setServicesForTests } from "../services";
 import { seedDemo } from "../seed";
 import { MemoryRelay } from "./relay";
 
 export const ISS = "https://id.test.example";
-export const TEST_ENV = { NODE_ENV: "test", VANTAGE_MODE: "mock", TOKEN_ENC_KEY: Buffer.alloc(32, 7).toString("base64"), OIDC_ISSUER: ISS, OIDC_CLIENT_ID: "vantage-test", OIDC_ADMIT_CLAIM: "groups", OIDC_ADMIT_VALUES: "vantage", MEDIAMTX_HOOK_SECRET: "hook", MEDIAMTX_API_SECRET: "api" } as unknown as NodeJS.ProcessEnv;
+export const TEST_ENV = { NODE_ENV: "test", UNIFEYE_MODE: "mock", TOKEN_ENC_KEY: Buffer.alloc(32, 7).toString("base64"), OIDC_ISSUER: ISS, OIDC_CLIENT_ID: "unifeye-test", OIDC_ADMIT_CLAIM: "groups", OIDC_ADMIT_VALUES: "unifeye", MEDIAMTX_HOOK_SECRET: "hook", MEDIAMTX_API_SECRET: "api" } as unknown as NodeJS.ProcessEnv;
 
 /**
  * The permission fixture required by the specification:
@@ -23,17 +23,17 @@ export const TEST_ENV = { NODE_ENV: "test", VANTAGE_MODE: "mock", TOKEN_ENC_KEY:
 export function makeFixture(db: Db = openDb(":memory:")) {
   setConfigForTests(loadConfig(TEST_ENV));
   migrate(db, { migrationsFolder: join(process.cwd(), "drizzle") });
-  const adapter = new MockProtectAdapter("default", { liveEvents: false, rtspPublishUrl: (p) => `rtsp://127.0.0.1:8554/${p}` });
-  // The relay is in memory and asks the real auth hook, as MediaMTX does through /api/internal/mediamtx-auth.
+  const adapter = new MockProtectAdapter("default", { liveEvents: false, publishUrl: "rtsp://127.0.0.1:8554/$MTX_PATH" });
+  // The relay is in memory and asks the gateway before admitting a reader, as MediaMTX does through its auth hook.
   const relay = new MemoryRelay();
   const s = buildServices(db, adapter, relay);
-  relay.connect((body) => s.media.hook(config().MEDIAMTX_HOOK_SECRET ?? null, body));
+  relay.connect((r) => s.media.admit(r));
   setServicesForTests(s);
   const { policy, views, sessions, previews, admin } = s;
   const t = Date.now();
   const user = (id: string, name: string, role: "admin" | "staff", allowPrivateViews = false) => { db.insert(schema.users).values({ id, issuer: ISS, subject: `sub-${id}`, name, email: `${id}@example.test`, role, allowPrivateViews, createdAt: t, updatedAt: t }).run(); return id; };
   const u = { admin: user("admin", "Avery Chen", "admin", true), upper: user("upper", "Morgan Reyes", "staff"), front: user("front", "Sam Okafor", "staff", true), sec: user("sec", "Jordan Blake", "staff"), nobody: user("nobody", "Riley Park", "staff") };
-  syncCameras(db, policy, "default", MOCK_CAMERAS.map((m) => ({ protectId: m.protectId, name: m.name, online: m.online, eventTypes: ["motion", "person", "vehicle", "animal", "package"], streams: [{ quality: "high", width: 1920, height: 1080 }] })));
+  syncCameras(db, policy, "default", MOCK_CAMERAS.map((m) => ({ protectId: m.protectId, name: m.name, online: m.online, eventTypes: ["motion", "person", "vehicle", "animal", "package"], streams: [{ quality: "high", width: 1920, height: 1080 }], ...(MOCK_DIRECT.has(m.protectId) ? { direct: true } : {}) })));
   seedDemo(db, u.admin);
   const g = Object.fromEntries(db.select().from(schema.groups).all().map((x) => [x.name, x.id])) as Record<string, string>;
   const member = (groupName: string, userId: string) => db.insert(schema.groupMembers).values({ groupId: g[groupName], userId, createdAt: t }).run();

@@ -1,10 +1,10 @@
 import type { MetadataRoute } from "next";
 
-/** Makes Vantage installable. There is deliberately no offline cache: video and camera data always need a live, signed-in connection. */
+/** Makes Unifeye installable. There is deliberately no offline cache: video and camera data always need a live, signed-in connection. */
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Vantage",
-    short_name: "Vantage",
+    name: "Unifeye",
+    short_name: "Unifeye",
     description: "Camera viewing for your team",
     start_url: "/",
     display: "standalone",

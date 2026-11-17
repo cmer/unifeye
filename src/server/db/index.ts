@@ -23,10 +23,10 @@ export function openDb(path: string): Db {
   return drizzle({ client, schema }) as Db;
 }
 
-const g = globalThis as unknown as { __vantageDb?: Db };
+const g = globalThis as unknown as { __unifeyeDb?: Db };
 export function db(): Db {
-  return (g.__vantageDb ??= openDb(config().DATABASE_PATH));
+  return (g.__unifeyeDb ??= openDb(config().DATABASE_PATH));
 }
 export function setDbForTests(d: Db | undefined) {
-  g.__vantageDb = d;
+  g.__unifeyeDb = d;
 }

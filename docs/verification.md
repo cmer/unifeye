@@ -10,19 +10,23 @@ should be assumed to work.
 | Node.js | 26.13 (local); image uses 24 | Tests and local runs |
 | Next.js / React | 16.4.6 / 19.3.0 | Built and run locally |
 | drizzle-orm / better-sqlite3 | 0.45.4 / 13.2.0 | Tests |
-| openid-client / jose | 6.9.0 / 6.2 | Tests against a test identity provider |
-| unifi-protect | 5.4.2 | Compiled against its types only |
-| MediaMTX | 1.21.4 (macOS binary) | Run locally with `docker/mediamtx.yml` |
-| UniFi Protect / UNVR Pro | none | Not available |
-| OIDC provider | none (only the test provider) | Not available |
-| Docker image, Compose | none | Docker was not running |
+| openid-client / jose | 6.9.0 / 6.2 | Tests against a test identity provider; Zitadel in production |
+| unifi-protect | 5.4.2 | In production against a real UNVR |
+| MediaMTX | 1.21.4 (macOS binary; `1.21.4-ffmpeg` image) | Run locally with `docker/mediamtx.yml`, and in production with Compose |
+| UniFi Protect | 7.3.74 on one UNVR, 42 cameras | In production, through a read-only account |
+| OIDC provider | Zitadel (self-hosted), plus the test provider | In production, with a project role as the admission claim |
+| Docker image, Compose | Docker Engine with Compose v2 on a Linux VM | In production with `compose.yaml`, behind Cloudflare Tunnel |
 
 ## Verified
 
-**Automated tests (`pnpm test`, 127 tests):**
+**Automated tests (`pnpm test`, 275 tests):**
 
-The media tests run against an in-memory relay that asks the real auth hook before admitting a
-reader. They show what the gateway decides, not how MediaMTX behaves.
+The media tests run against an in-memory relay that asks the gateway (`Media.admit`) before
+admitting a reader. They show what the gateway decides, not how MediaMTX behaves. How the MediaMTX
+auth hook is answered (the hook secret, the control API, MediaMTX's own FFmpeg from loopback or
+private addresses and its `_src` paths, RTSP and other protocols refused, viewers handed to the
+gateway) is pinned separately in
+`tests/mediamtx.test.ts`.
 
 - Permissions: deny by default, individual and group grants, overlapping groups, disabled users,
   group removal, grant revocation, cache invalidation, new cameras ungranted, rename and missing
@@ -37,12 +41,14 @@ reader. They show what the gateway decides, not how MediaMTX behaves.
   byte-for-byte the same as a missing one for snapshots, recordings, playback, live setup, HLS
   files, events and exports; event IDs and export IDs do not bypass camera checks; counts and
   "has more" reflect authorized cameras only.
-- Media tickets: single use, bound to path and transport, refused without the hook secret, RTSP
-  readers refused, WHEP resource tied to its session; active sessions kicked on grant removal,
+- Media tickets: single use, bound to path and transport, WHEP resource tied to its session; through
+  the hook listener with the real gateway (`tests/hook-server.test.ts`), a viewer admitted with an
+  issued ticket and refused with the wrong secret, ticket, stream or transport, and MediaMTX's own
+  login refused as a viewer; active sessions kicked on grant removal,
   account disablement and session revocation; unknown readers kicked on both transports; a
   revocation arriving during a sweep is swept straight after it; a sweep with nothing revoked kicks
   nobody.
-- HLS fallback through the gateway: playlist then segment, the hook asked for each file; 401
+- HLS fallback through the gateway: playlist then segment, the hook asked when the playlist opens a session; 401
   without a session; 404 once the grant is removed, without the relay being asked; HLS readers
   kicked on grant removal and session revocation, and the gateway's HLS state dropped with them.
 - Relay outage: WHEP setup, trickle, teardown and HLS answer 503 `relay_unavailable`; a sweep
@@ -52,7 +58,7 @@ reader. They show what the gateway decides, not how MediaMTX behaves.
   ticket as a Bearer token and the resource read from `location`, trickle and teardown forwarding,
   HLS redirect following with the session cookie carried per reader, and the configured-path cache
   being dropped when MediaMTX is unreachable, unhealthy or answers 404. The stub is not MediaMTX:
-  this pins what Vantage sends, not that MediaMTX accepts it.
+  this pins what Unifeye sends, not that MediaMTX accepts it.
 - Standing access: a grant stops holding, and the signal fires, when the session is revoked,
   replaced, idle-expired or past its absolute limit, the preview ends or times out, the subject is
   disabled, a grant or group membership is removed, or the camera is gone; unknown ids never hold;
@@ -63,10 +69,70 @@ reader. They show what the gateway decides, not how MediaMTX behaves.
   three pieces, reports progress and a time left, and, with every piece starting 2.5 s early as the
   recorder does, joins to the requested length plus only the first piece's lead. It also runs with a
   relative cache folder, which once broke the join.
+- One picture size across a clip (`tests/match-size.test.ts`, and "play at one size" in
+  `tests/api.test.ts`): with synthetic files, pieces at 640x480 (4:3), 960x540 and one that changes
+  from 640x480 to 1280x720 partway, added before the 1280x720 piece, all come out 1280x720 with every
+  frame at its original time, the sound kept and the timescale unchanged, and join into one size.
+  H.265 stays H.265. A cancelled clip stops resizing. In mock mode, a 10.5-minute clip whose middle
+  piece came from the low stream downloads at one size and the right length. Passed with libx264,
+  libx265 and VideoToolbox on macOS (FFmpeg 9.0) and with libx264 and libx265 in Debian bookworm
+  (FFmpeg 5.1, the image's), where a VAAPI device that does not exist falls back to the CPU. FFmpeg's
+  join of pieces from different encoders (different SPS and profile) decoded cleanly on both versions.
+  On the same bookworm run, `tests/retime.test.ts` "spreads a too-fast video clock" fails because
+  FFmpeg 5.1 builds that test's fast-clock sample with 0.2 s of video instead of 7.7 s; the test input
+  is wrong there, not the retiming.
+- Saving adaptive recordings in full (`tests/api.test.ts`, "keep every minute of an adaptive
+  recording" and "keep a stretch the recorder only has in low resolution"; `tests/match-size.test.ts`,
+  "combining an adaptive recording's two exports"): in mock mode, a six-minute clip from a camera with
+  high resolution only in 9 s of every 30 came out 362 s long (the 2 s lead included) at 1280x720,
+  where before it would have held only the high-resolution stretches. With synthetic red (low) and
+  blue (high) files, blue shows exactly inside the two placed spans and red everywhere else, the high
+  stretches keep 15 fps, and the low recording's sound is kept. A piece whose channel 0 export has
+  nothing is taken from the low channel instead. Passed on FFmpeg 9.0 (macOS) and 5.1 (Debian
+  bookworm). Combining a five-minute piece (640x480 7 fps base, 90 s of 2688x1512 15 fps stretches)
+  took 14 s with libx264 and 16 s with VideoToolbox on an Apple M5 Max (4 threads).
+- Adaptive recording decisions (`tests/recorded.test.ts`), with a fake recorder and fake media
+  operations, no FFmpeg: channel 0 alone when it covers the window; the low channel as base with the
+  high-resolution stretches placed by audio when channel 0 is more than a second short; the low
+  channel alone when the audio cannot place them, and when channel 0 has nothing or is busy; "may be
+  missing time" when the low channel keeps failing; which error wins when both channels fail; the
+  exact 1 s and 2 s thresholds; channel 0 kept, with no lead, when it cannot be read; every export
+  retimed before it is read, kept when retiming fails, and a cancel during a retime stopping the
+  fetch; a clip piece combined into one file, or saved in low resolution when combining fails; the
+  keyframe lead, capped at 10 s. `Recordings` itself (retries, the join's use of each piece's lead)
+  is still covered only by the FFmpeg-backed tests.
+- Recorded playback and clip choice in the player (`tests/player.test.ts`), with fake video
+  elements, no browser: where media time 0 sits (lead, first recorded moment), when the next window
+  is buffered and when it may take over, the handover at the window's end rather than the file's,
+  the overlay moved when it drifts more than 0.25 s, played, paused and sped up with the base, shown
+  only with the right frame, parked at the next stretch between stretches and never shown when
+  broken; a clip's ends dragged and typed within the length limits and never past two seconds ago,
+  and the timeline's zoom, pan and refitting. The React wiring around them is not tested.
+- Resize speed (synthetic 640x480 7 fps source, five minutes, Apple M5 Max, 4 threads): 8.5 s to
+  2688x1512 with libx264 `veryfast`, 7.6 s with VideoToolbox. Reading the picture sizes of a
+  five-minute 2688x1512 piece took about 1 s.
 - UniFi export streaming, against a mocked recorder (undici `MockAgent`, `tests/unifi-export.test.ts`):
   the separate sign-in (root CSRF token, login, `TOKEN` cookie), the body streamed to disk, one
-  re-sign-in after a 401, and refusals or tiny bodies reported as nothing recorded. This pins what
-  Vantage sends, not what a real UNVR answers.
+  re-sign-in after a 401, refusals or tiny bodies reported as nothing recorded, and 500, 503, 429 and
+  408 answers reported as busy without marking the recorder down. This pins what Unifeye sends, not
+  what a real UNVR answers.
+- Recorder failures during a long clip (`tests/api.test.ts`, "clip exports when the recorder fails
+  part of the clip", mock mode): a piece that fails twice as busy and then succeeds is kept, and the
+  clip comes out the full length with no warning. A piece that keeps failing is tried three times
+  per channel, left out, and the clip is marked `busy` with its real (five minutes shorter) length.
+  A piece with nothing recorded is not retried and is marked `unrecorded`. A clip where every piece
+  fails ends with "The recorder is busy. Try again in a few minutes."
+- Video straight from the camera (`tests/api.test.ts`, "video straight from the camera", and
+  `tests/rtsp-check.test.ts` against a pretend camera on a local socket): administrators only, only
+  cameras that offer it, refused while viewing as someone else; the login is checked with the camera
+  before saving and a wrong one saves nothing; the password is stored encrypted and appears in no
+  response or audit entry; the default login is used when a camera has none; live video uses the
+  camera's address, falls back to the recorder after a failed attempt, tries the camera again after
+  the settings are saved, and stops asking the camera once turned off. The check sends only DESCRIBE
+  on one connection, answers Digest (with and without qop) and Basic, and tells a wrong login, H.265,
+  a missing stream and an unreachable camera apart. Cameras that only stream through the recorder are
+  never offered it and the camera is never asked; one that stops offering it after being switched on
+  plays through the recorder and can still be switched off.
 - Preview: subject's permissions on data and media, administrator stays the actor, all mutations and
   admin routes blocked, forged, foreign and expired contexts rejected, two tabs kept apart, both
   identities audited, subject's profile untouched.
@@ -75,8 +141,25 @@ reader. They show what the gateway decides, not how MediaMTX behaves.
   issuer and subject mapping, no linking by email, zero-access provisioning, one-time bootstrap,
   session rotation and expiry, CSRF, safe redirects, provider outage, back-channel logout including
   replay and malformed tokens, and lifecycle re-validation.
-- No local login: no login, registration or password routes; no credential tables; mock mode in
-  production still requires OIDC settings.
+- Password accounts off (the default): no password, registration or link routes; admin creation
+  refused; mock mode in production with `oidc` still requires OIDC settings.
+- Password accounts on (`tests/local-accounts.test.ts`): admin-only creation, zero-access profiles
+  keyed by their own id, link secrets stored hashed and kept out of the audit log, one use per link
+  (also under a race), expiry, superseded links, weak passwords refused without using the link,
+  scrypt storage, identical answers for unknown usernames, wrong passwords and unset passwords,
+  lockout for real and unknown usernames (audited, not flushable by flooding the tracker), the
+  concurrency cap on password checks, body size limits, return addresses with stripped characters,
+  a password change cancelling unused links and having its own lock, Origin and JSON checks, `LOCAL_APP_URL`, session rotation,
+  sessions ending on a new password and on disable, changing your own password, and turning `local`
+  or `oidc` off locking those people out.
+- Cloudflare Access against a stubbed key endpoint (`tests/cloudflare.test.ts`): sign-in from a
+  valid token, refusal of forged, foreign-issuer, foreign-audience, expired, unknown-key and
+  subject-less tokens, the token re-checked on every request and bound to the session's identity,
+  Cloudflare sessions refused without the header, tokens sent without Cloudflare's origin secret
+  refused (and not refreshing the session), password sessions and password sign-in refused
+  with it, no fallback to passwords on a bad token, suspension after `CF_ACCESS_RECHECK_SECONDS`,
+  sign-out through Access, bootstrap, no takeover of another method's profile, and turning the
+  method off.
 - Operations: clean install, upgrade from the previous schema with a pre-migration backup, failed
   migration leaving data intact, newer-database refusal, backup integrity under WAL, restore into a
   clean location with permissions preserved and sessions revoked, corrupt backup rejection.
@@ -86,8 +169,8 @@ reader. They show what the gateway decides, not how MediaMTX behaves.
 
 These checks were made before the MediaMTX calls were moved behind the relay interface
 (`src/server/media/relay.ts`, `mediamtx.ts`). The requests were moved without intended change and
-are now pinned by the stub tests above, but nothing below has been repeated against a real MediaMTX
-since the move.
+are now pinned by the stub tests above. Production has since run live video through the moved code
+(see "In production" below), but the individual checks below were not repeated.
 
 - Sign-in through the test provider, bootstrap administrator, demo seed, landing view.
 - Eight simultaneous WebRTC streams admitted through the auth hook.
@@ -136,33 +219,135 @@ since the move.
   Not heard through speakers, and not checked in Safari or Firefox, whose audio detection takes a
   different path.
 - Live sound from a real UNVR camera (one camera, 2560×1920 with AAC 16 kHz and Opus tracks), in
-  headless Chromium over WebRTC against MediaMTX 1.21.4, outside Vantage: pulled directly, Chrome
+  headless Chromium over WebRTC against MediaMTX 1.21.4, outside Unifeye: pulled directly, Chrome
   discarded 430 of 560 audio packets and concealed 95% of the samples (the garble-then-silence
   heard in Chrome and Safari), because Protect's audio timestamps advance in milliseconds against a
   16 or 48 kHz clock. Through the retiming FFmpeg command `mediamtx.ts` generates: 0 packets
   discarded, 0 samples concealed, no video freezes, about 1 s to start. A video-only source through
   the same command played video with no audio track. Not heard through speakers; HLS not played.
 
+**Docker image and Compose stack (2026-11-16, Linux VM, real UNVR, behind a Cloudflare tunnel):**
+
+- The first build of the image failed (`better-sqlite3` had no compiler), the ops CLI could not load
+  `better-sqlite3` in the image, and the MediaMTX health check never passed. All three are fixed in
+  the Dockerfile and `compose.yaml`; the image build now loads `better-sqlite3` from the CLI's path.
+- Both containers start healthy, the app connects to the UNVR with TLS verification
+  (`PROTECT_TLS_CA_FILE`), and `cli.mjs backup` and `restore` work inside the app container.
+- The data volume survived `docker compose down` and `up`.
+- MediaMTX's auth hook on its own port (`HOOK_PORT`) was checked with a real MediaMTX 1.21.4 in the
+  QA stack: the control API is admitted through it, and `POST /api/internal/mediamtx-auth` on the
+  web port returns 404. The production check below covers the hook in the Compose stack.
+
+**In production (checked 2026-11-17 on `5a3fd7e`, Compose, real UNVR, Zitadel, Cloudflare Tunnel):**
+
+Read from the running stack, its audit log and its logs. Nothing was changed.
+
+- `/api/ready` reports the recorder in real mode and connected, the relay up, and a recent camera
+  sync. All 42 cameras are synced.
+- Live video through the hook port in Compose, after the relay refactor: over 8 hours MediaMTX
+  logged 178 admitted readers and 134 WebRTC sessions, plus HLS. No authentication failures.
+- Zitadel: 19 sign-ins, sign-out, 2 back-channel logouts, profiles created on first sign-in,
+  admission by project role, and group membership synced from the provider's claims.
+- 9 clip exports from the real recorder, and one restore.
+
+**Wall tiles refused with 429 after a restart (2026-11-17):**
+
+- On production, after the app restarted, most wall tiles got 429 on WebRTC setup and two got 502.
+  MediaMTX logs for the minute after: 26 WebRTC sessions closed with "deadline exceeded while
+  waiting connection" (offered, never used) against 9 that connected; the two 502s were cameras
+  whose source timed out. Each unused session kept a stream slot until MediaMTX dropped it and a
+  sweep noticed (30 s or more), so the session reached its limit of 12 streams.
+- Two leaks fixed. A tile that stopped while its offer was in flight never tore the session down;
+  it now does when the answer arrives (`src/ui/live.tsx`, not checked in a browser). An offer that
+  failed after the hook admitted its reader kept that reader's slot; `tests/api.test.ts` ("does not
+  hold a stream slot for a WebRTC offer that failed") fails on the previous code.
+  Not yet checked on production.
+
+**HLS stopping after 25 seconds (2026-11-17):**
+
+- On production, a camera's enlarged view on HLS showed repeated 502s for `video1_stream.m3u8` and
+  `audio2_stream.m3u8`. MediaMTX 1.21.4 (`internal/servers/hls/http_server.go`) starts a session
+  only on the top playlist and finds it again by cookie for every other file, answering 401
+  "session not found" without one. The gateway replaced its relay reader, and so lost that cookie,
+  each time it renewed the ticket (every 25 seconds). A player only ever asks for the top playlist
+  once, so from then on every request failed, and the 401 reached the browser as a 502.
+- `tests/api.test.ts` ("keeps an HLS stream playing past the ticket's renewal") fails on the
+  previous code. The in-memory relay now asks the hook only when the top playlist opens a session,
+  as MediaMTX does. `tests/mediamtx.test.ts`: a renewed ticket is sent with the same cookie.
+  Not yet checked on production.
+
+**HLS stream slots and timeline previews (2026-11-17):**
+
+- On production, after the rate-limit change, HLS tiles still got 429: the response was
+  `too_many_streams`. MediaMTX logs over 30 minutes: 98 HLS readers closed as inactive, most 30 to
+  60 s after they were created, so a stopped tile's stream kept its slot that long.
+- `tests/api.test.ts` ("releases an HLS stream's slot"): with a 2-stream limit, a third stream is
+  refused, then accepted at once after the player releases one; the release kicks only that
+  session's reader, another person's stream on the same camera keeps playing, and the answer is
+  the same for any camera id. The player's side (release on stop, waiting on 429) is not yet
+  checked in a browser.
+- Protect 7.3.74 `recording-snapshot`, asked for every camera at 30 minutes ago: 200 for the four
+  Dahua intercoms and one IPC-BO camera, "Recording not found" for the other 37 (IPC-BO, Reolink),
+  while a 2-second export of the same moment worked. `tests/unifi-stills.test.ts`: a camera that
+  never gives a still is skipped after three misses and tried again after 30 minutes; a camera that
+  has given one is never skipped.
+
+**Rate limits and HLS walls (2026-11-17):**
+
+- On production, a tab using HLS on a full wall got 429s. Measured in Chrome: 9 HLS tiles made 29
+  playlist requests per tile per minute (video and sound playlists every 4 s), with segments at
+  the same rate, plus about 100 still-image refreshes a minute for the other tiles: about 620
+  against a 600 limit per address.
+- `tests/api.test.ts` ("rate limits"): 700 HLS requests a minute from one session pass with the
+  default stream limit, and snapshots keep their own budget; the HLS limit follows
+  `MAX_WALL_STREAMS`; two people at one address each get the full limit, and a new address does not
+  reset a session; failed authentication is limited per address without refusing a valid session
+  there; a client changing the first `X-Forwarded-For` entry does not get a fresh sign-in budget.
+  All four fail on the previous code. Not yet checked on production.
+
+**Camera check against real cameras (2026-11-17, production network, read-only):**
+
+- Protect reports a plain `rtsp://` address without a login for all 42 cameras (Reolink
+  `h264Preview_01_main` / `_sub`, Dahua door stations `cam/realmonitor`). On the door stations
+  Protect's low-quality address is the main stream (`subtype=0`), so their wall tiles would pull the
+  full stream.
+- `checkRtsp` against Polar Bears (Reolink, 10.48.20.205): both streams answered H.264 with AAC sound
+  for the right login, and "login" for a wrong one.
+- Not yet checked: playing a camera this way in the browser through MediaMTX and the retiming FFmpeg.
+
+**Live start-up with retimed sound (2026-11-17, real UNVR, MediaMTX 1.21.4 on macOS, read-only):**
+
+- Production logs over four hours: about two thirds of cold starts had the retiming FFmpeg exit with
+  "dimensions not set" (exit 234), then ready only after MediaMTX's 5 s restart pause (6 to 9 s in
+  all, against 1 to 2 s otherwise); some passed MediaMTX's 10 s start limit and never played.
+- Reproduced locally with one real camera's low stream through `<path>_src`: with the old half-second
+  probe, FFmpeg failed every time and the stream never became ready in 15 s. With the 10 s probe and
+  `-fpsprobesize 0`, it was ready in 3.1 to 4.0 s over four cold starts with no failures. Not yet
+  checked in the Compose stack.
+
 ## Not verified
 
 | Area | Why | What could go wrong |
 | --- | --- | --- |
-| Real UNVR: login, camera discovery, snapshots, events, thumbnails, video export, RTSPS relay | No recorder available | Private endpoint shapes or required privileges differ on your Protect version |
-| "Recording now" indicator on a real UNVR | No recorder available | Relies on the camera `isRecording` field and realtime camera updates; a wrong assumption shows a stale or missing REC mark, never extra access |
+| Other Protect versions and recorder models | Only Protect 7.3.74 on one UNVR | Private endpoint shapes or required privileges differ on your Protect version |
+| "Recording now" indicator on a real UNVR | Not checked against the recorder | Relies on the camera `isRecording` field and realtime camera updates; a wrong assumption shows a stale or missing REC mark, never extra access |
+| Camera filter on the events query (`cameras=`) | Not checked against the recorder | If Protect ignores it, a busy recorder's other cameras use up the page budget and the player shows markers only for the latest hours; if Protect refuses it with a 400, Unifeye logs a warning and filters locally |
 | Recording gaps on a real UNVR | No known endpoint | Timeline shows only the overall recorded period |
-| A real OIDC provider: login, admission claim, logout, back-channel logout, deactivation detection | No instance available | Claim placement, refresh-token or back-channel behaviour, or error codes differ by provider |
-| Docker image and Compose stack | Docker not running | Build errors, native module missing from the standalone output, MediaMTX environment overrides, volume ownership |
-| Persistence across container recreation | Needs Compose | Covered only by the file-level restore test |
+| Identity providers other than Zitadel, and deactivation detection on any provider | Only Zitadel was used | Claim placement, refresh-token or back-channel behaviour, or error codes differ by provider; a person disabled at the provider keeps access longer than expected |
+| Cloudflare Access against a real team | No Access application available | Token claims (`sub`, `email`) or key rotation behave differently from the stub; the Transform Rule header not reaching the origin through the tunnel; the 30-second `/me` reload not reaching Unifeye often enough behind Access |
+| Password sign-in and password links in a browser | Checked through the API tests and a production build only | Password-manager autofill, the set-password page on phones |
 | Browser test suite | Not written | Screens were checked by hand in one desktop browser |
 | Phones and tablets | No device testing | Layout or touch problems |
-| HLS playback in a browser | Only the gateway responses were checked | Player-level issues |
-| Sound from a real UNVR in Vantage end to end | The retiming relay was checked outside Vantage only (see Verified) | HLS sound, wall-quality streams, other camera models; recordings from Protect may lack audio |
+| HLS playback in a browser | Used in Chrome in production, where it turned up the HLS bugs above; the fixes are not yet checked there | Player-level issues |
+| Sound from a real UNVR in Unifeye end to end | The retiming relay was checked outside Unifeye only (see Verified) | HLS sound, wall-quality streams, other camera models; recordings from Protect may lack audio |
 | Sound in Safari and Firefox | Only Chromium was used | "No audio" shown wrongly, or the speaker missing; no level meter in Safari for HLS and recordings |
 | Clip export in the browser | Checked by hand in Chromium with mock cameras: zooming and panning the clip timeline, and a 2-hour clip (prepared in about 2.5 minutes, 7200 s long). Long clips in pieces (mock mode, headless Chromium): a 21-minute clip showed the sweep, then 57% and 76% with a time left, then "Putting the pieces together", started its download by itself and came out 1260.0 s long | Not checked on a phone or with touch |
-| Long clips from a real UNVR | One 1 h 55 min clip from one camera with adaptive recording (see Verified); fourteen of its pieces joined outside Vantage after the fix | How long Protect takes before sending the first byte of an hour-long export (Vantage waits up to 15 minutes), whether it caps export length, the disk space a clip needs, whether exporting pieces in parallel is faster than one long export on your recorder, and whether the joins between pieces are seamless on real camera streams |
+| Long clips from a real UNVR | One 1 h 55 min clip from one camera with adaptive recording (see Verified); fourteen of its pieces joined outside Unifeye after the fix. A 2 h clip from the same camera, saved before adaptive pieces were combined, came out 1 h 17 min: the burned-in clock showed 15 fps throughout but skipped between motion stretches, and about four minutes of low-resolution night footage were missing too | How long Protect takes before sending the first byte of an hour-long export (Unifeye waits up to 15 minutes), whether it caps export length, the disk space a clip needs, whether exporting pieces in parallel is faster than one long export on your recorder, whether the joins between pieces are seamless on real camera streams, and which status a real UNVR answers when it is overloaded or has nothing recorded (a 5xx for "nothing recorded" would be retried, then reported as busy) |
+| Clip resizing on a GPU in Linux (VAAPI with Intel Quick Sync or AMD, NVENC) | No such GPU available; only "no device, so the CPU" was checked | The driver rejects the settings and every clip resizes on the CPU (logged at start-up of the first clip), or a driver encodes at a quality that looks worse |
+| Clip resizing and combining with real adaptive recordings | Synthetic files and mock mode only | Real low-resolution pieces that are not 4:3 or change size in a way the keyframe scan misses; players that still resize on a real joined file; file size; whether Protect's channel 0 export of a piece with no motion is low resolution, empty or an error (each case is handled, but only the mock was seen); how long combining takes on a small server |
 | Activity live updates in the browser | Checked through the API tests only | UI wiring |
 | Revocation bound under load | Checked with three streams | Slower with many sessions |
-| MediaMTX after the relay refactor | Not re-run against a real process | A request that differs from the hand-checked one in a way the stub tests do not catch |
+| Video straight from the camera, end to end | Only the camera check ran against real cameras | The camera refuses a second reader or drops frames under the extra connection; MediaMTX logs the camera address (without the password); door stations' swapped stream addresses |
 | Recovery after a MediaMTX restart | Cache invalidation tested against the stub only | Which status MediaMTX returns for a path it no longer has; whether re-adding an identical path disturbs readers |
 
 ## Checking a real UNVR (read-only)
@@ -179,7 +364,7 @@ With `.env` pointing at the recorder and the app running, signed in as an admini
 7. Save a 15-second clip and play the downloaded file.
 8. In Protect, confirm nothing changed: no new users, settings or streams.
 
-Record the Protect version and the role the Vantage user needed in the table above.
+Record the Protect version and the role the Unifeye user needed in the table above.
 
 ## Checking a real identity provider
 
@@ -187,7 +372,7 @@ Record the Protect version and the role the Vantage user needed in the table abo
 2. Sign in as a user whose admission claim does not match: you land on the signed-out page with
    "not set up".
 3. Sign in as a new user whose claim matches: no cameras, role Staff.
-4. Sign out in Vantage: you are returned to the signed-out page and the provider's session ends.
+4. Sign out in Unifeye: you are returned to the signed-out page and the provider's session ends.
 5. If the provider supports back-channel logout: with a camera playing, end that user's session at
    the provider. Video stops and the next click asks for sign-in. Note how long it took.
 6. With a camera playing, disable the user at the provider: the stream stops within

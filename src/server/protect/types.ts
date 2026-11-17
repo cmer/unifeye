@@ -1,5 +1,5 @@
 /**
- * Everything Vantage needs from UniFi Protect, and nothing else. The contract is read-only:
+ * Everything Unifeye needs from UniFi Protect, and nothing else. The contract is read-only:
  * there is no method that changes camera settings, recordings, retention, events or Protect users.
  * `mock.ts` and `unifi.ts` both implement it, so the application never knows which one it has.
  */
@@ -13,12 +13,20 @@ export interface ProtectCamera {
   model?: string;
   /** Detection types this camera can report. Used to tell "unsupported" apart from "no results". */
   eventTypes: EventType[];
-  /** Streams that are already enabled on the camera. Vantage never enables one itself. */
+  /** Streams that are already enabled on the camera. Unifeye never enables one itself. */
   streams: { quality: "high" | "medium" | "low"; width: number; height: number; codec?: string }[];
   /** Outer bounds of what the recorder holds for this camera, when known. */
   recordingStartMs?: number;
   recordingEndMs?: number;
+  /** A camera made by someone other than Ubiquiti, whose video Unifeye can also pull from the camera itself. */
+  direct?: boolean;
 }
+/** The login Unifeye uses to read video from a camera directly. Server-side only. */
+export interface CameraLogin { username: string; password: string }
+/** Why reading a camera directly did not work, or what it sends when it did. */
+export type DirectCheck =
+  | { ok: true; video: string; audio: string | null }
+  | { ok: false; reason: "unsupported" | "unreachable" | "login" | "no_stream" | "video_format"; detail?: string };
 export interface ProtectEvent {
   id: string;
   protectCameraId: string;
@@ -58,6 +66,17 @@ export interface EventQuery {
 }
 export class ProtectUnavailableError extends Error {}
 export class NoRecordingError extends Error { override name = "NoRecordingError"; }
+/**
+ * The recorder answered an export with a server error, a timeout or "too many requests" (`status`).
+ * Unlike NoRecordingError, this says nothing about what was recorded, so it is worth trying again.
+ */
+export class RecorderBusyError extends ProtectUnavailableError {
+  override name = "RecorderBusyError";
+  constructor(readonly status: number) { super(`recorder answered ${status}`); }
+}
+// Matched by name as well, because the server bundles these modules more than once.
+export const isNoRecording = (e: unknown) => e instanceof NoRecordingError || (e as Error)?.name === "NoRecordingError";
+export const isRecorderBusy = (e: unknown) => e instanceof RecorderBusyError || (e as Error)?.name === "RecorderBusyError";
 
 export interface ProtectAdapter {
   readonly mode: "mock" | "real";
@@ -71,6 +90,13 @@ export interface ProtectAdapter {
   /** JPEG. `atMs` requests a still from the recording near that time, where supported. */
   snapshot(protectCameraId: string, opts?: { width?: number; atMs?: number; signal?: AbortSignal }): Promise<Buffer>;
   liveSource(protectCameraId: string, quality: "wall" | "focus"): Promise<LiveSource | null>;
+  /**
+   * The same live video read from the camera itself rather than re-streamed by the recorder, for
+   * cameras with `direct`. Null when the camera does not offer it or is offline. Never changes the camera.
+   */
+  directSource(protectCameraId: string, quality: "wall" | "focus", login: CameraLogin): Promise<LiveSource | null>;
+  /** Asks the camera to describe its streams with this login (no video is read). Used before turning direct video on. */
+  checkDirect(protectCameraId: string, login: CameraLogin): Promise<DirectCheck>;
   recordingRanges(protectCameraId: string, fromMs: number, toMs: number): Promise<RecordingRanges>;
   /** Writes an MP4 covering [startMs, endMs) to `destPath`. Throws NoRecordingError when nothing was recorded. */
   exportClip(protectCameraId: string, startMs: number, endMs: number, destPath: string, opts?: { quality?: "wall" | "focus"; signal?: AbortSignal }): Promise<void>;
