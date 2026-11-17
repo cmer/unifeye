@@ -7,9 +7,9 @@ import type { Sessions } from "./auth/session";
 import { subjectOf, type Actor } from "./authz/actor";
 import type { Policy } from "./authz/policy";
 import type { Views, ViewRow } from "./authz/views";
-import { groupsClaim, signInMethods } from "./config";
+import { config, groupsClaim, signInMethods } from "./config";
 import { schema, type Db } from "./db";
-import { badRequest, conflict, forbidden, newId, notFound } from "./util";
+import { badRequest, conflict, encrypt, forbidden, newId, notFound } from "./util";
 
 const S = schema;
 const tagName = z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9_]{0,39}$/, "Tags can only use lowercase letters, numbers and underscores.");
@@ -85,6 +85,33 @@ export class Admin {
     if (on) this.db.insert(S.cameraTags).values({ cameraId, tagId }).onConflictDoNothing().run();
     else this.db.delete(S.cameraTags).where(and(eq(S.cameraTags.cameraId, cameraId), eq(S.cameraTags.tagId, tagId))).run();
     this.log(a, on ? "camera.tag" : "camera.untag", "camera", cameraId, { tagId });
+    this.done();
+  }
+
+  /**
+   * Reads a camera's live video from the camera itself instead of the recorder, optionally with its own
+   * login. `password`: undefined keeps the saved one, null or "" goes back to the default. The caller
+   * checks the camera accepts the login first (`Media`); nothing here talks to the camera or the recorder.
+   */
+  setCameraDirect(a: Actor, cameraId: string, input: { enabled: boolean; username?: string | null; password?: string | null }) {
+    this.admin(a, "camera.direct");
+    if (!this.db.select({ id: S.cameras.id }).from(S.cameras).where(eq(S.cameras.id, cameraId)).get()) throw notFound();
+    const v = z.object({
+      enabled: z.boolean(),
+      username: z.string().trim().max(64, "Usernames can be up to 64 characters.").nullish(),
+      password: z.string().max(128, "Passwords can be up to 128 characters.").nullish(),
+    }).parse(input);
+    const key = config().TOKEN_ENC_KEY;
+    if (v.password && !key) throw badRequest("Unifeye can't save camera passwords until TOKEN_ENC_KEY is set on the server.");
+    const cur = this.db.select().from(S.cameraDirect).where(eq(S.cameraDirect.cameraId, cameraId)).get();
+    const row = {
+      cameraId, enabled: v.enabled, updatedAt: Date.now(),
+      username: v.username !== undefined ? v.username || null : cur?.username ?? null,
+      passwordEnc: v.password ? encrypt(v.password, key!) : v.password === undefined ? cur?.passwordEnc ?? null : null,
+    };
+    this.db.insert(S.cameraDirect).values(row).onConflictDoUpdate({ target: S.cameraDirect.cameraId, set: row }).run();
+    // Never the password, not even its length.
+    this.log(a, "camera.direct", "camera", cameraId, { enabled: row.enabled, ownLogin: !!row.username || !!row.passwordEnc });
     this.done();
   }
 

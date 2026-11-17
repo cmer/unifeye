@@ -163,6 +163,19 @@ export const cameras = sqliteTable(
   (t) => [uniqueIndex("cameras_nvr_protect").on(t.nvrId, t.protectId)],
 );
 
+/**
+ * Cameras an administrator switched to reading live video from the camera itself instead of the
+ * recorder's re-stream. A row without its own login uses DEFAULT_CAMERA_USERNAME / _PASSWORD.
+ */
+export const cameraDirect = sqliteTable("camera_direct", {
+  cameraId: text("camera_id").primaryKey().references(() => cameras.id, { onDelete: "cascade" }),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(false),
+  username: text("username"),
+  /** Encrypted with TOKEN_ENC_KEY. Never sent to a browser. */
+  passwordEnc: text("password_enc"),
+  updatedAt: ts("updated_at").notNull(),
+});
+
 export const tags = sqliteTable("tags", { id: id(), name: text("name").notNull(), createdAt: ts("created_at").notNull() }, (t) => [
   uniqueIndex("tags_name").on(t.name),
   check("tags_name_format", sql`${t.name} glob '[a-z0-9]*' and ${t.name} not glob '*[^a-z0-9_]*' and length(${t.name}) <= 40`),

@@ -14,7 +14,7 @@ import { fail, Page, PageHeader, Select, useApp } from "./app";
 import { Card, landingReason, Pill, Row, type Overview } from "./manage-views";
 
 const TH = "px-3 py-2.5 text-left text-xs font-medium whitespace-nowrap text-muted-foreground", TD = "border-t px-3 py-2.5 align-middle";
-const ACTION: Record<string, string> = { "auth.login": "Signed in", "auth.logout": "Signed out", "auth.password_set": "Chose a password", "auth.locked": "Too many wrong passwords", "user.create": "Added a person", "user.password_link": "Made a password link", "auth.backchannel_logout": "Signed out by the sign-in provider", "auth.provider_revoked": "Access ended by the sign-in provider", "user.provisioned": "First sign-in", "admin.bootstrap": "Became the first administrator", "user.update": "Changed a person", "group.create": "Added a group", "group.update": "Changed a group", "group.delete": "Deleted a group", "group.member.add": "Added to a group", "group.member.remove": "Removed from a group", "group.member.sync_add": "Added to a group by the sign-in provider", "group.member.sync_remove": "Removed from a group by the sign-in provider", "grant.add": "Gave camera access", "grant.revoke": "Removed camera access", "tag.create": "Added a tag", "tag.rename": "Renamed a tag", "tag.delete": "Removed a tag", "camera.tag": "Tagged a camera", "camera.untag": "Untagged a camera", "view.create": "Created a view", "view.update": "Changed a view", "view.convert": "Changed a view's type", "view.delete": "Deleted a view", "view.share": "Changed sharing", "default.set": "Set a starting view", "preview.start": "Started viewing as", "preview.exit": "Stopped viewing as", "preview.end": "Viewing as ended", "preview.mutation": "Tried to make a change while viewing as", "preview.use": "Used an expired view-as session", "clip.export": "Saved a clip", "admin.access": "Tried to open Admin", "system.start": "Unifeye started" };
+const ACTION: Record<string, string> = { "auth.login": "Signed in", "auth.logout": "Signed out", "auth.password_set": "Chose a password", "auth.locked": "Too many wrong passwords", "user.create": "Added a person", "user.password_link": "Made a password link", "auth.backchannel_logout": "Signed out by the sign-in provider", "auth.provider_revoked": "Access ended by the sign-in provider", "user.provisioned": "First sign-in", "admin.bootstrap": "Became the first administrator", "user.update": "Changed a person", "group.create": "Added a group", "group.update": "Changed a group", "group.delete": "Deleted a group", "group.member.add": "Added to a group", "group.member.remove": "Removed from a group", "group.member.sync_add": "Added to a group by the sign-in provider", "group.member.sync_remove": "Removed from a group by the sign-in provider", "grant.add": "Gave camera access", "grant.revoke": "Removed camera access", "tag.create": "Added a tag", "tag.rename": "Renamed a tag", "tag.delete": "Removed a tag", "camera.tag": "Tagged a camera", "camera.untag": "Untagged a camera", "camera.direct": "Changed where a camera streams from", "view.create": "Created a view", "view.update": "Changed a view", "view.convert": "Changed a view's type", "view.delete": "Deleted a view", "view.share": "Changed sharing", "default.set": "Set a starting view", "preview.start": "Started viewing as", "preview.exit": "Stopped viewing as", "preview.end": "Viewing as ended", "preview.mutation": "Tried to make a change while viewing as", "preview.use": "Used an expired view-as session", "clip.export": "Saved a clip", "admin.access": "Tried to open Admin", "system.start": "Unifeye started" };
 
 /** Unifeye's own data only: people's access, groups, camera grants and tags. Nothing here changes the recorder or the identity provider. */
 export function Admin() {
@@ -25,6 +25,8 @@ export function Admin() {
   const [pick, setPick] = useState("");
   const [adding, setAdding] = useState(false);
   const [link, setLink] = useState<{ name: string; url: string; expiresAt: number } | null>(null);
+  const [checking, setChecking] = useState<string | null>(null);
+  const [login, setLogin] = useState<string | null>(null);
   const load = useCallback(() => api<Overview>("/admin/overview").then(setOv).catch(fail), []);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { if (tab === "history") api<{ entries: typeof log }>("/admin/audit").then((r) => setLog(r.entries)).catch(fail); }, [tab]);
@@ -47,7 +49,7 @@ export function Admin() {
   return (
     <Page>
       <PageHeader title="Admin" />
-      <Tabs value={tab} onValueChange={(v) => setTab(String(v))} className="mb-4"><TabsList className="h-auto flex-wrap">{[["people", "People"], ["groups", "Groups"], ["access", "Camera access"], ["tags", "Tags"], ["see", "View as"], ["signin", "Sign-in"], ["history", "History"]].map(([k, l]) => <TabsTrigger key={k} value={k}>{l}</TabsTrigger>)}</TabsList></Tabs>
+      <Tabs value={tab} onValueChange={(v) => setTab(String(v))} className="mb-4"><TabsList className="h-auto flex-wrap">{[["people", "People"], ["groups", "Groups"], ["access", "Camera access"], ["tags", "Tags"], ["live", "Live video"], ["see", "View as"], ["signin", "Sign-in"], ["history", "History"]].map(([k, l]) => <TabsTrigger key={k} value={k}>{l}</TabsTrigger>)}</TabsList></Tabs>
 
       {tab === "people" && (
         <>
@@ -111,6 +113,32 @@ export function Admin() {
         </>
       )}
 
+      {tab === "live" && (() => {
+        const setting = (id: string) => ov.direct.cameras.find((d) => d.cameraId === id);
+        // Cameras that can send video on their own, plus any switched on that no longer can (so it can be turned off).
+        const cams = ov.cameras.filter((c) => ov.direct.capable.includes(c.id) || setting(c.id)?.enabled);
+        const toggle = async (id: string, on: boolean) => { setChecking(id); await put(`/admin/cameras/${id}/direct`, { enabled: on }); setChecking(null); };
+        const who = (id: string) => { const d = setting(id); return d?.username || d?.ownPassword ? `Its own login${d.username ? ` (${d.username})` : ""}` : ov.direct.defaultUsername ? `Default login (${ov.direct.defaultUsername})` : "No login yet"; };
+        return (
+          <>
+            <p className="mb-3 text-sm text-muted-foreground">Live video normally comes through the recorder. If a camera&apos;s live video stutters, Unifeye can get it from the camera instead. Recordings always come from the recorder.</p>
+            {!cams.length ? <p className="text-sm text-muted-foreground">None of your cameras can do this right now. Only some cameras can send video on their own; UniFi cameras always use the recorder.</p> : (
+              <div className="overflow-auto rounded-xl border"><table className="w-full text-sm"><thead><tr><th className={TH}>Camera</th><th className={TH}>From the camera</th><th className={TH}>Login</th><th className={TH} /></tr></thead><tbody>
+                {cams.map((c) => (
+                  <tr key={c.id}>
+                    <td className={`${TD} whitespace-nowrap`}><i className={`mr-2 inline-block size-1.5 rounded-full align-middle ${c.missing ? "bg-zinc-400" : c.online ? "bg-green-500" : "bg-red-500"}`} />{c.name}</td>
+                    <td className={TD}><span className="inline-flex items-center gap-2"><Switch aria-label={`Get ${c.name} from the camera`} checked={!!setting(c.id)?.enabled} disabled={checking === c.id} onCheckedChange={(on) => void toggle(c.id, on)} />{checking === c.id && <span className="text-xs text-muted-foreground">Checking the camera…</span>}</span></td>
+                    <td className={`${TD} text-muted-foreground`}>{ov.direct.capable.includes(c.id) ? who(c.id) : "This camera can't send video on its own anymore, so the recorder is used."}</td>
+                    <td className={`${TD} text-right`}>{ov.direct.capable.includes(c.id) && <Button size="sm" variant="outline" onClick={() => setLogin(c.id)}><KeyRound />Change login</Button>}</td>
+                  </tr>
+                ))}
+              </tbody></table></div>
+            )}
+            <p className="mt-3 text-sm text-muted-foreground">{ov.direct.defaultUsername ? `Cameras without their own login use "${ov.direct.defaultUsername}"${ov.direct.defaultPassword ? "" : " with no password"}. The default is set on the server.` : "There's no default login. Give each camera its own, or set a default on the server."}</p>
+          </>
+        );
+      })()}
+
       {tab === "see" && (!chosen ? <p className="text-sm text-muted-foreground">No staff to view as.</p> : (
         <Card title="View as someone else" hint="See exactly what they see. Changes are turned off, and it ends automatically.">
           <Row label="Person"><Select aria-label="Person" value={chosen.id} onChange={(e) => setPick(e.target.value)}>{preview.map((u) => <option key={u.id} value={u.id}>{nameOf(u)}</option>)}</Select><Button onClick={() => seeAs(chosen.id)}><Eye />Start</Button></Row>
@@ -144,6 +172,7 @@ export function Admin() {
       )}
       {adding && <AddPerson onClose={() => setAdding(false)} onAdded={(name, l) => { setAdding(false); setLink({ name, ...l }); void load(); }} />}
       {link && <LinkDialog {...link} onClose={() => setLink(null)} />}
+      {login && ((c) => c && <CameraLogin name={c.name} cameraId={c.id} enabled={!!ov.direct.cameras.find((d) => d.cameraId === c.id)?.enabled} current={ov.direct.cameras.find((d) => d.cameraId === c.id)} defaultUsername={ov.direct.defaultUsername} canSavePassword={ov.direct.canSavePassword} onClose={() => setLogin(null)} onSaved={() => { setLogin(null); void load(); }} />)(ov.cameras.find((x) => x.id === login))}
     </Page>
   );
 }
@@ -187,6 +216,40 @@ function LinkDialog({ name, url, expiresAt, onClose }: { name: string; url: stri
         <div className="flex gap-2"><Input readOnly value={url} aria-label="Password link" className="font-mono text-xs" onFocus={(e) => e.currentTarget.select()} /><Button variant="outline" onClick={copy}><Copy />Copy</Button></div>
         <p className="text-xs text-muted-foreground">You won&apos;t be able to see this link again. You can always make a new one.</p>
         <DialogFooter><Button onClick={onClose}>Done</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** The camera's own login. The saved password is never shown; leaving the field empty keeps it. */
+function CameraLogin({ name, cameraId, enabled, current, defaultUsername, canSavePassword, onClose, onSaved }: { name: string; cameraId: string; enabled: boolean; current?: { username: string | null; ownPassword: boolean }; defaultUsername: string | null; canSavePassword: boolean; onClose: () => void; onSaved: () => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const own = !!(current?.username || current?.ownPassword);
+  const save = async (body: { username: string | null; password?: string | null }) => {
+    setBusy(true); setError(null);
+    try { await api(`/admin/cameras/${cameraId}/direct`, { method: "PUT", body: { enabled, ...body } }); onSaved(); }
+    catch (err) { setBusy(false); setError(err instanceof Error ? err.message : "Something went wrong. Try again."); }
+  };
+  const submit = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget), password = String(f.get("password") ?? "");
+    void save({ username: String(f.get("username") ?? "").trim() || null, ...(password ? { password } : {}) });
+  };
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Login for {name}</DialogTitle><DialogDescription>The username and password you use to sign in to the camera itself.{enabled && " Unifeye checks them with the camera before saving."}</DialogDescription></DialogHeader>
+        <form id="camera-login" className="grid gap-3" onSubmit={submit}>
+          <div className="grid gap-1.5"><Label htmlFor="cl-username">Username</Label><Input id="cl-username" name="username" defaultValue={current?.username ?? ""} placeholder={defaultUsername ?? ""} autoCapitalize="none" spellCheck={false} maxLength={64} /></div>
+          <div className="grid gap-1.5"><Label htmlFor="cl-password">Password</Label><Input id="cl-password" name="password" type="password" autoComplete="new-password" maxLength={128} disabled={!canSavePassword} placeholder={current?.ownPassword ? "Saved. Leave empty to keep it." : ""} /></div>
+          {!canSavePassword && <p className="text-xs text-muted-foreground">Unifeye can&apos;t save camera passwords until TOKEN_ENC_KEY is set on the server. The default password is used instead.</p>}
+          {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+        </form>
+        <DialogFooter>
+          {own && <Button variant="outline" className="mr-auto" disabled={busy} onClick={() => void save({ username: null, password: null })}>Use the default</Button>}
+          <Button variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" form="camera-login" disabled={busy}>{busy ? (enabled ? "Checking…" : "Saving…") : "Save"}</Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

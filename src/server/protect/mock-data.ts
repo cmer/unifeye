@@ -2,6 +2,8 @@
 /** `mic: false` cameras send no audio, like a Protect camera without a microphone. */
 export interface MockCamera { protectId: string; name: string; online: boolean; hue: number; tags: string[]; mic: boolean }
 const C = (n: number, name: string, hue: number, tags: string[], online = true, mic = true): MockCamera => ({ protectId: `mock-${String(n).padStart(2, "0")}`, name, online, hue, tags, mic });
+/** Cameras that act like ones made by someone else: their video can also be read from the camera itself. */
+export const MOCK_DIRECT = new Set(["mock-08", "mock-09", "mock-12"]);
 export const MOCK_CAMERAS: MockCamera[] = [
   C(1, "Front Entrance", 215, ["outdoors", "ground_level", "entrance", "public_area"]),
   C(2, "Lobby Front Desk", 30, ["indoors", "ground_level", "front_desk", "public_area"]),

@@ -10,6 +10,7 @@ import type { CameraInfo, UserRow } from "./authz/policy";
 import { allowedOrigins, config, groupsClaim, signInMethods } from "./config";
 import { schema } from "./db";
 import { backupStatus } from "./db/backup";
+import { DIRECT_PROBLEM } from "./media/direct";
 import { maxStreams } from "./media/gateway";
 import { fileResponse } from "./media/recordings";
 import { maybeSeedDemo, services, type Services } from "./services";
@@ -387,6 +388,12 @@ route("GET", "/admin/overview", { admin: true }, ({ s }) => {
     groupGrants: s.db.select().from(schema.groupCameraGrants).all().map((x) => ({ groupId: x.groupId, cameraId: x.cameraId })),
     views: s.db.select().from(schema.views).all().filter((v) => v.visibility === "curated").map((v) => ({ id: v.id, name: v.name, sharedWithAll: v.sharedWithAll })),
     defaults: defaults.map((d) => ({ scope: d.scope, userId: d.userId, groupId: d.groupId, viewId: d.viewId })),
+    // Never a password: only whether one is set.
+    direct: {
+      capable: s.policy.allCamerasUnchecked().filter((c) => c.meta.direct === true).map((c) => c.id),
+      defaultUsername: config().DEFAULT_CAMERA_USERNAME ?? null, defaultPassword: !!config().DEFAULT_CAMERA_PASSWORD, canSavePassword: !!config().TOKEN_ENC_KEY,
+      cameras: s.media.direct.settings(),
+    },
   };
 });
 route("POST", "/admin/users", { admin: true }, async ({ s, actor, json: body }) => s.admin.createPasswordUser(actor, await body()));
@@ -401,6 +408,26 @@ route("POST", "/admin/tags", { admin: true }, async ({ s, actor, json: body }) =
 route("PATCH", "/admin/tags/:id", { admin: true }, async ({ s, actor, p, json: body }) => { s.admin.renameTag(actor, p.id, String((await body()).name ?? "")); });
 route("DELETE", "/admin/tags/:id", { admin: true }, ({ s, actor, p }) => { s.admin.deleteTag(actor, p.id); });
 route("PUT", "/admin/camera-tags", { admin: true }, async ({ s, actor, json: body }) => { const b = await body<{ cameraId: string; tagId: string; on: boolean }>(); s.admin.setCameraTag(actor, String(b.cameraId), String(b.tagId), !!b.on); });
+/**
+ * Turning direct video on first asks the camera to describe its streams with the login that would be
+ * used, so a wrong password or an unplayable format is reported here rather than as a blank tile.
+ */
+route("PUT", "/admin/cameras/:id/direct", { admin: true }, async ({ s, actor, p, json: body }) => {
+  const b = await body<{ enabled?: unknown; username?: unknown; password?: unknown }>();
+  const field = (v: unknown) => (typeof v === "string" || v === null ? v : undefined);
+  const input = { enabled: b.enabled === true, username: field(b.username), password: field(b.password) };
+  const cam = s.policy.allCamerasUnchecked().find((c) => c.id === p.id);
+  if (!cam) throw notFound();
+  if (input.enabled) {
+    if (cam.meta.direct !== true) throw badRequest(DIRECT_PROBLEM.unsupported);
+    const login = s.media.direct.resolve(s.media.direct.stored(cam.id), input);
+    if (!login) throw badRequest(DIRECT_PROBLEM.no_login);
+    const r = await s.adapter.checkDirect(cam.protectId, login).catch(() => ({ ok: false as const, reason: "unreachable" as const }));
+    if (!r.ok) throw badRequest(DIRECT_PROBLEM[r.reason]);
+  }
+  s.admin.setCameraDirect(actor, cam.id, input);
+  s.media.direct.reset(cam.id);
+});
 route("GET", "/admin/audit", { admin: true }, ({ s, url }) => {
   const before = Number(url.searchParams.get("before")) || Number.MAX_SAFE_INTEGER;
   const names = new Map(s.db.select().from(schema.users).all().map((u) => [u.id, u.name || u.email || u.id]));

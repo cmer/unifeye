@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { ffmpeg } from "./ffmpeg";
-import { MOCK_CAMERAS, type MockCamera } from "./mock-data";
-import { NoRecordingError, type AdapterHealth, type EventQuery, type EventType, type LiveSource, type ProtectAdapter, type ProtectCamera, type ProtectEvent, type RecordingRanges } from "./types";
+import { MOCK_CAMERAS, MOCK_DIRECT, type MockCamera } from "./mock-data";
+import { NoRecordingError, type AdapterHealth, type CameraLogin, type DirectCheck, type EventQuery, type EventType, type LiveSource, type ProtectAdapter, type ProtectCamera, type ProtectEvent, type RecordingRanges } from "./types";
 
 const DAY = 864e5, RETENTION = 7 * DAY;
 function rng(a: number) {
@@ -72,7 +72,7 @@ export class MockProtectAdapter implements ProtectAdapter {
 
   async listCameras(): Promise<ProtectCamera[]> {
     this.guard();
-    return this.cameras.map((c) => ({ protectId: c.protectId, name: c.name, online: c.online, model: "Mock G5", eventTypes: this.typesFor(c), streams: [{ quality: "high", width: 1280, height: 720, codec: "h264" }, { quality: "low", width: 640, height: 360, codec: "h264" }], recordingStartMs: Date.now() - RETENTION, recordingEndMs: c.online ? Date.now() : this.t0 - 3 * 36e5 }));
+    return this.cameras.map((c) => ({ protectId: c.protectId, name: c.name, online: c.online, model: "Mock G5", eventTypes: this.typesFor(c), streams: [{ quality: "high", width: 1280, height: 720, codec: "h264" }, { quality: "low", width: 640, height: 360, codec: "h264" }], recordingStartMs: Date.now() - RETENTION, recordingEndMs: c.online ? Date.now() : this.t0 - 3 * 36e5, ...(MOCK_DIRECT.has(c.protectId) ? { direct: true } : {}) }));
   }
 
   private gaps(c: MockCamera, a: number, b: number): [number, number][] {
@@ -129,6 +129,19 @@ export class MockProtectAdapter implements ProtectAdapter {
     const audio = c.mic ? `-re -f lavfi -i ${MockProtectAdapter.ROOM} -map 0:v -map 1:a -map 1:a -c:a:0 aac -b:a:0 32k -c:a:1 libopus -b:a:1 32k` : "";
     const v = this.video(c, w, h, fps);
     return { kind: "command", command: `ffmpeg -hide_banner -loglevel error -re ${v.input.join(" ")} ${audio} ${v.vf.join(" ")} -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g ${fps * 2} -bf 0 -f rtsp -rtsp_transport tcp ${this.opts.publishUrl}`.replace(/ {2,}/g, " ") };
+  }
+  /** Simulated: the same test picture as the recorder's stream. Any login works except the password "wrong". */
+  async directSource(id: string, quality: "wall" | "focus", login: CameraLogin): Promise<LiveSource | null> {
+    if (!MOCK_DIRECT.has(id) || login.password === "wrong") return null;
+    return this.liveSource(id, quality);
+  }
+  async checkDirect(id: string, login: CameraLogin): Promise<DirectCheck> {
+    this.guard();
+    const c = this.cam(id);
+    if (!MOCK_DIRECT.has(id)) return { ok: false, reason: "unsupported" };
+    if (!c.online) return { ok: false, reason: "unreachable" };
+    if (login.password === "wrong") return { ok: false, reason: "login" };
+    return { ok: true, video: "H264", audio: c.mic ? "MPEG4-GENERIC" : null };
   }
   async exportClip(id: string, startMs: number, endMs: number, destPath: string, opts: { quality?: "wall" | "focus"; signal?: AbortSignal } = {}) {
     this.guard();

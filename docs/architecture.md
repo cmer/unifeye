@@ -387,6 +387,41 @@ sound arrives seconds before its picture; a shorter probe made FFmpeg exit and M
 retry. It adds one small FFmpeg process per stream being watched. Cameras
 without a microphone are pulled directly, as before.
 
+### Video straight from the camera
+
+Protect re-streams cameras made by someone else (adopted over ONVIF) with a broken sound track: its
+Opus timestamps run about 48 times too slow, and on Reolink cameras the recorder's live stream then
+drops every other two-second group of pictures. Recordings are not affected. For those cameras, an
+administrator can switch live video to come from the camera itself (Admin > Live video):
+
+- Protect's camera record keeps the camera's own stream addresses without a login
+  (`thirdPartyCameraInfo.rtspUrl` for the focused player, `rtspUrlLQ` for wall tiles). Only cameras
+  with a plain `rtsp://` address offer the switch (`ProtectCamera.direct`, cached in the camera meta).
+- The login is `DEFAULT_CAMERA_USERNAME` / `DEFAULT_CAMERA_PASSWORD`, or the camera's own from the
+  `camera_direct` table, whose password is encrypted with `TOKEN_ENC_KEY` and never sent to a browser
+  or written to the audit log.
+- Turning it on (or saving a login while on) first asks the camera to describe both streams
+  (`checkRtsp` in `src/server/protect/rtsp-check.ts`: one RTSP DESCRIBE per stream, answering a
+  Basic or Digest challenge, on one connection; no video is read). A wrong login, an unreachable
+  camera or video other than H.264 is refused with a plain message instead of becoming a blank tile.
+- `Media.issue` asks `DirectVideo` (`src/server/media/direct.ts`) for the login and the adapter for
+  `directSource`; the relay sets up the same two paths as for the recorder, with the camera address
+  in `<path>_src`. Sound always goes through the retiming FFmpeg, which also turns the camera's AAC
+  into Opus for WebRTC. Permission checks, tickets and the sweep are unchanged: only the source moves.
+- If a stream read from the camera fails (a WebRTC offer that finds no stream, or an HLS playlist
+  that does not load), that camera goes back to the recorder's stream for two minutes, so the
+  player's retry plays. Saving the camera's settings again tries the camera at once.
+- One MediaMTX pull per stream is shared by every viewer and closes ten seconds after the last one
+  leaves, so a camera serves at most two extra connections however many people watch it.
+
+Not every camera can do this: UniFi cameras, and any camera whose record has no plain RTSP address,
+only ever stream through the recorder, and the switch is not offered for them. This is decided per
+camera on every sync, not by brand. If a camera that was switched on stops offering it (replaced,
+re-adopted, or moved to a recorder-only connection), `directSource` returns nothing and viewers get
+the recorder's stream; Admin keeps listing it so it can be switched off.
+
+Talking to the camera reads video only; Unifeye never changes camera settings.
+
 ### The relay seam
 
 Everything Unifeye says to MediaMTX goes through one interface, `Relay` (`src/server/media/relay.ts`):

@@ -21,6 +21,7 @@ export interface Overview {
   groupGrants: { groupId: string; cameraId: string }[];
   views: { id: string; name: string; sharedWithAll: boolean }[];
   defaults: { scope: string; userId: string | null; groupId: string | null; viewId: string }[];
+  direct: { capable: string[]; defaultUsername: string | null; defaultPassword: boolean; canSavePassword: boolean; cameras: { cameraId: string; enabled: boolean; username: string | null; ownPassword: boolean }[] };
 }
 interface Detail { id: string; name: string; type: "dynamic" | "static"; visibility: "private" | "curated"; columns: number; version: number; editable: boolean; cameras: Camera[]; definition: { tagIds: string[]; cameraIds: string[] }; sharing: { all: boolean; userIds: string[]; groupIds: string[] } | null }
 export const Card = ({ title, hint, children }: { title: string; hint?: string; children?: React.ReactNode }) => <section className="mb-3.5 rounded-xl border p-4"><h3 className="text-[15px] font-semibold">{title}</h3>{hint && <p className="mt-1 text-sm text-muted-foreground">{hint}</p>}{children && <div className="mt-3">{children}</div>}</section>;

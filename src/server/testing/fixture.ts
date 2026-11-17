@@ -5,7 +5,7 @@ import { syncCameras } from "../cameras";
 import { loadConfig, setConfigForTests } from "../config";
 import { openDb, schema, type Db } from "../db";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
-import { MOCK_CAMERAS } from "../protect/mock-data";
+import { MOCK_CAMERAS, MOCK_DIRECT } from "../protect/mock-data";
 import { MockProtectAdapter } from "../protect/mock";
 import { buildServices, setServicesForTests } from "../services";
 import { seedDemo } from "../seed";
@@ -33,7 +33,7 @@ export function makeFixture(db: Db = openDb(":memory:")) {
   const t = Date.now();
   const user = (id: string, name: string, role: "admin" | "staff", allowPrivateViews = false) => { db.insert(schema.users).values({ id, issuer: ISS, subject: `sub-${id}`, name, email: `${id}@example.test`, role, allowPrivateViews, createdAt: t, updatedAt: t }).run(); return id; };
   const u = { admin: user("admin", "Avery Chen", "admin", true), upper: user("upper", "Morgan Reyes", "staff"), front: user("front", "Sam Okafor", "staff", true), sec: user("sec", "Jordan Blake", "staff"), nobody: user("nobody", "Riley Park", "staff") };
-  syncCameras(db, policy, "default", MOCK_CAMERAS.map((m) => ({ protectId: m.protectId, name: m.name, online: m.online, eventTypes: ["motion", "person", "vehicle", "animal", "package"], streams: [{ quality: "high", width: 1920, height: 1080 }] })));
+  syncCameras(db, policy, "default", MOCK_CAMERAS.map((m) => ({ protectId: m.protectId, name: m.name, online: m.online, eventTypes: ["motion", "person", "vehicle", "animal", "package"], streams: [{ quality: "high", width: 1920, height: 1080 }], ...(MOCK_DIRECT.has(m.protectId) ? { direct: true } : {}) })));
   seedDemo(db, u.admin);
   const g = Object.fromEntries(db.select().from(schema.groups).all().map((x) => [x.name, x.id])) as Record<string, string>;
   const member = (groupName: string, userId: string) => db.insert(schema.groupMembers).values({ groupId: g[groupName], userId, createdAt: t }).run();

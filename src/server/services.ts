@@ -15,6 +15,7 @@ import { db as openDefaultDb, schema, type Db } from "./db";
 import { backupDatabase, pruneBackups } from "./db/backup";
 import { runMigrations } from "./db/migrate";
 import { Events } from "./events";
+import { DirectVideo } from "./media/direct";
 import { Media } from "./media/gateway";
 import { startHookServer } from "./media/hook-server";
 import { commandPublishUrl, MediaMtxRelay } from "./media/mediamtx";
@@ -48,7 +49,7 @@ export function buildServices(db: Db, adapter: ProtectAdapter, relay: Relay = ne
   // Access listens to Policy, Sessions and Previews; everything that holds access listens to Access.
   // Events subscribes per open feed (Events.subscribe); the two process-wide holders are wired here.
   const access = new Access(policy, sessions, previews);
-  const media = new Media(policy, access, get, relay), recordings = new Recordings(db, policy, access, get), events = new Events(policy, access, get);
+  const media = new Media(policy, access, get, relay, new DirectVideo(db)), recordings = new Recordings(db, policy, access, get), events = new Events(policy, access, get);
   access.onChange(() => media.revalidate());
   access.onChange(() => { void recordings.dropDeadExports().catch((e) => log("error", "export cleanup failed", { error: e })); });
   return { db, policy, access, views, sessions, previews, admin, oidc, local, cloudflare, adapter, media, recordings, events, state: { startedAt: Date.now(), lastCameraSyncAt: null, lastCameraSyncError: null, timers: [] } };
