@@ -1,3 +1,4 @@
+import { BrandMark } from "@/components/brand-mark";
 import { buttonVariants } from "@/components/ui/button";
 
 const MESSAGES: Record<string, string> = {
@@ -12,7 +13,7 @@ export default async function SignedOut({ searchParams }: { searchParams: Promis
   return (
     <main className="grid h-full place-items-center p-6">
       <div className="w-full max-w-sm text-center">
-        <div className="mx-auto mb-5 grid size-10 place-items-center rounded-lg bg-primary text-lg font-bold text-primary-foreground">V</div>
+        <BrandMark className="mx-auto mb-5 size-10 rounded-lg" />
         <h1 className="text-xl font-semibold">Unifeye</h1>
         <p className="mt-2 text-sm text-muted-foreground">{(error && MESSAGES[error]) || "You're signed out."}</p>
         {/* A plain link on purpose: this API route decides where to sign in (identity provider, Cloudflare or the password page). */}
