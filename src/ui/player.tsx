@@ -13,6 +13,7 @@ import type { WindowInfo as WinInfo } from "@/server/media/recordings";
 import { canHandOver, clipStartOf, offsetFor, overlayStartFor, shouldArm, stepFrame, windowStart } from "./recorded-playback";
 import { dragTrim, nearestEnd, panTrim, startTrim as newTrim, TRIM_SPAN, typeTrim as typedTrim, zoomedSpan, zoomTrim as zoomedTrim, type End, type Trim } from "./trim";
 import { applySound, claimSound, play, setSound, SoundButton, useSound, watchAudio } from "./sound";
+import { fmtAgo, tickTimes, timelineBounds } from "./timeline";
 
 type Ranges = { ranges: [number, number][]; precision: "exact" | "bounds" };
 const ZONES: [string, string][] = [["local", "My time zone"], ["UTC", "UTC"], ["America/Toronto", "Toronto"], ["America/Vancouver", "Vancouver"], ["America/Chicago", "Chicago"], ["Europe/London", "London"], ["Europe/Paris", "Paris"], ["Australia/Sydney", "Sydney"]];
@@ -27,7 +28,7 @@ const fmtLen = (ms: number) => {
   return h ? `${h} hr${m % 60 ? ` ${m % 60} min` : ""}` : m ? `${m} min${s % 60 ? ` ${s % 60} sec` : ""}` : `${s} sec`;
 };
 const fmtSpan = (ms: number) => { const m = Math.round(ms / 60_000); return m >= 60 ? `${+(m / 60).toFixed(1)} hour${m === 60 ? "" : "s"}` : `${m} minute${m === 1 ? "" : "s"}`; };
-/** How much of the day the timeline shows, widest first. 0 is the whole day. */
+/** How much time the timeline shows, widest first. 0 is everything (see `timelineBounds`). */
 const ZOOMS: [number, string][] = [[0, "Whole day"], [6 * 3600_000, "6 hours"], [3600_000, "1 hour"], [600_000, "10 minutes"]];
 /** Spacing between timeline labels: the first that gives at most six across. */
 const TICKS = [60_000, 120_000, 300_000, 600_000, 900_000, 1800_000, 3600_000, 7200_000, 3 * 3600_000, 6 * 3600_000];
@@ -49,6 +50,10 @@ export function Player({ cameraId }: { cameraId: string }) {
   const [target, setTarget] = useState({ ms: startAt, n: 0 });
   const [playing, setPlaying] = useState(true);
   const [speed, setSpeed] = useState(1);
+  /** Wall-clock time, ticking every second. The 24-hour timeline ends here. */
+  const [clock, setClock] = useState(() => Date.now());
+  /** A past date was picked: show that calendar day rather than the last 24 hours (see `timelineBounds`). */
+  const [pinned, setPinned] = useState(false);
   const [zoom, setZoom] = useState(0);
   /** Start of the zoomed-in stretch. It stays put while the playhead is inside it, so clicks and drags land where aimed. */
   const [view, setView] = useState<number | null>(null);
@@ -82,23 +87,25 @@ export function Player({ cameraId }: { cameraId: string }) {
 
   useEffect(() => { api<{ cameras: Camera[] }>("/cameras").then((r) => setCam(r.cameras.find((c) => c.id === cameraId) ?? "gone")).catch(fail); }, [cameraId, me.preview?.subject.id]);
 
-  const minute = Math.floor(t / 60000), ready = cam !== null && cam !== "gone";
-  const [dayStart, dayEnd] = useMemo(() => dayBounds(minute * 60000, tz), [minute, tz]);
+  const ready = cam !== null && cam !== "gone";
+  const { rolling, lo, hi } = timelineBounds(t, clock, pinned, tz);
+  // The last 24 hours are fetched from the top of the hour, so the request changes once an hour rather than every second.
+  const fetchFrom = rolling ? Math.floor(lo / 3600_000) * 3600_000 : lo, fetchTo = rolling ? 0 : hi;
   useEffect(() => {
     if (!ready) return;
     let off = false;
-    const to = Math.min(dayEnd, Date.now());
-    api<Ranges>(`/cameras/${cameraId}/recordings?from=${dayStart}&to=${to}`).then((r) => !off && setRec(r)).catch(() => !off && setRec({ ranges: [], precision: "exact" }));
-    api<{ events: ActivityEvent[] }>(`/events?cameraId=${cameraId}&from=${dayStart}&to=${to}&limit=1000`).then((r) => !off && setEvents(r.events)).catch(() => {});
+    const to = fetchTo ? Math.min(fetchTo, Date.now()) : Date.now();
+    api<Ranges>(`/cameras/${cameraId}/recordings?from=${fetchFrom}&to=${to}`).then((r) => !off && setRec(r)).catch(() => !off && setRec({ ranges: [], precision: "exact" }));
+    api<{ events: ActivityEvent[] }>(`/events?cameraId=${cameraId}&from=${fetchFrom}&to=${to}&limit=1000`).then((r) => !off && setEvents(r.events)).catch(() => {});
     return () => { off = true; };
-  }, [cameraId, dayStart, dayEnd, ready, refresh]);
-  // While live, pick up newly recorded time and new activity every few minutes.
-  useEffect(() => { if (!live) return; const i = setInterval(() => setRefresh((n) => n + 1), 180_000); return () => clearInterval(i); }, [live]);
+  }, [cameraId, fetchFrom, fetchTo, ready, refresh]);
+  // While the timeline reaches now, pick up newly recorded time and new activity every few minutes.
+  useEffect(() => { if (!live && !rolling) return; const i = setInterval(() => setRefresh((n) => n + 1), 180_000); return () => clearInterval(i); }, [live, rolling]);
 
-  useEffect(() => { if (!live) return; const i = setInterval(() => setT(Date.now()), 1000); return () => clearInterval(i); }, [live]);
+  useEffect(() => { const i = setInterval(() => { const n = Date.now(); setClock(n); if (live) setT(n); }, 1000); return () => clearInterval(i); }, [live]);
   const seek = useCallback((ms: number, play = true) => {
     setNoRec(false);
-    if (ms >= Date.now() - 5000) { setLive(true); setT(Date.now()); setPlaying(true); return; }
+    if (ms >= Date.now() - 5000) { setLive(true); setPinned(false); setT(Date.now()); setPlaying(true); return; }
     setLive(false); setT(ms); setTarget((p) => ({ ms, n: p.n + 1 })); if (play) setPlaying(true);
   }, []);
 
@@ -208,7 +215,7 @@ export function Player({ cameraId }: { cameraId: string }) {
   const zoomBy = (d: number) => {
     const z = clamp(zoom + d, 0, ZOOMS.length - 1);
     if (z === zoom) return;
-    setZoom(z); setView(null); setZoomNote((p) => ({ text: ZOOMS[z][1], n: (p?.n ?? 0) + 1 }));
+    setZoom(z); setView(null); setZoomNote((p) => ({ text: z || !rolling ? ZOOMS[z][1] : "24 hours", n: (p?.n ?? 0) + 1 }));
   };
   useEffect(() => { if (!zoomNote) return; const i = setTimeout(() => setZoomNote(null), 1200); return () => clearTimeout(i); }, [zoomNote]);
   const back = () => (history.length > 1 ? history.back() : nav("/"));
@@ -237,19 +244,21 @@ export function Player({ cameraId }: { cameraId: string }) {
   if (cam === "gone") return <Empty icon={<Lock />} title="Camera unavailable">You don&apos;t have access to this camera.<div><Button variant="outline" className="mt-4" onClick={() => nav("/")}>Back to cameras</Button></div></Empty>;
   if (!cam) return <div className="flex-1 bg-black" />;
 
-  let a = dayStart, b = dayEnd;
-  // Zoomed in, the timeline shows a stretch of the day around the playhead. It holds still while the
-  // playhead is inside it and re-centres when the playhead leaves (live sits near the right edge).
+  let a = lo, b = hi;
+  // Zoomed in, the timeline shows a stretch around the playhead. It holds still while the playhead is
+  // inside it and re-centres when the playhead leaves (live stays at the right edge).
   const span = ZOOMS[zoom][0];
   if (trim) [a, b] = trim.view;
   else if (span) {
-    const fits = view !== null && view >= dayStart && view + span <= dayEnd && t >= view && t <= view + span;
-    a = fits ? view : clamp(t - span * (live ? 0.9 : 0.5), dayStart, dayEnd - span); b = a + span;
+    const fits = view !== null && view >= lo && view + span <= hi && t >= view && t <= view + span;
+    a = fits ? view : clamp(t - span * (live ? 0.9 : 0.5), lo, hi - span); b = a + span;
     if (a !== view) setView(a);
   }
   const step = TICKS.find((s) => (b - a) / s <= 6) ?? TICKS[TICKS.length - 1];
-  const ticks: number[] = [];
-  for (let m = dayStart + Math.ceil((a - dayStart) / step) * step; m <= b; m += step) ticks.push(m);
+  // When the timeline reaches now, the right edge reads "Now" and labels too close to it are dropped. Today's midnight reads "Today".
+  const toNow = b >= clock - 2000, today = dayBounds(clock, tz)[0];
+  const ticks = tickTimes(a, b, step, tz).filter((m) => !toNow || (b - m) / (b - a) > 0.08);
+  const ago = live ? null : fmtAgo(clock - t);
   const pct = (ms: number) => `${Math.min(100, Math.max(0, ((ms - a) / (b - a)) * 100))}%`;
   const at = (el: HTMLElement, clientX: number) => { const r = el.getBoundingClientRect(); return a + Math.min(1, Math.max(0, (clientX - r.left) / r.width)) * (b - a); };
   const down = me.recorder === "down";
@@ -283,13 +292,12 @@ export function Player({ cameraId }: { cameraId: string }) {
         <span className="flex-1" />
         {recording.has(cameraId) && <RecMark />}
         <Button variant="outline" className="border-white/30 bg-transparent text-white hover:bg-white/15 hover:text-white" onClick={() => setJump((j) => !j)}><CalendarDays />{fmtDay(t, tz)}</Button>
-        {!live && <Button variant="outline" className="border-white/30 bg-transparent text-white hover:bg-white/15 hover:text-white" onClick={() => seek(Date.now())}>Go live</Button>}
       </div>
       {jump && (
         <>
           <div className="absolute inset-0 z-10" onClick={() => setJump(false)} />
           <div role="dialog" aria-label="Jump to a time" className="absolute top-14 right-4 z-20 grid w-64 gap-2 rounded-xl border bg-popover p-3 text-popover-foreground shadow-xl">
-            <Input type="date" aria-label="Date" value={dateInput(t, tz)} onChange={(e) => { if (!e.target.value) return; const [y, m, d] = e.target.value.split("-").map(Number), p = zonedParts(t, tz); seek(zonedToUtc(y, m, d, p.hour, p.minute, p.second, tz)); }} />
+            <Input type="date" aria-label="Date" value={dateInput(t, tz)} onChange={(e) => { if (!e.target.value) return; const [y, m, d] = e.target.value.split("-").map(Number), p = zonedParts(t, tz), ms = zonedToUtc(y, m, d, p.hour, p.minute, p.second, tz); setPinned(ms < dayBounds(now(), tz)[0]); seek(ms); }} />
             <Input type="time" step={1} aria-label="Time" value={timeInput(t, tz)} onChange={(e) => { if (!e.target.value) return; const [h, mi, s = 0] = e.target.value.split(":").map(Number), p = zonedParts(t, tz); seek(zonedToUtc(p.year, p.month, p.day, h, mi, s, tz)); }} />
             <Select aria-label="Time zone" value={typeof me.preferences.tz === "string" ? me.preferences.tz : "local"} onChange={(e) => setPref("tz", e.target.value)}>{ZONES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</Select>
           </div>
@@ -311,9 +319,11 @@ export function Player({ cameraId }: { cameraId: string }) {
             <i className="pointer-events-none absolute bottom-[1px] h-[19px] border-y-2 border-yellow-400 bg-yellow-400/30" style={{ left: pct(trim.a), right: `calc(100% - ${pct(trim.b)})` }} />
             {(["a", "b"] as const).map((g) => <i key={g} className="pointer-events-none absolute -bottom-0.5 h-[25px] w-3 -translate-x-1/2 rounded-[4px] bg-yellow-400 shadow" style={{ left: pct(trim[g]) }} />)}
             {trim.grab && <span className="pointer-events-none absolute bottom-8 -translate-x-1/2 rounded bg-yellow-400 px-1.5 py-px text-[11px] font-semibold whitespace-nowrap text-black" style={{ left: pct(trim[trim.grab]) }}>{fmtTime(trim[trim.grab], tz)}</span>}
-          </> : <i className="pointer-events-none absolute bottom-[3px] size-[15px] -translate-x-1/2 rounded-full bg-white shadow-[0_0_0_4px_rgba(255,255,255,.25)]" style={{ left: pct(t) }} />}
+          </> : <i className={`pointer-events-none absolute bottom-[3px] size-[15px] -translate-x-1/2 rounded-full ${live ? "live-dot bg-red-500" : "bg-white shadow-[0_0_0_4px_rgba(255,255,255,.25)]"}`} style={{ left: pct(t) }} />}
+          {live && !trim && <span className="pointer-events-none absolute right-0 bottom-[25px] rounded bg-red-500 px-1 text-[10px] leading-[14px] font-bold tracking-wide">LIVE</span>}
         </div>
-        <div className="relative mt-0.5 h-4 text-[11px] text-zinc-400">{ticks.map((m) => { const f = (m - a) / (b - a); return <span key={m} className={`absolute top-0 whitespace-nowrap ${f < 0.04 ? "" : f > 0.96 ? "-translate-x-full" : "-translate-x-1/2"}`} style={{ left: pct(m) }}>{fmtShort(m, tz)}</span>; })}</div>
+        <div className="relative mt-0.5 h-4 text-[11px] text-zinc-400">{ticks.map((m) => { const f = (m - a) / (b - a); return <span key={m} className={`absolute top-0 whitespace-nowrap ${f < 0.04 ? "" : f > 0.96 ? "-translate-x-full" : "-translate-x-1/2"} ${m === today ? "font-semibold text-zinc-200" : ""}`} style={{ left: pct(m) }}>{m === today ? "Today" : fmtShort(m, tz)}</span>; })}
+          {toNow && <span className="absolute top-0 right-0 font-semibold text-red-400">Now</span>}</div>
         {trim ? (
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {(["a", "b"] as const).map((g) => <input key={g} type="time" step={1} aria-label={g === "a" ? "Clip starts" : "Clip ends"} value={timeInput(trim[g], tz)} onChange={(e) => typeTrim(g, e.target.value)} className="h-9 rounded-lg border border-white/30 bg-transparent px-2 text-sm text-white tabular-nums outline-none [color-scheme:dark] focus-visible:border-white" />)}
@@ -329,8 +339,11 @@ export function Player({ cameraId }: { cameraId: string }) {
           <Button variant="ghost" size="icon" className={ghost} aria-label="Back 10 seconds" onClick={() => seek(t - 10000)}><RotateCcw /></Button>
           <Button variant="ghost" size="icon" className={ghost} aria-label={playing ? "Pause" : "Play"} onClick={toggle}>{playing ? <Pause /> : <Play />}</Button>
           <Button variant="ghost" size="icon" className={ghost} aria-label="Forward 10 seconds" onClick={() => seek(t + 10000)}><RotateCw /></Button>
-          <span className="ml-2 text-base font-semibold tabular-nums">{fmtTime(t, tz)}</span>
+          {live
+            ? <span className="ml-2 flex items-center gap-2 tabular-nums"><span className="flex items-center gap-1.5 text-xs font-bold tracking-wide"><i className="size-2 rounded-full bg-red-500" />LIVE</span><span className="text-base text-zinc-400">{fmtTime(t, tz)}</span></span>
+            : <span className="ml-2 text-base font-semibold tabular-nums">{fmtTime(t, tz)}{ago && <span className="font-normal text-zinc-400 max-sm:hidden"> · {ago}</span>}</span>}
           <span className="flex-1" />
+          {!live && <Button variant="outline" size="sm" className="mr-1 rounded-full border-white/30 bg-transparent text-white hover:bg-white/15 hover:text-white" onClick={() => seek(Date.now())}><i className="size-1.5 rounded-full bg-zinc-400" />Go live</Button>}
           <Button variant="ghost" size="icon" className={ghost} aria-label="Zoom out" title="Zoom out (−)" disabled={zoom === 0} onClick={() => zoomBy(-1)}><ZoomOut /></Button>
           <Button variant="ghost" size="icon" className={ghost} aria-label="Zoom in" title="Zoom in (+)" disabled={zoom === ZOOMS.length - 1} onClick={() => zoomBy(1)}><ZoomIn /></Button>
           {!live && <select aria-label="Playback speed" value={speed} onChange={(e) => setSpeed(Number(e.target.value))} className="h-9 rounded-lg bg-transparent px-1 text-sm text-white outline-none hover:bg-white/15 [&>option]:text-black">{[0.5, 1, 2, 4, 8].map((x) => <option key={x} value={x}>{x}×</option>)}</select>}

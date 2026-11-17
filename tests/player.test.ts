@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { canHandOver, clipStartOf, offsetFor, overlayStartFor, overlayTimeAt, shouldArm, stepFrame, windowStart, type MediaPort } from "@/ui/recorded-playback";
+import { DAY, fmtAgo, tickTimes, timelineBounds } from "@/ui/timeline";
 import { dragTrim, MIN_CLIP, nearestEnd, panTrim, startTrim, TRIM_SPAN, typeTrim, viewFor, zoomTrim, type Trim } from "@/ui/trim";
 
 /** A <video> element as far as playback can see one. Seeking is instant unless `seeks` is set. */
@@ -153,5 +154,34 @@ describe("choosing a clip", () => {
     const tr = sel(ws, ws + 30_000);
     expect(nearestEnd(tr, ws + 10_000)).toBe("a");
     expect(nearestEnd(tr, ws + 20_000)).toBe("b");
+  });
+});
+
+describe("timeline range", () => {
+  const H = 3600_000, midnight = Date.UTC(2026, 10, 17), clock = midnight + 9.5 * H;
+
+  it("shows the last 24 hours ending now, so live sits at the right edge", () => {
+    expect(timelineBounds(clock, clock, false, "UTC")).toEqual({ rolling: true, lo: clock - DAY, hi: clock });
+    expect(timelineBounds(clock - 20 * H, clock, false, "UTC").rolling).toBe(true);
+  });
+
+  it("shows a calendar day for older moments, or for a picked past date until playback reaches today", () => {
+    expect(timelineBounds(clock - 36 * H, clock, false, "UTC")).toEqual({ rolling: false, lo: midnight - 2 * DAY, hi: midnight - DAY });
+    expect(timelineBounds(clock - 12 * H, clock, true, "UTC")).toEqual({ rolling: false, lo: midnight - DAY, hi: midnight });
+    expect(timelineBounds(midnight + H, clock, true, "UTC").rolling).toBe(true);
+  });
+
+  it("lines labels up on midnight in the chosen time zone", () => {
+    expect(tickTimes(clock - DAY, clock, 6 * H, "UTC")).toEqual([midnight - 12 * H, midnight - 6 * H, midnight, midnight + 6 * H]);
+    const toronto = tickTimes(clock - DAY, clock, 6 * H, "America/Toronto");
+    expect(toronto.every((m) => (m - 5 * H) % (6 * H) === 0)).toBe(true);
+  });
+
+  it("says how far behind live a moment is", () => {
+    expect(fmtAgo(8_000)).toBe("8 sec ago");
+    expect(fmtAgo(12 * 60_000)).toBe("12 min ago");
+    expect(fmtAgo(5 * H)).toBe("5 hr ago");
+    expect(fmtAgo(5 * H + 12 * 60_000)).toBe("5 hr 12 min ago");
+    expect(fmtAgo(3 * DAY)).toBeNull();
   });
 });
