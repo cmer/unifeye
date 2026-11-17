@@ -8,6 +8,8 @@ import { MTX_API_USER, MTX_PUBLISH_USER, SRC_SUFFIX } from "./mediamtx";
 import { RelayUnavailable, type HlsReader, type ReaderKind, type Relay } from "./relay";
 
 export type Quality = "wall" | "focus";
+/** One HLS reader per session, subject, preview and stream: tiles and retries in a tab share it. */
+const jarKey = (a: Actor, path: string) => `${a.sessionId}|${subjectOf(a)}|${a.preview?.id ?? ""}|${path}`;
 /** Distinct live streams one session may hold: the wall's tiles plus a few for the player and handovers. */
 export const maxStreams = () => config().MAX_WALL_STREAMS + 3;
 interface Ticket extends Grant { path: string; kind: ReaderKind; exp: number; single: boolean; used: boolean }
@@ -131,8 +133,7 @@ export class Media {
   // ---- HLS fallback: fully proxied, so every playlist and segment request is re-authorized here. ----
   async hls(a: Actor, cameraId: string, q: Quality, file: string, search: string): Promise<Response> {
     if (!/^[A-Za-z0-9_.-]{1,120}$/.test(file) || file.includes("..")) throw notFound();
-    const path = pathFor(cameraId, q);
-    const key = `${a.sessionId}|${subjectOf(a)}|${a.preview?.id ?? ""}|${path}`;
+    const path = pathFor(cameraId, q), key = jarKey(a, path);
     let jar = this.hlsJar.get(key);
     this.policy.camera(subjectOf(a), cameraId); // every request, not only the first
     if (!jar || Date.now() > jar.exp) {
@@ -143,6 +144,21 @@ export class Media {
     const r = await jar.reader.fetch(file, search).catch(relayDown);
     if (r.outcome !== "ok") throw new HttpError(r.outcome === "not_found" ? 404 : 502, r.outcome === "not_found" ? "not_found" : "relay_error");
     return new Response(r.body, { status: 200, headers: { "content-type": r.contentType ?? "application/octet-stream", "cache-control": "no-store" } });
+  }
+  /**
+   * The player stopped an HLS stream. HLS has no teardown of its own: without this, the stream keeps
+   * its slot until the relay closes the idle reader and a sweep notices (30 to 60 s), so changing
+   * views refuses the new tiles. Only this session's own readers for that stream are released. The
+   * camera is not looked up: releasing reveals nothing, and the answer is the same for any id.
+   */
+  async hlsClose(a: Actor, cameraId: string, q: Quality) {
+    const path = pathFor(cameraId, q);
+    this.hlsJar.delete(jarKey(a, path));
+    for (const [id, l] of this.live) {
+      if (l.kind !== "hls" || l.sessionId !== a.sessionId || l.path !== path || (l.previewId ?? "") !== (a.preview?.id ?? "")) continue;
+      await this.relay.kick("hls", id);
+      this.live.delete(id);
+    }
   }
 
   /**

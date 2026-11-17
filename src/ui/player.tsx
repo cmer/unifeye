@@ -74,6 +74,10 @@ export function Player({ cameraId }: { cameraId: string }) {
   const [job, setJob] = useState<Job | null>(null);
   const [idle, setIdle] = useState(false);
   const [hover, setHover] = useState<{ x: number; y: number; ms: number; img: number } | null>(null);
+  // Most third-party cameras give no picture from a recording. After three misses in a row, show only the time.
+  const stillMisses = useRef(0);
+  const [noStills, setNoStills] = useState<string | null>(null);
+  useEffect(() => { stillMisses.current = 0; }, [cameraId]);
   const [refresh, setRefresh] = useState(0);
   /** Start of the window being buffered in the background so the next one starts without a black gap. */
   const [armed, setArmed] = useState<number | null>(null);
@@ -395,8 +399,8 @@ export function Player({ cameraId }: { cameraId: string }) {
         )}
       </div>
       {hover && !down && (
-        <div className="pointer-events-none fixed z-30 w-36 -translate-x-1/2 rounded-lg border bg-popover p-1 text-center text-xs text-popover-foreground shadow-xl" style={{ left: Math.max(hover.x, 80), top: hover.y - 108 }}>
-          <div className="mb-0.5 aspect-video overflow-hidden rounded bg-black">{<img alt="" key={Math.round(hover.img / 1000)} src={mediaUrl(`/api/cameras/${cameraId}/snapshot?w=240&at=${Math.round(hover.img)}`)} className="size-full object-cover" onError={(e) => { e.currentTarget.style.display = "none"; }} />}</div>
+        <div className="pointer-events-none fixed z-30 w-36 -translate-x-1/2 rounded-lg border bg-popover p-1 text-center text-xs text-popover-foreground shadow-xl" style={{ left: Math.max(hover.x, 80), top: hover.y - (noStills === cameraId ? 36 : 108) }}>
+          {noStills !== cameraId && <div className="mb-0.5 aspect-video overflow-hidden rounded bg-black"><img alt="" key={Math.round(hover.img / 1000)} src={mediaUrl(`/api/cameras/${cameraId}/snapshot?w=240&at=${Math.round(hover.img)}`)} className="size-full object-cover" onLoad={() => { stillMisses.current = 0; }} onError={(e) => { e.currentTarget.style.display = "none"; if (++stillMisses.current >= 3) setNoStills(cameraId); }} /></div>}
           {fmtTime(hover.ms, tz)}
         </div>
       )}

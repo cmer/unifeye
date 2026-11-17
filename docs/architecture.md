@@ -335,7 +335,12 @@ WebRTC signalling is proxied; media flows from MediaMTX to the browser over ICE 
 (`WEBRTC_PORT` in Compose). If no media arrives within 4 seconds, the player tears the WebRTC session
 down and switches to HLS, and the tab skips WebRTC for 10 minutes (`src/ui/live.tsx`). Tearing down a WHEP session frees its slot at
 once. The per-session limit (`MAX_WALL_STREAMS` + 3) counts distinct streams (camera and quality),
-not relay readers, because HLS takes a new reader every 25 seconds.
+not relay readers, because HLS takes a new reader every 25 seconds. HLS has no teardown of its own,
+so when a tile stops an HLS stream the player sends `DELETE /api/media/live/:id/hls/:q`; Unifeye
+kicks that session's readers for the stream and frees the slot at once. Without it the slot stays
+taken until the relay closes the idle reader and a sweep notices (30 to 60 s), and changing views on
+HLS refused the new tiles. A tile refused for now (429, the stream limit or the rate limit) waits
+5 seconds and tries again without counting it as a failed attempt.
 
 ### Sound
 
@@ -509,6 +514,10 @@ zone, so a day is 23, 24 or 25 hours long around daylight-saving changes.
 
 ## Known risks
 
+- Timeline previews (a still from the recording under the pointer) depend on Protect's
+  `recording-snapshot`, which on Protect 7.3.74 answers "Recording not found" for most third-party
+  cameras even where a recording exists (37 of 42 on 2026-11-17). Unifeye stops asking for a camera
+  that has never given one after three misses, for 30 minutes, and the player then shows only the time.
 - Recorded video, historical events and thumbnails use Protect's private HTTP API, which the
   `unifi-protect` library does not cover and Ubiquiti does not document. They may change between
   Protect releases.

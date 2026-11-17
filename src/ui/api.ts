@@ -30,14 +30,15 @@ export const setPreviewToken = (t: string | null) => { if (t) sessionStorage.set
 /** For <img>, <video> and EventSource, which cannot send headers. */
 export const mediaUrl = (path: string) => { const t = previewToken(); return t ? `${path}${path.includes("?") ? "&" : "?"}pv=${encodeURIComponent(t)}` : path; };
 
-export async function api<T = unknown>(path: string, init: { method?: string; body?: unknown; raw?: string; signal?: AbortSignal } = {}): Promise<T> {
+/** `keepalive`: the request still goes out when the page is closing (releasing a stream on the way out). */
+export async function api<T = unknown>(path: string, init: { method?: string; body?: unknown; raw?: string; signal?: AbortSignal; keepalive?: boolean } = {}): Promise<T> {
   const headers: Record<string, string> = {};
   const method = init.method ?? "GET", pv = previewToken();
   if (method !== "GET") headers["x-csrf-token"] = csrf;
   if (pv) headers["x-unifeye-preview"] = pv;
   if (init.body !== undefined) headers["content-type"] = "application/json";
   if (init.raw !== undefined) headers["content-type"] = "application/sdp";
-  const res = await fetch(`/api${path}`, { method, headers, body: init.raw ?? (init.body === undefined ? undefined : JSON.stringify(init.body)), signal: init.signal, credentials: "same-origin" });
+  const res = await fetch(`/api${path}`, { method, headers, body: init.raw ?? (init.body === undefined ? undefined : JSON.stringify(init.body)), signal: init.signal, keepalive: init.keepalive, credentials: "same-origin" });
   if (res.status === 401) {
     location.assign(`/api/auth/login?returnTo=${encodeURIComponent(location.pathname + location.search)}`);
     throw new ApiError(401, "unauthenticated", "Signing in…");
