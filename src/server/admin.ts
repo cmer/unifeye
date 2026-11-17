@@ -2,11 +2,12 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { audit } from "./audit";
 import { applyProviderGroups } from "./auth/claims";
+import { insertLocalUser, issuePasswordLink, usernameSchema } from "./auth/local";
 import type { Sessions } from "./auth/session";
 import { subjectOf, type Actor } from "./authz/actor";
 import type { Policy } from "./authz/policy";
 import type { Views, ViewRow } from "./authz/views";
-import { groupsClaim } from "./config";
+import { groupsClaim, signInMethods } from "./config";
 import { schema, type Db } from "./db";
 import { badRequest, conflict, forbidden, newId, notFound } from "./util";
 
@@ -159,6 +160,35 @@ export class Admin {
     if (p.status === "disabled") this.sessions.revokeUser(userId, "user_disabled");
     else if (p.role) this.sessions.revokeUser(userId, "role_changed");
     this.done();
+  }
+
+  // ---- password accounts --------------------------------------------------
+  /**
+   * Adds a person who signs in with a username and password. The account has no password until the
+   * person opens the returned one-time link and chooses one; the administrator never sees it.
+   */
+  createPasswordUser(a: Actor, input: { name?: unknown; username?: unknown; role?: unknown }) {
+    this.admin(a, "user.create");
+    if (!signInMethods().local) throw badRequest("Passwords are turned off.");
+    const p = z.object({ name, username: usernameSchema, role: z.enum(["admin", "staff"]).default("staff") }).parse(input);
+    const out = this.db.transaction((tx) => {
+      const id = insertLocalUser(tx, p);
+      return { id, link: issuePasswordLink(tx, id, a.userId) };
+    }, { behavior: "immediate" });
+    this.log(a, "user.create", "user", out.id, { username: p.username, role: p.role });
+    this.done();
+    return out;
+  }
+  /** A new one-time password link. The current password keeps working until the link is used. */
+  passwordLink(a: Actor, userId: string) {
+    this.admin(a, "user.password_link");
+    if (!signInMethods().local) throw badRequest("Passwords are turned off.");
+    const out = this.db.transaction((tx) => {
+      if (!tx.select().from(S.localCredentials).where(eq(S.localCredentials.userId, userId)).get()) throw notFound();
+      return issuePasswordLink(tx, userId, a.userId);
+    }, { behavior: "immediate" });
+    this.log(a, "user.password_link", "user", userId);
+    return { link: out };
   }
 
   // ---- camera grants ----------------------------------------------------

@@ -22,6 +22,13 @@
       "when": 1794855061301,
       "tag": "0002_provider_group_sync",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1794871686171,
+      "tag": "0003_sign_in_methods",
+      "breakpoints": true
     }
   ]
 }

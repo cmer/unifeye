@@ -107,7 +107,7 @@ Then `docker compose up -d`.
 ### 4. Register the hostname with your identity provider
 
 Use the tunnel hostname in the redirect, post-logout and back-channel logout URIs from
-[deployment.md](deployment.md#1-register-unifeye-with-your-identity-provider).
+[deployment.md](deployment.md#register-unifeye-with-your-identity-provider).
 
 ## Cloudflare settings for the hostname
 
@@ -127,10 +127,18 @@ features that challenge bots can block it:
 
 ### Cloudflare Access (optional)
 
-You can put a Cloudflare Access application in front of the hostname as a second gate. People then
-sign in to Cloudflare first and to your identity provider second, unless both use the same provider.
-If you do, add a second Access application for the path `/api/auth/backchannel-logout` with a
-**Bypass** policy, for the same reason as above.
+There are two ways to use Access:
+
+- **As the sign-in itself** (`SIGN_IN_METHODS=cloudflare`, optionally `cloudflare,local`). Access
+  signs people in and Unifeye trusts its signed token; there is no second sign-in. See
+  [Cloudflare Access](deployment.md#cloudflare-access) in the deployment guide, including the
+  Transform Rule that adds `X-Unifeye-Origin-Secret`. Do not add any
+  Bypass policy in this setup: a request that reaches Unifeye without Access's token is treated as
+  coming from outside Cloudflare.
+- **As a second gate in front of your identity provider** (`SIGN_IN_METHODS=oidc`). People sign in
+  to Cloudflare first and to your identity provider second, unless both use the same provider. Add
+  a second Access application for the path `/api/auth/backchannel-logout` with a **Bypass** policy,
+  for the same reason as above.
 
 ### Leave page rewriting off
 
