@@ -204,6 +204,16 @@ since the move.
   QA stack: the control API is admitted through it, and `POST /api/internal/mediamtx-auth` on the
   web port returns 404. That check was local, not in the Compose stack.
 
+**Live start-up with retimed sound (2026-11-17, real UNVR, MediaMTX 1.21.4 on macOS, read-only):**
+
+- Production logs over four hours: about two thirds of cold starts had the retiming FFmpeg exit with
+  "dimensions not set" (exit 234), then ready only after MediaMTX's 5 s restart pause (6 to 9 s in
+  all, against 1 to 2 s otherwise); some passed MediaMTX's 10 s start limit and never played.
+- Reproduced locally with one real camera's low stream through `<path>_src`: with the old half-second
+  probe, FFmpeg failed every time and the stream never became ready in 15 s. With the 10 s probe and
+  `-fpsprobesize 0`, it was ready in 3.1 to 4.0 s over four cold starts with no failures. Not yet
+  checked in the Compose stack.
+
 ## Not verified
 
 | Area | Why | What could go wrong |
