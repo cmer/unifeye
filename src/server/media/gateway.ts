@@ -100,7 +100,12 @@ export class Media {
       readerId = this.admitted.get(ticket);
       this.tickets.delete(ticket); this.admitted.delete(ticket);
     });
-    if (r.outcome !== "created") throw new HttpError(r.outcome === "no_stream" ? 409 : 502, r.outcome === "no_stream" ? "no_live_stream" : "relay_error");
+    if (r.outcome !== "created") {
+      // The hook may have admitted a reader before the offer failed (the camera stopped sending, for
+      // example). Nobody will tear it down, so free its slot now instead of after the next sweeps.
+      if (readerId) { this.live.delete(readerId); await this.relay.kick("webrtc", readerId); }
+      throw new HttpError(r.outcome === "no_stream" ? 409 : 502, r.outcome === "no_stream" ? "no_live_stream" : "relay_error");
+    }
     const secret = r.resource;
     if (!/^[A-Za-z0-9-]{8,80}$/.test(secret)) throw new HttpError(502, "relay_error");
     this.whep.set(secret, { ...this.access.grant(a, cameraId), path, readerId });

@@ -379,6 +379,14 @@ describe("media tickets and active-stream revocation", () => {
     expect((await call(f.u.front, "DELETE", `/media/live/whep/${dock.res.headers.get("location")!.split("/").pop()}`)).status).toBe(200);
     expect((await call(f.u.front, "GET", `/media/live/${f.cam["Loading Dock"]}/hls/focus/index.m3u8`)).status).toBe(200);
   });
+  it("does not hold a stream slot for a WebRTC offer that failed after the relay admitted it", async () => {
+    (config() as { MAX_WALL_STREAMS: number }).MAX_WALL_STREAMS = -1; // a limit of 2 streams
+    expect((await whep(f.u.front, "Front Entrance", "?q=wall")).status).toBe(201);
+    f.relay.whepFailsAfterAdmit = true;
+    expect((await whep(f.u.front, "Loading Dock", "?q=wall")).status).toBe(502);
+    f.relay.whepFailsAfterAdmit = false;
+    expect((await whep(f.u.front, "Loading Dock", "?q=focus")).status).toBe(201); // the failed one left no slot behind
+  });
   it("releases an HLS stream's slot as soon as the player stops it, and only that session's", async () => {
     (config() as { MAX_WALL_STREAMS: number }).MAX_WALL_STREAMS = -1; // a limit of 2 streams
     const playlist = (u: string, camera: string, q = "wall") => call(u, "GET", `/media/live/${f.cam[camera]}/hls/${q}/index.m3u8`);

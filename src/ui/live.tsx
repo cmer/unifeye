@@ -145,7 +145,9 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
         });
         const ans = await api<{ sdp: string; location: string | null }>(`/media/live/${cameraId}/whep?q=${quality}`, { method: "POST", raw: pc.localDescription!.sdp });
         resource = ans.location;
-        if (closed) return;
+        // The tile stopped while the offer was on its way, so cleanup had nothing to release yet.
+        // Release it now: otherwise the session holds one of this tab's stream slots until it times out.
+        if (closed) { if (resource) void api(resource.replace(/^\/api/, ""), { method: "DELETE" }).catch(() => {}); return; }
         await pc.setRemoteDescription({ type: "answer", sdp: ans.sdp });
         if (!connected) timer = setTimeout(unreachable, WEBRTC_CONNECT_MS);
       } catch (e) {
