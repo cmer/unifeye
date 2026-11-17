@@ -163,6 +163,9 @@ relay, last backup). Neither exposes configuration or secrets.
 | `PLAYBACK_WINDOW_SECONDS` | 60 | Size of each recorded-video window |
 | `CLIP_MAX_SECONDS` | 7200 | Longest clip a person can save. Clips stream from the recorder to disk, so `/cache` needs room for them (roughly 1–4 GB per hour of video, depending on the camera) |
 | `CLIP_EXPORT_PARALLEL` | 3 | How many five-minute pieces of a long clip are fetched from the recorder at once. Higher is faster if the recorder keeps up |
+| `CLIP_MATCH_RESOLUTION` | on | With adaptive recording, re-encode the parts of a clip recorded only in low resolution at the high-resolution size, so players don't resize the picture partway. Off joins them as recorded |
+| `VIDEO_ENCODER` | `auto` | Encoder for that resize: `auto` uses a GPU if one works and the CPU otherwise; `cpu`, `vaapi`, `nvenc` or `videotoolbox` pick one (a named GPU that fails still falls back to the CPU) |
+| `VAAPI_DEVICE` | every `/dev/dri/renderD*` | VAAPI render node to use |
 | `BACKUP_RETENTION_DAYS` | 14 | How long daily backups are kept |
 | `MEDIA_CACHE_MAX_MB` | 2048 | Playback cache size limit |
 | `AUDIT_RETENTION_DAYS` | 365 | How long history is kept |
@@ -235,9 +238,20 @@ the repository's Settings > Deploy keys, then in the checkout switch to the SSH 
   microphone is re-encoded by an FFmpeg in the MediaMTX container (one small process per stream
   being watched) because Protect's audio timestamps are unusable as sent. Mock mode encodes test
   video and uses noticeably more.
-- No GPU or hardware video encoder (Quick Sync, NVENC and so on) is needed, and none would be
-  used. Live video, recorded playback and clip exports are copied as the recorder sends them, and
-  snapshots come ready-made from the recorder. For the host, the link to the recorder, upload speed
-  for remote viewers and room on `/cache` matter more than CPU.
+- No GPU is needed. Live video and recorded playback are copied as the recorder sends them, and
+  snapshots come ready-made from the recorder. The only video encoding is in saved clips from
+  cameras with adaptive recording. A five-minute piece with some motion is rebuilt at full size from
+  the low and high recordings so no time is missing (about 14 s at 2688x1512 on a fast desktop CPU,
+  run as each piece downloads), and a piece recorded only in low resolution is resized to match
+  (`CLIP_MATCH_RESOLUTION`, about 8 s). Expect a few times those on a small server, so a two-hour
+  clip from such a camera can take noticeably longer to prepare. A GPU is used when available
+  (below), though most of the time goes to scaling, which stays on the CPU. For the host, the link to the recorder, upload speed for
+  remote viewers and room on `/cache` matter more than CPU.
+- **GPU.** With `VIDEO_ENCODER=auto` (the default) Unifeye tries, once per start, a short test encode
+  on VAAPI (Intel Quick Sync and AMD), then NVIDIA NVENC, and uses the first that works, or the CPU.
+  The log says which (`clip resizing uses the GPU`). The image includes the Intel and AMD VAAPI
+  drivers. To pass an Intel or AMD GPU in, uncomment `devices` and `group_add` in `compose.yaml` and
+  set `RENDER_GID` in `.env` to the host's `render` group id (`getent group render | cut -d: -f3`).
+  For NVIDIA, install the NVIDIA Container Toolkit on the host and uncomment the `deploy` block.
 - Because video is not transcoded, browsers get each camera's own codec. H.265 cameras play only in
   browsers that support it. If that's a problem, set those cameras to H.264 in Protect.

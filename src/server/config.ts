@@ -106,6 +106,20 @@ const schema = z.object({
   CLIP_MAX_SECONDS: int(7200, 5),
   /** A long clip is fetched from the recorder in 5-minute pieces, this many at a time. */
   CLIP_EXPORT_PARALLEL: int(3, 1),
+  /**
+   * With adaptive recording, some pieces of a long clip are recorded only in low resolution. When
+   * on, they are re-encoded at the largest size so the picture stays one size in a player. (Pieces
+   * with some high-resolution video are always combined at full size; see `exportPiece`.)
+   */
+  CLIP_MATCH_RESOLUTION: bool(true),
+  /**
+   * Encoder for that re-encode. `auto` tries a GPU (VAAPI for Intel Quick Sync and AMD, then NVIDIA
+   * NVENC, then Apple VideoToolbox) and falls back to the CPU. A named encoder that fails also
+   * falls back to the CPU.
+   */
+  VIDEO_ENCODER: z.enum(["auto", "cpu", "vaapi", "nvenc", "videotoolbox"]).default("auto"),
+  /** VAAPI render node. Unset: every /dev/dri/renderD* is tried. */
+  VAAPI_DEVICE: z.string().optional(),
   PLAYBACK_WINDOW_SECONDS: int(60, 10),
   EVENT_PREROLL_SECONDS: int(5, 0),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),

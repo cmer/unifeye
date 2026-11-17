@@ -1,8 +1,8 @@
 import { eq } from "drizzle-orm";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleApi } from "@/server/api";
 import { config } from "@/server/config";
@@ -177,6 +177,55 @@ describe("long clip exports", () => {
     // Only the first piece keeps its lead; the joins drop the rest.
     expect((await probe(file)).duration).toBeCloseTo((endMs - startMs) / 1000 + 2.5, 0);
   }, 90_000);
+
+  it("play at one size when the recorder sends a low-resolution piece", async () => {
+    const cam = f.cam["Loading Dock"], t = Date.now() - 2 * 3600e3;
+    const rec = (await call(f.u.front, "GET", `/cameras/${cam}/recordings?from=${t - 3600e3}&to=${t}`)).data.ranges as [number, number][];
+    const [, b] = rec.find(([x, y]) => y - x >= 12 * 60_000)!, startMs = b - 11 * 60_000, endMs = b - 30_000;
+    // Adaptive recording: the middle five minutes had no motion, so only the low stream exists.
+    const real = f.adapter.exportClip.bind(f.adapter);
+    vi.spyOn(f.adapter, "exportClip").mockImplementation((id, s0, e0, dest, o) => real(id, s0, e0, dest, s0 === startMs + 5 * 60_000 ? { ...o, quality: "wall" } : o));
+    const { id } = (await call(f.u.front, "POST", "/exports", { body: { cameraId: cam, startMs, endMs } })).data;
+    await wait(async () => (await call(f.u.front, "GET", `/exports/${id}`)).data.status !== "running", 90_000);
+    expect((await call(f.u.front, "GET", `/exports/${id}`)).data.status).toBe("ready");
+    const file = f.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, id)).get()!.filePath!;
+    const { probe, videoSizes } = await import("@/server/protect/ffmpeg");
+    expect((await videoSizes(file)).sizes).toEqual([{ w: 1280, h: 720 }]);
+    expect((await probe(file)).duration).toBeCloseTo((endMs - startMs) / 1000, 0);
+    expect(readdirSync(dirname(file))).toEqual([basename(file)]); // no pieces or resized copies left behind
+  }, 120_000);
+
+  it("keep every minute of an adaptive recording, at the high resolution", async () => {
+    const cam = f.cam["Loading Dock"], protectId = f.db.select().from(schema.cameras).where(eq(schema.cameras.id, cam)).get()!.protectId, t = Date.now() - 2 * 3600e3;
+    f.adapter.adaptive.add(protectId); // high resolution only in seconds 12-21 of every half minute
+    const rec = (await call(f.u.front, "GET", `/cameras/${cam}/recordings?from=${t - 3600e3}&to=${t}`)).data.ranges as [number, number][];
+    const [, b] = rec.find(([x, y]) => y - x >= 12 * 60_000)!, startMs = Math.floor((b - 11 * 60_000) / 60_000) * 60_000, endMs = startMs + 6 * 60_000;
+    const { id } = (await call(f.u.front, "POST", "/exports", { body: { cameraId: cam, startMs, endMs } })).data;
+    await wait(async () => (await call(f.u.front, "GET", `/exports/${id}`)).data.status !== "running", 110_000);
+    expect((await call(f.u.front, "GET", `/exports/${id}`)).data.status).toBe("ready");
+    const file = f.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, id)).get()!.filePath!;
+    const { probe, videoSizes } = await import("@/server/protect/ffmpeg");
+    expect((await videoSizes(file)).sizes).toEqual([{ w: 1280, h: 720 }]);
+    // Six minutes, plus the 2 s the simulated recorder starts early; before, only the 108 s of
+    // high-resolution stretches came out.
+    expect((await probe(file)).duration).toBeCloseTo(6 * 60 + 2, 0);
+    expect(readdirSync(dirname(file))).toEqual([basename(file)]);
+  }, 120_000);
+
+  it("keep a stretch the recorder only has in low resolution", async () => {
+    const cam = f.cam["Loading Dock"], t = Date.now() - 2 * 3600e3;
+    const rec = (await call(f.u.front, "GET", `/cameras/${cam}/recordings?from=${t - 3600e3}&to=${t}`)).data.ranges as [number, number][];
+    const [, b] = rec.find(([x, y]) => y - x >= 12 * 60_000)!, startMs = b - 11 * 60_000, endMs = b - 30_000;
+    const real = f.adapter.exportClip.bind(f.adapter), { NoRecordingError } = await import("@/server/protect/types");
+    vi.spyOn(f.adapter, "exportClip").mockImplementation((id, s0, e0, dest, o) => s0 === startMs + 5 * 60_000 && o?.quality === "focus" ? Promise.reject(new NoRecordingError()) : real(id, s0, e0, dest, o));
+    const { id } = (await call(f.u.front, "POST", "/exports", { body: { cameraId: cam, startMs, endMs } })).data;
+    await wait(async () => (await call(f.u.front, "GET", `/exports/${id}`)).data.status !== "running", 90_000);
+    expect((await call(f.u.front, "GET", `/exports/${id}`)).data.status).toBe("ready");
+    const file = f.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, id)).get()!.filePath!;
+    const { probe, videoSizes } = await import("@/server/protect/ffmpeg");
+    expect((await videoSizes(file)).sizes).toEqual([{ w: 1280, h: 720 }]);
+    expect((await probe(file)).duration).toBeCloseTo((endMs - startMs) / 1000, 0);
+  }, 120_000);
 });
 
 describe("clip exports made during See as staff", () => {
