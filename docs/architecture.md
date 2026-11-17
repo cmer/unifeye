@@ -346,8 +346,10 @@ with a microphone (`featureFlags.hasMic`), the relay therefore takes two paths (
 MediaMTX pulls the camera into `<path>_src` as before, keeping the certificate fingerprint check,
 and an FFmpeg it starts on demand reads that path over loopback RTSP, copies the video, decodes the
 camera's first audio track and re-encodes it to AAC (for HLS) and Opus (for WebRTC) with timestamps
-counted from the samples, then publishes `<path>`, which is what readers get tickets for. It adds
-about half a second to start-up and one small FFmpeg process per stream being watched. Cameras
+counted from the samples, then publishes `<path>`, which is what readers get tickets for. FFmpeg
+probes until it has seen the first video frame (up to 10 s), because on a cold start the camera's
+sound arrives seconds before its picture; a shorter probe made FFmpeg exit and MediaMTX wait 5 s to
+retry. It adds one small FFmpeg process per stream being watched. Cameras
 without a microphone are pulled directly, as before.
 
 ### The relay seam

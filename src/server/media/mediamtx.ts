@@ -10,14 +10,18 @@ export const SRC_SUFFIX = "_src";
 
 /**
  * The FFmpeg that MediaMTX runs to publish `<name>` from `<name>_src`. `$RTSP_PORT` and `$MTX_PATH`
- * are filled in by MediaMTX. Short probing keeps start-up near half a second; `asetpts=N/SR/TB`
+ * are filled in by MediaMTX. The probe must last until the first video frame: on a cold start the
+ * camera's sound arrives a few seconds before its picture, and a short probe (half a second) ended on
+ * sound alone, so FFmpeg exited ("dimensions not set") and MediaMTX retried only after a 5 s pause,
+ * often too late for the reader. A 10 s ceiling still ends as soon as every track is known, and
+ * `-fpsprobesize 0` skips waiting for 20 frames to guess a frame rate. `asetpts=N/SR/TB`
  * ignores the camera's audio timestamps and counts samples instead. The camera's first audio track
  * is used (AAC on Protect, present on every camera with a microphone); `?` makes it optional.
  */
 function retimeCommand(name: string) {
   const auth = `${MTX_PUBLISH_USER}:${encodeURIComponent(config().MEDIAMTX_API_SECRET ?? "")}`;
   return [
-    "ffmpeg -hide_banner -loglevel error -analyzeduration 500000 -probesize 500000",
+    "ffmpeg -hide_banner -loglevel error -analyzeduration 10000000 -probesize 10000000 -fpsprobesize 0",
     `-rtsp_transport tcp -i rtsp://${auth}@127.0.0.1:$RTSP_PORT/${name}${SRC_SUFFIX}`,
     "-map 0:v:0 -map 0:a:0? -map 0:a:0? -c:v copy -filter:a asetpts=N/SR/TB",
     "-c:a:0 aac -b:a:0 48k -c:a:1 libopus -b:a:1 48k",
