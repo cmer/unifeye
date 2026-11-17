@@ -5,7 +5,7 @@ import { Agent, request, type Dispatcher } from "undici";
 import { ProtectClient } from "unifi-protect";
 import { log } from "../util";
 import { retimeVideoToAudio } from "./ffmpeg";
-import { NoRecordingError, ProtectUnavailableError, type AdapterHealth, type EventQuery, type EventType, type LiveSource, type ProtectAdapter, type ProtectCamera, type ProtectEvent, type RecordingRanges } from "./types";
+import { NoRecordingError, ProtectUnavailableError, RecorderBusyError, type AdapterHealth, type EventQuery, type EventType, type LiveSource, type ProtectAdapter, type ProtectCamera, type ProtectEvent, type RecordingRanges } from "./types";
 
 interface RawEvent { id: string; type: string; start: number; end?: number | null; camera?: string; cameraId?: string; smartDetectTypes?: string[]; thumbnailId?: string; modelKey?: string }
 const SMART: Record<string, EventType> = { person: "person", vehicle: "vehicle", package: "package", animal: "animal", licensePlate: "licensePlate" };
@@ -201,7 +201,8 @@ export class UnifiProtectAdapter implements ProtectAdapter {
   /**
    * Streams Protect's MP4 export to `destPath` without holding it in memory. A long clip can take
    * minutes before Protect sends the first byte, so the wait for headers is generous; a stalled body
-   * fails after two minutes of silence. A 401 signs in again once.
+   * fails after two minutes of silence. A 401 signs in again once. A server error, timeout or "too
+   * many requests" throws RecorderBusyError; any other refusal, or an empty clip, NoRecordingError.
    */
   async exportClip(id: string, startMs: number, endMs: number, destPath: string, opts: { quality?: "wall" | "focus"; signal?: AbortSignal } = {}) {
     const channel = opts.quality === "focus" ? 0 : 2;
@@ -211,7 +212,9 @@ export class UnifiProtectAdapter implements ProtectAdapter {
         const auth = await this.exportAuth();
         const r = await request(url, { dispatcher: this.exportAgent(), headers: auth, signal: opts.signal });
         if (r.statusCode === 401 && attempt === 0) { await r.body.dump(); this.dlAuth = undefined; continue; }
-        if (r.statusCode !== 200) { await r.body.dump(); throw new NoRecordingError(); }
+        // A server error, timeout or "too many requests" is the recorder struggling (it builds whole
+        // exports at once, and a long clip asks for several), not a sign that nothing was recorded.
+        if (r.statusCode !== 200) { await r.body.dump(); throw r.statusCode === 408 || r.statusCode === 429 || r.statusCode >= 500 ? new RecorderBusyError(r.statusCode) : new NoRecordingError(); }
         await pipeline(r.body, createWriteStream(destPath, { mode: 0o600 }), { signal: opts.signal });
         if ((await stat(destPath)).size < 1024) throw new NoRecordingError();
         this.ok();
@@ -219,7 +222,7 @@ export class UnifiProtectAdapter implements ProtectAdapter {
         await retimeVideoToAudio(destPath, opts.signal).catch((err) => { if (!opts.signal?.aborted) log("warn", "could not retime export", { error: err }); });
         return;
       } catch (e) {
-        if (e instanceof NoRecordingError || opts.signal?.aborted) throw e;
+        if (e instanceof NoRecordingError || e instanceof RecorderBusyError || opts.signal?.aborted) throw e;
         this.failed(e);
         throw new ProtectUnavailableError((e as Error).message);
       }

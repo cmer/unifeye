@@ -339,6 +339,13 @@ export const exportJobs = sqliteTable(
     progress: integer("progress").notNull().default(0),
     filePath: text("file_path"),
     error: text("error"),
+    /** Length of the finished clip, in milliseconds. */
+    durationMs: integer("duration_ms"),
+    /**
+     * Why a finished clip is noticeably shorter than asked, or null: part of the time was not
+     * recorded, or the recorder kept failing to export part of it.
+     */
+    gap: text("gap", { enum: ["unrecorded", "busy"] }),
     createdAt: ts("created_at").notNull(),
     expiresAt: ts("expires_at").notNull(),
   },

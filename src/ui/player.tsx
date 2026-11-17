@@ -1,5 +1,5 @@
 "use client";
-import { ArrowLeft, CalendarDays, CircleCheck, Download, Lock, Maximize, Pause, Play, RotateCcw, RotateCw, ZoomIn, ZoomOut } from "lucide-react";
+import { ArrowLeft, CalendarDays, CircleAlert, CircleCheck, Download, Lock, Maximize, Pause, Play, RotateCcw, RotateCw, ZoomIn, ZoomOut } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -20,7 +20,8 @@ type Ranges = { ranges: [number, number][]; precision: "exact" | "bounds" };
 type WinInfo = { startMs: number; endMs: number; leadMs: number; overlay: { at: number; from: number; len: number }[] };
 const ZONES: [string, string][] = [["local", "My time zone"], ["UTC", "UTC"], ["America/Toronto", "Toronto"], ["America/Vancouver", "Vancouver"], ["America/Chicago", "Chicago"], ["Europe/London", "London"], ["Europe/Paris", "Paris"], ["Australia/Sydney", "Sydney"]];
 const ghost = "text-white hover:bg-white/15 hover:text-white";
-type Job = { id: string; status: string; error: string | null; progress?: number; etaMs?: number | null; fileName?: string | null; bytes?: number | null };
+/** `gap`: why a finished clip is noticeably shorter than asked (`durationMs` is its real length). */
+type Job = { id: string; status: string; error: string | null; progress?: number; etaMs?: number | null; fileName?: string | null; bytes?: number | null; durationMs?: number | null; gap?: "unrecorded" | "busy" | null };
 /**
  * A clip being chosen: its two ends, the stretch of time the timeline shows meanwhile, the end being
  * dragged, and whether the viewer has zoomed the timeline themselves (then it stops fitting itself to the selection).
@@ -438,6 +439,8 @@ function ClipDialog({ name, startMs, endMs, first, onClose }: { name: string; st
   const close = () => { if (job.status === "running") void api(`/exports/${job.id}`, { method: "DELETE" }).catch(() => {}); onClose(job.status === "ready"); };
   const ready = job.status === "ready", pct = job.progress ?? 0, measured = job.status === "running" && pct > 0 && pct < 95;
   const note = pct >= 95 ? "Putting the pieces together…" : left != null ? fmtLeft(left) : pct > 0 ? "Estimating time left…" : "Waiting for the recorder…";
+  const len = job.durationMs ?? endMs - startMs, short = `The clip is ${fmtLen(len)} instead of ${fmtLen(endMs - startMs)}.`;
+  const gap = !ready || !job.gap ? null : job.gap === "busy" ? `The recorder was busy, so part of this time is missing. ${short} Try again in a few minutes.` : `Part of this time wasn\u2019t recorded. ${short}`;
   return (
     <Dialog open onOpenChange={(o) => !o && close()}>
       <DialogContent>
@@ -449,8 +452,9 @@ function ClipDialog({ name, startMs, endMs, first, onClose }: { name: string; st
           <>
             <div className="flex min-w-0 items-center gap-3 rounded-lg bg-muted p-2.5">
               <span className="grid size-9 shrink-0 place-items-center rounded-md bg-primary text-[10px] font-semibold text-primary-foreground">MP4</span>
-              <div className="min-w-0 text-sm"><div className="truncate font-medium" title={job.fileName ?? undefined}>{job.fileName ?? `${name}.mp4`}</div><div className="text-xs text-muted-foreground">{fmtLen(endMs - startMs)}{job.bytes ? ` · ${fmtBytes(job.bytes)}` : ""}</div></div>
+              <div className="min-w-0 text-sm"><div className="truncate font-medium" title={job.fileName ?? undefined}>{job.fileName ?? `${name}.mp4`}</div><div className="text-xs text-muted-foreground">{fmtLen(len)}{job.bytes ? ` · ${fmtBytes(job.bytes)}` : ""}</div></div>
             </div>
+            {gap && <p role="status" className="flex gap-2 text-sm text-muted-foreground"><CircleAlert className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-500" />{gap}</p>}
             <p className="text-sm text-muted-foreground">Didn&rsquo;t start? <button type="button" className="font-medium text-foreground underline underline-offset-2" onClick={() => saveFile(job.id)}>Download again</button></p>
           </>
         )}
