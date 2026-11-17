@@ -8,6 +8,8 @@ import { MTX_API_USER, MTX_PUBLISH_USER, SRC_SUFFIX } from "./mediamtx";
 import { RelayUnavailable, type HlsReader, type ReaderKind, type Relay } from "./relay";
 
 export type Quality = "wall" | "focus";
+/** Distinct live streams one session may hold: the wall's tiles plus a few for the player and handovers. */
+export const maxStreams = () => config().MAX_WALL_STREAMS + 3;
 interface Ticket extends Grant { path: string; kind: ReaderKind; exp: number; single: boolean; used: boolean }
 interface Live extends Grant { kind: ReaderKind; path: string; since: number }
 export interface HookBody { user?: string; password?: string; token?: string; ip?: string; action?: string; path?: string; protocol?: string; id?: string; query?: string }
@@ -67,7 +69,7 @@ export class Media {
     // The limit is on distinct streams (camera + quality), not relay readers: HLS takes a new reader
     // every 25 s and a WebRTC attempt may precede it, and none of that is another stream on screen.
     const mine = new Set([...this.live.values()].filter((l) => l.sessionId === a.sessionId).map((l) => l.path));
-    if (!mine.has(path) && mine.size >= config().MAX_WALL_STREAMS + 3) throw new HttpError(429, "too_many_streams", "Too many live streams are open");
+    if (!mine.has(path) && mine.size >= maxStreams()) throw new HttpError(429, "too_many_streams", "Too many live streams are open");
     const src = await this.adapter().liveSource(cam.protectId, q).catch(() => { throw new HttpError(503, "nvr_unavailable"); });
     if (!src) throw new HttpError(409, "no_live_stream", "This camera has no live stream available");
     await this.relay.ensureStream(path, src).catch((e) => { log("error", "relay path setup failed", { error: e }); throw new HttpError(503, "relay_unavailable"); });

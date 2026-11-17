@@ -209,7 +209,8 @@ relay, last backup). Neither exposes configuration or secrets.
 - Disable response buffering for `/api/events/stream` and `/api/media/`.
 - Proxy only port 3000. MediaMTX calls Unifeye's auth hook on port 3001 over the Compose network;
   never publish or proxy that port. Nothing needs blocking at the proxy.
-- Forward the client address in `X-Forwarded-For` (rate limiting uses the first address).
+- Forward the client address in `X-Forwarded-For`, appended as the last entry (sign-in rate limits
+  use the last address; signed-in requests are limited per session).
 - Open port **8189 UDP and TCP** from viewers to the host, and set `WEBRTC_PUBLIC_HOST` to the
   address they use (a comma-separated list is allowed, for example a LAN IP and a public name). To
   use another port, set `WEBRTC_PORT`; Compose publishes it and MediaMTX listens on it, and the

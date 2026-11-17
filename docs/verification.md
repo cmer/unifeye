@@ -204,6 +204,19 @@ since the move.
   QA stack: the control API is admitted through it, and `POST /api/internal/mediamtx-auth` on the
   web port returns 404. That check was local, not in the Compose stack.
 
+**Rate limits and HLS walls (2026-11-17):**
+
+- On production, a tab using HLS on a full wall got 429s. Measured in Chrome: 9 HLS tiles made 29
+  playlist requests per tile per minute (video and sound playlists every 4 s), with segments at
+  the same rate, plus about 100 still-image refreshes a minute for the other tiles: about 620
+  against a 600 limit per address.
+- `tests/api.test.ts` ("rate limits"): 700 HLS requests a minute from one session pass with the
+  default stream limit, and snapshots keep their own budget; the HLS limit follows
+  `MAX_WALL_STREAMS`; two people at one address each get the full limit, and a new address does not
+  reset a session; failed authentication is limited per address without refusing a valid session
+  there; a client changing the first `X-Forwarded-For` entry does not get a fresh sign-in budget.
+  All four fail on the previous code. Not yet checked on production.
+
 **Live start-up with retimed sound (2026-11-17, real UNVR, MediaMTX 1.21.4 on macOS, read-only):**
 
 - Production logs over four hours: about two thirds of cold starts had the retiming FFmpeg exit with

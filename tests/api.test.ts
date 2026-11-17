@@ -574,3 +574,36 @@ describe("See as staff (authorization preview)", () => {
     expect(log.some((r) => r.action === "preview.start" && r.outcome === "denied")).toBe(false);
   });
 });
+
+describe("rate limits", () => {
+  const from = (address: string) => ({ "x-forwarded-for": address });
+  const statuses = async (n: number, fn: () => Promise<{ status: number }>) => { const s = new Set<number>(); for (let i = 0; i < n; i++) s.add((await fn()).status); return [...s]; };
+  const playlist = (userId: string, address: string) => call(userId, "GET", `/media/live/${f.cam["Front Entrance"]}/hls/wall/index.m3u8`, { headers: from(address) });
+
+  it("lets a full wall play over HLS: well past the old 600 a minute, in a budget of its own", async () => {
+    // Nine tiles at about 60 requests a minute each, plus still images for the rest of the wall.
+    expect(await statuses(700, () => playlist(f.u.front, "198.51.100.10"))).toEqual([200]);
+    expect((await call(f.u.front, "GET", `/cameras/${f.cam["Front Entrance"]}/snapshot`, { headers: from("198.51.100.10") })).status).toBe(200);
+  });
+  it("counts signed-in requests per session, so people behind one address each get the full limit", async () => {
+    (config() as { MAX_WALL_STREAMS: number }).MAX_WALL_STREAMS = -1; // 2 streams, so 240 HLS requests a minute
+    expect(await statuses(240, () => playlist(f.u.front, "198.51.100.11"))).toEqual([200]);
+    expect((await playlist(f.u.front, "198.51.100.11")).status).toBe(429);
+    expect((await playlist(f.u.front, "198.51.100.12")).status).toBe(429); // a new address does not reset a session
+    expect((await playlist(f.u.sec, "198.51.100.11")).status).toBe(200); // someone else at the same address
+    expect((await call(f.u.front, "GET", "/me", { headers: from("198.51.100.11") })).status).toBe(200); // other routes keep their own budget
+  });
+  it("counts requests without a valid session per address, without blocking people signed in there", async () => {
+    expect(await statuses(600, () => call(null, "GET", "/me", { headers: from("198.51.100.13") }))).toEqual([401]);
+    expect((await call(null, "GET", "/me", { headers: from("198.51.100.13") })).status).toBe(429);
+    expect((await call(f.u.front, "GET", "/me", { headers: from("198.51.100.13") })).status).toBe(200);
+    expect((await call(null, "GET", "/me", { headers: from("198.51.100.14") })).status).toBe(401);
+  });
+  it("takes the client address from the last X-Forwarded-For entry, so a client cannot pick a fresh one", async () => {
+    const signIn = (i: number, real: string) => call(null, "GET", "/auth/login", { headers: from(`203.0.113.${i % 250}, ${real}`) });
+    let i = 0;
+    expect(await statuses(30, () => signIn(++i, "198.51.100.15"))).not.toContain(429); // a different first entry every time
+    expect((await signIn(7, "198.51.100.15")).status).toBe(429);
+    expect((await signIn(7, "198.51.100.16")).status).not.toBe(429);
+  });
+});

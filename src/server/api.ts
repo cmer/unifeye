@@ -10,12 +10,13 @@ import type { CameraInfo, UserRow } from "./authz/policy";
 import { allowedOrigins, config, groupsClaim, signInMethods } from "./config";
 import { schema } from "./db";
 import { backupStatus } from "./db/backup";
+import { maxStreams } from "./media/gateway";
 import { fileResponse } from "./media/recordings";
 import { maybeSeedDemo, services, type Services } from "./services";
 import { badRequest, forbidden, HttpError, log, newId, notFound, safeEqual } from "./util";
 
 interface Ctx { req: Request; url: URL; p: Record<string, string>; s: Services; actor: Actor; session: SessionRow; user: UserRow; json: <T = Record<string, unknown>>() => Promise<T>; ip: string; requestId: string }
-interface Opts { public?: boolean; admin?: boolean; rate?: "auth" | "media" | "write" }
+interface Opts { public?: boolean; admin?: boolean; rate?: "auth" | "media" | "hls" | "write" }
 type Handler = (c: Ctx) => Promise<Response | object | void> | Response | object | void;
 const routes: { method: string; re: RegExp; keys: string[]; opts: Opts; fn: Handler }[] = [];
 function route(method: string, path: string, opts: Opts, fn: Handler) {
@@ -35,16 +36,37 @@ const redirect = (to: string, cookies: string[] = []) => { const h = new Headers
 const num = (v: string | null, name: string) => { const n = Number(v); if (v == null || v === "" || !Number.isFinite(n)) throw badRequest(`${name} is required`); return n; };
 const quality = (v: string | null) => (v === "focus" ? "focus" : "wall") as "focus" | "wall";
 
+/**
+ * Requests per minute. Signed-in requests count per session, so people sharing one address (an office,
+ * a VPN) do not share a limit; public routes and requests that fail to sign in count per address.
+ * `unauth`: requests to signed-in routes without a valid session, such as a wall left open after
+ * signing out.
+ */
+const LIMITS = { auth: 30, media: 600, write: 240, read: 1200, unauth: 600 };
+type RateClass = keyof typeof LIMITS | "hls";
+/**
+ * An HLS stream polls a video and a sound playlist and fetches a segment of each every 4 s or so:
+ * about 60 requests a minute, more while hls.js re-checks a playlist that has not moved yet. Twice
+ * that per stream the session may hold, so a full wall on HLS fits with room for reconnects.
+ */
+const HLS_PER_STREAM = 120;
+const limitOf = (cls: RateClass) => (cls === "hls" ? maxStreams() * HLS_PER_STREAM : LIMITS[cls]);
 const buckets = new Map<string, { n: number; reset: number }>();
-const LIMITS = { auth: 30, media: 600, write: 240, read: 1200 };
-/** Fixed-window limiter per client address and class. Enough to blunt brute force and runaway clients. */
-function rateLimit(ip: string, cls: keyof typeof LIMITS) {
-  const t = Date.now(), k = `${cls}:${ip}`;
+/** Fixed-window limiter. Enough to blunt brute force and runaway clients. */
+function rateLimit(key: string, cls: RateClass) {
+  const t = Date.now(), k = `${cls}:${key}`;
   let b = buckets.get(k);
   if (!b || t > b.reset) buckets.set(k, (b = { n: 0, reset: t + 60_000 }));
-  if (++b.n > LIMITS[cls]) throw new HttpError(429, "rate_limited", "Too many requests. Try again in a moment.");
   if (buckets.size > 10_000) for (const [key, v] of buckets) if (t > v.reset) buckets.delete(key);
+  if (++b.n > limitOf(cls)) throw new HttpError(429, "rate_limited", "Too many requests. Try again in a moment.");
 }
+/**
+ * The client's address: the last `X-Forwarded-For` entry, which the nearest proxy (cloudflared, a
+ * reverse proxy) appends; entries before it are whatever the client sent. Next fills the header in
+ * from the connection when a request arrives without one. A client that reaches Unifeye directly,
+ * with no proxy in between, can still choose this value.
+ */
+const clientIp = (req: Request) => (req.headers.get("x-forwarded-for") ?? "").split(",").map((a) => a.trim()).filter(Boolean).pop() || "local";
 
 const camDto = (c: CameraInfo) => ({ id: c.id, name: c.name, tags: c.tags, missing: c.missing, online: !c.missing && c.meta.online === true, eventTypes: (c.meta.eventTypes as string[] | undefined) ?? [], hasLive: Array.isArray(c.meta.streams) && c.meta.streams.length > 0 });
 
@@ -82,18 +104,22 @@ async function authenticate(req: Request, url: URL, s: Services, ip: string, req
 /** Entry point for every /api request. Also used directly by the integration tests. */
 export async function handleApi(req: Request): Promise<Response> {
   const url = new URL(req.url), path = url.pathname.replace(/^\/api/, "") || "/", requestId = req.headers.get("x-request-id")?.slice(0, 64) || newId();
-  const ip = (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() || "local";
+  const ip = clientIp(req);
   const started = Date.now();
   let res: Response;
   try {
     const match = routes.map((r) => ({ r, m: r.method === req.method ? r.re.exec(path) : null })).find((x) => x.m);
     if (!match) throw notFound();
     const { r, m } = match, s = services(), write = req.method !== "GET" && req.method !== "HEAD";
-    rateLimit(ip, r.opts.rate ?? (write ? "write" : "read"));
+    const cls = r.opts.rate ?? (write ? "write" : "read");
+    if (r.opts.public) rateLimit(`ip:${ip}`, cls);
     const p = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m![i + 1])]));
     let auth: Awaited<ReturnType<typeof authenticate>> | undefined;
     if (!r.opts.public) {
-      auth = await authenticate(req, url, s, ip, requestId);
+      // Requests that fail to sign in count per address. Only failures count, so a signed-out tab
+      // never blocks people signed in from the same address.
+      auth = await authenticate(req, url, s, ip, requestId).catch((e) => { rateLimit(`ip:${ip}`, "unauth"); throw e; });
+      rateLimit(`session:${auth.session.id}`, cls);
       if (write) {
         // CSRF: cookie-authenticated writes need the per-session token and a same-origin request.
         const origin = req.headers.get("origin");
@@ -282,7 +308,7 @@ for (const method of ["PATCH", "DELETE"] as const)
     for (const k of ["content-type", "if-match"]) { const v = req.headers.get(k); if (v) h[k] = v; }
     return new Response(null, { status: await s.media.whepForward(actor, p.secret, method, method === "PATCH" ? await req.text() : undefined, h) });
   });
-route("GET", "/media/live/:id/hls/:q/:file", { rate: "media" }, ({ s, actor, p, url }) => { const q = new URLSearchParams(url.search); q.delete("pv"); const qs = q.toString(); return s.media.hls(actor, p.id, quality(p.q), p.file, qs ? `?${qs}` : ""); });
+route("GET", "/media/live/:id/hls/:q/:file", { rate: "hls" }, ({ s, actor, p, url }) => { const q = new URLSearchParams(url.search); q.delete("pv"); const qs = q.toString(); return s.media.hls(actor, p.id, quality(p.q), p.file, qs ? `?${qs}` : ""); });
 
 // ---- views ------------------------------------------------------------------------
 route("GET", "/views/:id", {}, ({ s, actor, p }) => {

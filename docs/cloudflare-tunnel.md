@@ -157,11 +157,12 @@ and Cloudflare does not cache it. Do not add a "Cache Everything" rule for this 
   within 100 seconds. Clip exports run as background jobs and are not affected. Seeking recorded
   video waits while Unifeye fetches that minute from the recorder. This is normally a few seconds,
   but a slow or overloaded UNVR could exceed the limit and the seek would fail.
-- **Rate limits are per client address.** `cloudflared` passes each visitor's address in
-  `X-Forwarded-For`, and Unifeye counts requests per address per minute. Video requests are limited
-  to 600 per minute. A 9-tile wall on HLS makes about 270 per minute (measured locally at about 30 per
-  tile). Off-site viewers usually each have their own address. People behind one office or VPN
-  address share the limit, so two full HLS walls from the same address use most of it.
+- **Rate limits are per person once signed in.** Unifeye counts signed-in requests per session, so
+  people behind one office or VPN address do not share a limit. HLS has its own budget, 1,440
+  requests a minute with the default `MAX_WALL_STREAMS`; a 9-tile wall on HLS makes about 540
+  (about 60 per tile: a video and a sound playlist and a segment of each every 4 seconds). Sign-in
+  pages are limited per address, taken from the last `X-Forwarded-For` entry, which `cloudflared`
+  sets to the visitor's address.
 - **Cloudflare's terms on video.** Cloudflare's self-serve terms restrict using its network mainly to
   serve video, outside its own video products. A few people occasionally watching cameras over HLS
   is a small amount of traffic, but a wall streaming HLS all day through the tunnel is more. Keeping
