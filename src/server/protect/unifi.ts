@@ -32,6 +32,8 @@ const SMART: Record<string, EventType> = { person: "person", vehicle: "vehicle",
  * bounds only; live video needs an RTSP stream that is already enabled on the camera, because
  * enabling one would be a write.
  */
+const STILL_MISSES = 3, STILL_SKIP_MS = 30 * 60_000;
+
 export class UnifiProtectAdapter implements ProtectAdapter {
   readonly mode = "real" as const;
   private client?: ProtectClient;
@@ -45,6 +47,14 @@ export class UnifiProtectAdapter implements ProtectAdapter {
   /** Connection pool and session headers for streamed exports (see `exportClip`). */
   private dl?: Dispatcher;
   private dlAuth?: Promise<Record<string, string>>;
+  /**
+   * Stills from recordings, per camera. Protect 7.3 answers "Recording not found" for most third-party
+   * cameras even where a recording exists (2026-11-17: 37 of 42, though a short export of the same
+   * moment works). A camera that has never given a still is skipped for `STILL_SKIP_MS` after
+   * `STILL_MISSES` misses in a row, then tried once more. One that has given a still is never skipped,
+   * so gaps in its recording do not turn its previews off.
+   */
+  private stills = new Map<string, { ok: boolean; misses: number; until: number }>();
 
   constructor(readonly nvrId: string, private o: { host: string; username: string; password: string; verifyTls: boolean; rtspsFingerprint?: string; /** Tests only: replaces the export connection pool. */ exportDispatcher?: Dispatcher }) {}
 
@@ -168,8 +178,16 @@ export class UnifiProtectAdapter implements ProtectAdapter {
   async snapshot(id: string, opts: { width?: number; atMs?: number; signal?: AbortSignal } = {}): Promise<Buffer> {
     const w = Math.min(Math.max(opts.width ?? 640, 160), 1920), h = Math.round((w * 9) / 16);
     if (opts.atMs != null) {
+      const st = this.stills.get(id) ?? { ok: false, misses: 0, until: 0 };
+      if (Date.now() < st.until) throw new NoRecordingError();
       const r = await this.get(`/cameras/${encodeURIComponent(id)}/recording-snapshot?ts=${Math.floor(opts.atMs)}&w=${w}&h=${h}`, { signal: opts.signal });
-      if (r.statusCode !== 200 || !r.body.length) throw new NoRecordingError();
+      if (r.statusCode !== 200 || !r.body.length) {
+        st.misses++;
+        if (!st.ok && st.misses >= STILL_MISSES) st.until = Date.now() + STILL_SKIP_MS;
+        this.stills.set(id, st);
+        throw new NoRecordingError();
+      }
+      this.stills.set(id, { ok: true, misses: 0, until: 0 });
       return r.body;
     }
     const cam = (await this.c()).camera(id);

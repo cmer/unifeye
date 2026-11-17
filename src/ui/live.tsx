@@ -11,6 +11,11 @@ const WEBRTC_CONNECT_MS = 4000;
 const WEBRTC_SKIP_MS = 10 * 60_000;
 const SKIP_KEY = "unifeye.webrtc-unreachable-until";
 /**
+ * The server refused for now (429): this session holds as many streams as it may, or sent too many
+ * requests. Streams are released as tiles stop, so wait and try again. Not counted as a failed attempt.
+ */
+const BUSY_RETRY_MS = 5000;
+/**
  * WebRTC media goes to port 8189 directly, which is not reachable from every network (for example
  * through a tunnel that only carries HTTPS). Once one tile finds that out, the others, and this tab
  * after a reload, skip straight to HLS instead of each waiting for the same timeout.
@@ -46,6 +51,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
   const [audio, setAudio] = useState<boolean | null>(null);
   const [raw, setState] = useState<State>("idle");
   const [attempt, setAttempt] = useState(0);
+  const [wake, setWake] = useState(0);
   const [still, setStill] = useState(0);
   const [via, setVia] = useState<Transport>("webrtc");
 
@@ -61,9 +67,16 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
     const el = video.current!;
     let closed = false, unwatch: (() => void) | undefined, pc: RTCPeerConnection | undefined, resource: string | null = null, hls: { destroy(): void } | undefined, timer: ReturnType<typeof setTimeout> | undefined, timer2: ReturnType<typeof setTimeout> | undefined;
     const retry = () => { if (closed) return; setState("connecting"); timer = setTimeout(() => setAttempt((n) => n + 1), Math.min(3000 * (attempt + 1), 15000)); };
+    const busy = () => { if (closed) return; setState("connecting"); timer = setTimeout(() => setWake((n) => n + 1), BUSY_RETRY_MS); };
+    const stream = `/media/live/${cameraId}/hls/${quality}`;
+    let hlsOpen = false;
     const viaHls = async () => {
       if (closed) return;
-      const src = mediaUrl(`/api/media/live/${cameraId}/hls/${quality}/index.m3u8`);
+      hlsOpen = true;
+      // Ask once ourselves: the browser's own HLS player hides the status, and a refusal for now must wait, not fail.
+      try { await api(`${stream}/index.m3u8`); } catch (e) { if (closed) return; if (e instanceof ApiError && e.status === 429) return busy(); }
+      if (closed) return;
+      const src = mediaUrl(`/api${stream}/index.m3u8`);
       try {
         if (el.canPlayType("application/vnd.apple.mpegurl")) {
           // The browser's own HLS player (Safari, recent Chrome): same retry rule as hls.js below.
@@ -74,7 +87,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
           const { default: Hls } = await import("hls.js");
           if (closed || !Hls.isSupported()) return setState("error");
           const h = new Hls({ lowLatencyMode: true, xhrSetup: (xhr) => { const t = previewToken(); if (t) xhr.setRequestHeader("x-unifeye-preview", t); } });
-          h.on(Hls.Events.ERROR, (_e, d) => { if (d.fatal) { h.destroy(); if (attempt < 4) retry(); else setState("error"); } });
+          h.on(Hls.Events.ERROR, (_e, d) => { if (d.fatal) { h.destroy(); if (d.response?.code === 429) busy(); else if (attempt < 4) retry(); else setState("error"); } });
           // The playlist names its codecs, so whether there is sound is known before anything plays.
           h.on(Hls.Events.MANIFEST_PARSED, (_e, d) => { if (!closed) setAudio(d.audioTracks.length > 0 || d.levels.some((l) => !!l.audioCodec)); });
           h.loadSource(src); h.attachMedia(el); hls = h;
@@ -139,7 +152,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
         if (closed) return;
         if (e instanceof ApiError && e.status === 404) onGone?.(); // access was removed: let the page refresh what it shows
         if (e instanceof ApiError && [404, 409, 401, 403].includes(e.status)) setState("unavailable");
-        else if (e instanceof ApiError && e.status === 429) setState("idle");
+        else if (e instanceof ApiError && e.status === 429) busy();
         else void viaHls();
       }
     })();
@@ -149,11 +162,13 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
       clearTimeout(timer); clearTimeout(timer2);
       pc?.close();
       hls?.destroy();
+      // HLS has no teardown of its own: without this the server holds the stream's slot for up to a minute.
+      if (hlsOpen) void api(stream, { method: "DELETE", keepalive: true }).catch(() => {});
       if (resource) void api(resource.replace(/^\/api/, ""), { method: "DELETE" }).catch(() => {});
       el.onplaying = null; el.onerror = null; el.srcObject = null; el.removeAttribute("src"); el.load();
     }
     return cleanup;
-  }, [cameraId, quality, active, online, attempt]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [cameraId, quality, active, online, attempt, wake]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const state: State = active && online ? raw : "idle";
   const shown = state === "playing" ? via : null;

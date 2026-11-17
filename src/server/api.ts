@@ -308,6 +308,7 @@ for (const method of ["PATCH", "DELETE"] as const)
     for (const k of ["content-type", "if-match"]) { const v = req.headers.get(k); if (v) h[k] = v; }
     return new Response(null, { status: await s.media.whepForward(actor, p.secret, method, method === "PATCH" ? await req.text() : undefined, h) });
   });
+route("DELETE", "/media/live/:id/hls/:q", { rate: "hls" }, async ({ s, actor, p }) => { await s.media.hlsClose(actor, p.id, quality(p.q)); });
 route("GET", "/media/live/:id/hls/:q/:file", { rate: "hls" }, ({ s, actor, p, url }) => { const q = new URLSearchParams(url.search); q.delete("pv"); const qs = q.toString(); return s.media.hls(actor, p.id, quality(p.q), p.file, qs ? `?${qs}` : ""); });
 
 // ---- views ------------------------------------------------------------------------

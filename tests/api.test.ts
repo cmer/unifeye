@@ -391,6 +391,23 @@ describe("media tickets and active-stream revocation", () => {
     expect((await call(f.u.front, "DELETE", `/media/live/whep/${dock.res.headers.get("location")!.split("/").pop()}`)).status).toBe(200);
     expect((await call(f.u.front, "GET", `/media/live/${f.cam["Loading Dock"]}/hls/focus/index.m3u8`)).status).toBe(200);
   });
+  it("releases an HLS stream's slot as soon as the player stops it, and only that session's", async () => {
+    (config() as { MAX_WALL_STREAMS: number }).MAX_WALL_STREAMS = -1; // a limit of 2 streams
+    const playlist = (u: string, camera: string, q = "wall") => call(u, "GET", `/media/live/${f.cam[camera]}/hls/${q}/index.m3u8`);
+    expect((await playlist(f.u.front, "Front Entrance")).status).toBe(200);
+    expect((await playlist(f.u.sec, "Front Entrance")).status).toBe(200); // another person watching the same camera
+    expect((await playlist(f.u.front, "Loading Dock")).status).toBe(200);
+    expect((await playlist(f.u.front, "Front Entrance", "focus")).status).toBe(429); // a third stream
+    const before = f.relay.ids("hls");
+    expect((await call(f.u.front, "DELETE", `/media/live/${f.cam["Loading Dock"]}/hls/wall`)).status).toBe(200);
+    expect(f.relay.ids("hls")).toHaveLength(before.length - 1); // that reader is gone from the relay
+    expect((await playlist(f.u.front, "Front Entrance", "focus")).status).toBe(200); // the slot is free at once
+    expect((await call(f.u.front, "DELETE", `/media/live/${f.cam["Front Entrance"]}/hls/wall`)).status).toBe(200);
+    expect((await playlist(f.u.sec, "Front Entrance")).status).toBe(200); // the other person's stream is untouched
+    expect(f.relay.kicked).toHaveLength(2);
+    expect((await call(f.u.front, "DELETE", "/media/live/no-such-camera/hls/wall")).status).toBe(200); // same answer for any id
+    expect((await call(f.u.front, "DELETE", `/media/live/${f.cam["Loading Dock"]}/hls/wall`, { csrf: false })).status).toBe(403);
+  });
   it("tells only administrators which cameras are recording, and not while previewing as staff", async () => {
     const r = await call(f.u.admin, "GET", "/recording");
     expect(r.status).toBe(200);

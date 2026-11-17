@@ -204,6 +204,22 @@ since the move.
   QA stack: the control API is admitted through it, and `POST /api/internal/mediamtx-auth` on the
   web port returns 404. That check was local, not in the Compose stack.
 
+**HLS stream slots and timeline previews (2026-11-17):**
+
+- On production, after the rate-limit change, HLS tiles still got 429: the response was
+  `too_many_streams`. MediaMTX logs over 30 minutes: 98 HLS readers closed as inactive, most 30 to
+  60 s after they were created, so a stopped tile's stream kept its slot that long.
+- `tests/api.test.ts` ("releases an HLS stream's slot"): with a 2-stream limit, a third stream is
+  refused, then accepted at once after the player releases one; the release kicks only that
+  session's reader, another person's stream on the same camera keeps playing, and the answer is
+  the same for any camera id. The player's side (release on stop, waiting on 429) is not yet
+  checked in a browser.
+- Protect 7.3.74 `recording-snapshot`, asked for every camera at 30 minutes ago: 200 for the four
+  Dahua intercoms and one IPC-BO camera, "Recording not found" for the other 37 (IPC-BO, Reolink),
+  while a 2-second export of the same moment worked. `tests/unifi-stills.test.ts`: a camera that
+  never gives a still is skipped after three misses and tried again after 30 minutes; a camera that
+  has given one is never skipped.
+
 **Rate limits and HLS walls (2026-11-17):**
 
 - On production, a tab using HLS on a full wall got 429s. Measured in Chrome: 9 HLS tiles made 29
