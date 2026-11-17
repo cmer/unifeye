@@ -254,18 +254,30 @@ export class UnifiProtectAdapter implements ProtectAdapter {
     return { cookie: cookie.split(";")[0], "x-csrf-token": csrf };
   }
 
+  /** Set when the recorder refused the `cameras` filter; from then on events are filtered here only. */
+  private noCameraFilter = false;
   async listEvents(q: EventQuery): Promise<ProtectEvent[]> {
-    const ids = new Set(q.protectCameraIds), out: ProtectEvent[] = [];
+    const ids = new Set(q.protectCameraIds), out: ProtectEvent[] = [], seen = new Set<string>();
+    // Ask for the requested cameras only, so a busy recorder's other cameras don't use up the page
+    // budget. Results are still filtered here, in case a recorder ignores the filter.
+    const filter = () => !this.noCameraFilter && ids.size <= 50 ? [...ids].map((id) => `&cameras=${encodeURIComponent(id)}`).join("") : "";
     let end = q.toMs;
     // Page newest-first until enough authorized events are collected or the window is exhausted.
-    for (let page = 0; page < 10 && out.length < q.limit; page++) {
-      const r = await this.get(`/events?start=${Math.floor(q.fromMs)}&end=${Math.floor(end)}&limit=100&orderDirection=DESC&types=motion&types=ring&types=smartDetectZone&types=smartDetectLine&types=smartAudioDetect`);
+    for (let page = 0; page < Math.ceil(q.limit / 100) + 10 && out.length < q.limit; page++) {
+      const path = `/events?start=${Math.floor(q.fromMs)}&end=${Math.floor(end)}&limit=100&orderDirection=DESC&types=motion&types=ring&types=smartDetectZone&types=smartDetectLine&types=smartAudioDetect`;
+      const cams = filter();
+      let r = await this.get(path + cams);
+      if (cams && r.statusCode === 400) {
+        this.noCameraFilter = true;
+        log("warn", "recorder refused the camera filter on events; filtering locally");
+        r = await this.get(path);
+      }
       if (r.statusCode !== 200) throw new ProtectUnavailableError(`events query failed (${r.statusCode})`);
       const rows = r.json<RawEvent[]>();
       if (!Array.isArray(rows) || !rows.length) break;
       for (const raw of rows) {
         const e = this.map(raw);
-        if (e && ids.has(e.protectCameraId) && (!q.types?.length || q.types.includes(e.type)) && !out.some((x) => x.id === e.id)) out.push(e);
+        if (e && ids.has(e.protectCameraId) && (!q.types?.length || q.types.includes(e.type)) && !seen.has(e.id)) { seen.add(e.id); out.push(e); }
       }
       const oldest = Math.min(...rows.map((x) => x.start));
       if (rows.length < 100 || oldest <= q.fromMs || oldest >= end) break;
