@@ -47,15 +47,21 @@ async function works(e: Encoder): Promise<boolean> {
   } catch { return false; }
 }
 
+/** Picks the encoder and always logs the choice, so a slow clip on a host without a GPU is easy to explain. */
 async function choose(codec: Codec): Promise<Encoder> {
   const want = config().VIDEO_ENCODER;
   if (want !== "cpu") {
-    for (const e of await hardware(codec, want)) if (await works(e)) {
-      log("info", "clip resizing uses the GPU", { encoder: e.name });
+    const tried = await hardware(codec, want);
+    for (const e of tried) if (await works(e)) {
+      log("info", "clip resizing uses the GPU", { codec, encoder: e.name });
       return e;
     }
-    if (want !== "auto") log("warn", "VIDEO_ENCODER does not work on this host, so clip resizing uses the CPU", { encoder: want });
+    const fields = { codec, encoder: cpu(codec).name, tried: tried.map((e) => e.name) };
+    if (want !== "auto") log("warn", "VIDEO_ENCODER does not work on this host, so clip resizing uses the CPU", { ...fields, wanted: want });
+    else log("info", "clip resizing uses the CPU: no working GPU was found", fields);
+    return cpu(codec);
   }
+  log("info", "clip resizing uses the CPU: VIDEO_ENCODER is cpu", { codec, encoder: cpu(codec).name });
   return cpu(codec);
 }
 
@@ -78,4 +84,12 @@ export async function withEncoder<T>(codec: Codec, encode: (e: Encoder) => Promi
     log("warn", "a GPU encode failed; trying the CPU", { encoder: enc.name, error: e });
     return encode(cpu(codec));
   }
+}
+
+/** `withEncoder`, also returning the name of the encoder that did the work and how long it took. */
+export async function timedEncode(codec: Codec, encode: (e: Encoder) => Promise<void>, signal?: AbortSignal): Promise<{ encoder: string; ms: number }> {
+  const t = Date.now();
+  let used = "";
+  await withEncoder(codec, (e) => { used = e.name; return encode(e); }, signal);
+  return { encoder: used, ms: Date.now() - t };
 }
