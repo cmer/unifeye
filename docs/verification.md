@@ -19,10 +19,14 @@ should be assumed to work.
 
 ## Verified
 
-**Automated tests (`pnpm test`, 127 tests):**
+**Automated tests (`pnpm test`, 254 tests):**
 
-The media tests run against an in-memory relay that asks the real auth hook before admitting a
-reader. They show what the gateway decides, not how MediaMTX behaves.
+The media tests run against an in-memory relay that asks the gateway (`Media.admit`) before
+admitting a reader. They show what the gateway decides, not how MediaMTX behaves. How the MediaMTX
+auth hook is answered (the hook secret, the control API, MediaMTX's own FFmpeg from loopback or
+private addresses and its `_src` paths, RTSP and other protocols refused, viewers handed to the
+gateway) is pinned separately in
+`tests/mediamtx.test.ts`.
 
 - Permissions: deny by default, individual and group grants, overlapping groups, disabled users,
   group removal, grant revocation, cache invalidation, new cameras ungranted, rename and missing
@@ -37,8 +41,10 @@ reader. They show what the gateway decides, not how MediaMTX behaves.
   byte-for-byte the same as a missing one for snapshots, recordings, playback, live setup, HLS
   files, events and exports; event IDs and export IDs do not bypass camera checks; counts and
   "has more" reflect authorized cameras only.
-- Media tickets: single use, bound to path and transport, refused without the hook secret, RTSP
-  readers refused, WHEP resource tied to its session; active sessions kicked on grant removal,
+- Media tickets: single use, bound to path and transport, WHEP resource tied to its session; through
+  the hook listener with the real gateway (`tests/hook-server.test.ts`), a viewer admitted with an
+  issued ticket and refused with the wrong secret, ticket, stream or transport, and MediaMTX's own
+  login refused as a viewer; active sessions kicked on grant removal,
   account disablement and session revocation; unknown readers kicked on both transports; a
   revocation arriving during a sweep is swept straight after it; a sweep with nothing revoked kicks
   nobody.
@@ -85,6 +91,23 @@ reader. They show what the gateway decides, not how MediaMTX behaves.
   nothing is taken from the low channel instead. Passed on FFmpeg 9.0 (macOS) and 5.1 (Debian
   bookworm). Combining a five-minute piece (640x480 7 fps base, 90 s of 2688x1512 15 fps stretches)
   took 14 s with libx264 and 16 s with VideoToolbox on an Apple M5 Max (4 threads).
+- Adaptive recording decisions (`tests/recorded.test.ts`), with a fake recorder and fake media
+  operations, no FFmpeg: channel 0 alone when it covers the window; the low channel as base with the
+  high-resolution stretches placed by audio when channel 0 is more than a second short; the low
+  channel alone when the audio cannot place them, and when channel 0 has nothing or is busy; "may be
+  missing time" when the low channel keeps failing; which error wins when both channels fail; the
+  exact 1 s and 2 s thresholds; channel 0 kept, with no lead, when it cannot be read; every export
+  retimed before it is read, kept when retiming fails, and a cancel during a retime stopping the
+  fetch; a clip piece combined into one file, or saved in low resolution when combining fails; the
+  keyframe lead, capped at 10 s. `Recordings` itself (retries, the join's use of each piece's lead)
+  is still covered only by the FFmpeg-backed tests.
+- Recorded playback and clip choice in the player (`tests/player.test.ts`), with fake video
+  elements, no browser: where media time 0 sits (lead, first recorded moment), when the next window
+  is buffered and when it may take over, the handover at the window's end rather than the file's,
+  the overlay moved when it drifts more than 0.25 s, played, paused and sped up with the base, shown
+  only with the right frame, parked at the next stretch between stretches and never shown when
+  broken; a clip's ends dragged and typed within the length limits and never past two seconds ago,
+  and the timeline's zoom, pan and refitting. The React wiring around them is not tested.
 - Resize speed (synthetic 640x480 7 fps source, five minutes, Apple M5 Max, 4 threads): 8.5 s to
   2688x1512 with libx264 `veryfast`, 7.6 s with VideoToolbox. Reading the picture sizes of a
   five-minute 2688x1512 piece took about 1 s.

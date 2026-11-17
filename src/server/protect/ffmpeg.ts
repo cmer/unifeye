@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { rename, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import type { Span } from "../media/align";
 import type { Encoder } from "./encoders";
 
 function run(cmd: "ffmpeg" | "ffprobe", args: string[], signal?: AbortSignal): Promise<Buffer> {
@@ -99,9 +100,6 @@ export async function fitVideo(src: string, dest: string, size: Size, enc: Encod
   } catch (e) { await rm(tmp, { force: true }); throw e; }
 }
 
-/** `len` seconds of the high file from its time `from` belong at the base's time `at` (see `alignSpans`). */
-export interface Stretch { at: number; from: number; len: number }
-
 /**
  * One file from an adaptive recording's two exports: the low-resolution `base`, which covers the
  * whole time, with the high-resolution stretches of `high` shown wherever `spans` place them. The
@@ -112,7 +110,7 @@ export interface Stretch { at: number; from: number; len: number }
  * onto each file's own clock. One FFmpeg run: the high frames are picked by span and retimed onto
  * the base's clock, then laid over the base only inside their spans.
  */
-export async function overlayStretches(base: string, high: string, spans: Stretch[], dest: string, enc: Encoder, signal?: AbortSignal) {
+export async function overlayStretches(base: string, high: string, spans: Span[], dest: string, enc: Encoder, signal?: AbortSignal) {
   type S = { codec_type: string; start_time?: string; avg_frame_rate?: string; r_frame_rate?: string };
   const streams = async (p: string) => (JSON.parse((await run("ffprobe", ["-show_entries", "stream=codec_type,start_time,avg_frame_rate,r_frame_rate", "-of", "json", p], signal)).toString()) as { streams?: S[] }).streams ?? [];
   const [bs, hs, { sizes }, tb] = await Promise.all([streams(base), streams(high), videoSizes(high, signal), videoTimeBase(base, signal)]);

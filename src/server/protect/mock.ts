@@ -33,7 +33,7 @@ export class MockProtectAdapter implements ProtectAdapter {
   adaptive = new Set((process.env.MOCK_ADAPTIVE ?? "").split(",").filter(Boolean));
   cameras: MockCamera[] = MOCK_CAMERAS.map((c) => ({ ...c }));
 
-  constructor(readonly nvrId = "default", private opts: { rtspPublishUrl?: (path: string) => string; liveEvents?: boolean } = {}) {}
+  constructor(readonly nvrId = "default", private opts: { publishUrl?: string; liveEvents?: boolean } = {}) {}
 
   async connect() {
     if (this.opts.liveEvents !== false && !this.timer) {
@@ -123,12 +123,12 @@ export class MockProtectAdapter implements ProtectAdapter {
   async liveSource(id: string, quality: "wall" | "focus"): Promise<LiveSource | null> {
     this.guard();
     const c = this.cam(id);
-    if (!c.online || !this.opts.rtspPublishUrl) return null;
+    if (!c.online || !this.opts.publishUrl) return null;
     const [w, h, fps] = quality === "focus" ? [1280, 720, 15] : [640, 360, 10];
     // Like Protect, a camera with a microphone sends its sound twice: AAC (for HLS) and Opus (for WebRTC).
     const audio = c.mic ? `-re -f lavfi -i ${MockProtectAdapter.ROOM} -map 0:v -map 1:a -map 1:a -c:a:0 aac -b:a:0 32k -c:a:1 libopus -b:a:1 32k` : "";
     const v = this.video(c, w, h, fps);
-    return { kind: "command", command: `ffmpeg -hide_banner -loglevel error -re ${v.input.join(" ")} ${audio} ${v.vf.join(" ")} -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g ${fps * 2} -bf 0 -f rtsp -rtsp_transport tcp ${this.opts.rtspPublishUrl("$MTX_PATH")}`.replace(/ {2,}/g, " ") };
+    return { kind: "command", command: `ffmpeg -hide_banner -loglevel error -re ${v.input.join(" ")} ${audio} ${v.vf.join(" ")} -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g ${fps * 2} -bf 0 -f rtsp -rtsp_transport tcp ${this.opts.publishUrl}`.replace(/ {2,}/g, " ") };
   }
   async exportClip(id: string, startMs: number, endMs: number, destPath: string, opts: { quality?: "wall" | "focus"; signal?: AbortSignal } = {}) {
     this.guard();

@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { join } from "node:path";
 import type { Actor } from "../authz/actor";
 import { syncCameras } from "../cameras";
-import { config, loadConfig, setConfigForTests } from "../config";
+import { loadConfig, setConfigForTests } from "../config";
 import { openDb, schema, type Db } from "../db";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { MOCK_CAMERAS } from "../protect/mock-data";
@@ -23,11 +23,11 @@ export const TEST_ENV = { NODE_ENV: "test", UNIFEYE_MODE: "mock", TOKEN_ENC_KEY:
 export function makeFixture(db: Db = openDb(":memory:")) {
   setConfigForTests(loadConfig(TEST_ENV));
   migrate(db, { migrationsFolder: join(process.cwd(), "drizzle") });
-  const adapter = new MockProtectAdapter("default", { liveEvents: false, rtspPublishUrl: (p) => `rtsp://127.0.0.1:8554/${p}` });
-  // The relay is in memory and asks the real auth hook, as MediaMTX does through the hook listener (hook-server.ts).
+  const adapter = new MockProtectAdapter("default", { liveEvents: false, publishUrl: "rtsp://127.0.0.1:8554/$MTX_PATH" });
+  // The relay is in memory and asks the gateway before admitting a reader, as MediaMTX does through its auth hook.
   const relay = new MemoryRelay();
   const s = buildServices(db, adapter, relay);
-  relay.connect((body) => s.media.hook(config().MEDIAMTX_HOOK_SECRET ?? null, body));
+  relay.connect((r) => s.media.admit(r));
   setServicesForTests(s);
   const { policy, views, sessions, previews, admin } = s;
   const t = Date.now();

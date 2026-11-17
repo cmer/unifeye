@@ -398,21 +398,27 @@ keeps the decisions:
 | Which paths are already configured | MediaMTX adapter | Saves a control API call per request. |
 
 The adapter (`src/server/media/mediamtx.ts`) is the only file that knows MediaMTX's URLs, the
-Bearer-ticket convention and the WHEP `location` format. Its cache of configured paths is dropped
+Bearer-ticket convention, the WHEP `location` format, and the auth hook's body, usernames and
+internal `_src` paths. Its cache of configured paths is dropped
 when MediaMTX may have restarted: all of it when a request cannot connect or the health check
 fails, one stream when MediaMTX answers 404 to a WHEP offer or an HLS playlist for it. The path is
 then configured again the next time a ticket is issued for it, at most 25 seconds later for HLS.
 
-The other direction, MediaMTX asking the hook, is not part of the interface: it arrives at
-`POST /mediamtx-auth` on a separate listener (`src/server/media/hook-server.ts`, `HOOK_HOST` and
-`HOOK_PORT`, 3001 by default) and is answered by the gateway. The hook is not served on the web
+In the other direction, the relay asks the gateway before admitting a viewer, as a relay-neutral
+`ReaderRequest` (reader kind, stream, ticket, reader id) answered by `Media.admit`. MediaMTX asks
+through its auth hook, which arrives at `POST /mediamtx-auth` on a separate listener
+(`src/server/media/hook-server.ts`, `HOOK_HOST` and `HOOK_PORT`, 3001 by default).
+`authorizeHook` in the MediaMTX adapter checks the hook secret, answers MediaMTX's own traffic (its
+control API, and the FFmpeg it runs, with the publisher login from a loopback or private-network
+address, which may publish a camera path and read only its internal `_src` path over RTSP), refuses every other protocol and action, and hands viewers reading
+over WebRTC or HLS to the gateway. The hook is not served on the web
 port at all, so it cannot be reached through whatever reverse proxy or tunnel is in front of
 Unifeye; the hook port is never published. Every call must still carry `MEDIAMTX_HOOK_SECRET`.
 Production refuses to start unless both MediaMTX secrets are at least 32 characters. If the hook
 port cannot be opened, start-up aborts, since no video could play without it.
 
 Tests use an in-memory relay (`src/server/testing/relay.ts`). It admits no reader without asking
-the same hook, tracks readers so listing and kicking work, and can be switched to unreachable. It
+`Media.admit`, tracks readers so listing and kicking work, and can be switched to unreachable. It
 is a model of what Unifeye can observe, not of MediaMTX itself.
 
 ## "See as staff"
@@ -439,15 +445,19 @@ begins a few seconds early. The description's `leadMs` says by how much. The pla
 wall-clock time with it, hands over to the next window when the wall-clock window ends (not when the
 file ends), and starts the next window at its own lead, so nothing is replayed or skipped at a
 handover. When the file runs out first, the old load-on-end path applies.
+These decisions, and the overlay's per-frame sync described below, live in
+`src/ui/recorded-playback.ts`; the player only wires them to its video elements. Choosing a clip's
+ends on the timeline follows the rules in `src/ui/trim.ts`.
 
 Adaptive recording (Protect records the low channel, and the high channel only around motion) needs
-two corrections:
+two corrections. Both live in one module, `src/server/media/recorded.ts` (`fetchRecorded`), which
+playback windows and clip pieces share; the Protect adapters only export one channel as asked.
 
 - **Video clock.** Some cameras' low channel exports with a video clock that runs fast (a 60-second
   window holds about 38 seconds of video beside 60 seconds of audio), which made the picture race
-  ahead and then freeze. After each export, the UniFi adapter spreads the video frames evenly across
-  the audio's span with an FFmpeg stream copy (`retimeVideoToAudio` in `src/server/protect/ffmpeg.ts`).
-  Files that are already consistent are left alone.
+  ahead and then freeze. Every export is retimed before anything reads it: the video frames are
+  spread evenly across the audio's span with an FFmpeg stream copy (`retimeVideoToAudio` in
+  `src/server/protect/ffmpeg.ts`). Files that are already consistent are left alone.
 - **High-resolution stretches.** A channel 0 export of a window containing motion holds only the
   high-resolution stretches, joined, with nothing saying where they belong. When that export is more
   than a second shorter than the window, the window is also exported from the low channel, which
@@ -474,7 +484,7 @@ playback windows. A piece with nothing recorded is left out.
 The recorder can fail an export without meaning "nothing recorded": the UniFi adapter reports a 5xx,
 408 or 429 answer as `RecorderBusyError` and keeps 404, other refusals and near-empty bodies as
 `NoRecordingError`. A clip piece whose export fails for any reason other than "nothing recorded" is
-tried twice more, after 10 s and then 30 s (`exportRetrying`); playback windows are not retried. A
+tried twice more, after 10 s and then 30 s (`exporter` in `recordings.ts`); playback windows are not retried. A
 piece the recorder still fails is left out rather than failing the whole clip, and a clip where no
 piece could be exported fails with "The recorder is busy". When the job finishes, the clip's real
 length is stored (`duration_ms`). If it is at least 5 s (or 1%) shorter than asked, `gap` says why:
@@ -485,9 +495,9 @@ by the parallel count). When the job is ready the browser starts the download on
 dialog stays open with a way to download it again.
 
 With adaptive recording, a channel 0 export of a piece that contains motion holds only the motion,
-so each piece is fetched as playback windows are (`fetchBoth`): when the channel 0 export is more
+so each piece is fetched as playback windows are (`fetchRecorded`): when the channel 0 export is more
 than a second short, the low channel is exported too and the high-resolution stretches are placed
-by their audio. A clip needs one file, so `exportPiece` combines them (`overlayStretches` in
+by their audio. A clip needs one file, so `fetchRecordedFile` combines them (`overlayStretches` in
 `src/server/protect/ffmpeg.ts`): the low recording, scaled up and repeated to the high frame rate,
 with the high-resolution frames laid over it inside their spans, and the low recording's sound,
 which has no gaps. This re-encodes the whole piece at full size (about 14 s for five minutes at

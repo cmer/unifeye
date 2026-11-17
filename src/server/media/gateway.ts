@@ -3,9 +3,8 @@ import { subjectOf, type Actor } from "../authz/actor";
 import type { Policy } from "../authz/policy";
 import { config } from "../config";
 import type { ProtectAdapter } from "../protect/types";
-import { HttpError, log, notFound, randomToken, safeEqual } from "../util";
-import { MTX_API_USER, MTX_PUBLISH_USER, SRC_SUFFIX } from "./mediamtx";
-import { RelayUnavailable, type HlsReader, type ReaderKind, type Relay } from "./relay";
+import { HttpError, log, notFound, randomToken } from "../util";
+import { RelayUnavailable, type HlsReader, type ReaderKind, type ReaderRequest, type Relay } from "./relay";
 
 export type Quality = "wall" | "focus";
 /** One HLS reader per session, subject, preview and stream: tiles and retries in a tab share it. */
@@ -14,12 +13,10 @@ const jarKey = (a: Actor, path: string) => `${a.sessionId}|${subjectOf(a)}|${a.p
 export const maxStreams = () => config().MAX_WALL_STREAMS + 3;
 interface Ticket extends Grant { path: string; kind: ReaderKind; exp: number; single: boolean; used: boolean }
 interface Live extends Grant { kind: ReaderKind; path: string; since: number }
-export interface HookBody { user?: string; password?: string; token?: string; ip?: string; action?: string; path?: string; protocol?: string; id?: string; query?: string }
 
 const pathFor = (cameraId: string, q: Quality) => `c_${cameraId}_${q}`;
 /** A relay that cannot be reached is a 503 for the browser; anything else is a bug and propagates. */
 const relayDown = (e: unknown): never => { throw e instanceof RelayUnavailable ? new HttpError(503, "relay_unavailable") : e; };
-const isInternal = (ip = "") => /^(127\.|::1$|::ffff:127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|fd|fc)/.test(ip);
 
 /**
  * The media boundary. Browsers never receive an RTSP URL, a Protect cookie or a MediaMTX address.
@@ -29,8 +26,8 @@ const isInternal = (ip = "") => /^(127\.|::1$|::ffff:127\.|10\.|192\.168\.|172\.
  *     resolves the effective subject (the staff member during a preview) and asks Policy for the camera.
  *  2. Capability: Unifeye then calls the relay itself with a random ticket bound to
  *     session + subject + camera + path + transport, valid for 30 seconds (single use for WebRTC).
- *  3. Relay boundary: MediaMTX is configured with `authMethod: http` and asks `hook()` before
- *     serving any reader. A reader without a valid ticket is refused even if it reaches MediaMTX directly.
+ *  3. Relay boundary: the relay asks `admit()` before serving any reader (MediaMTX through its HTTP
+ *     auth hook, see `authorizeHook`). A reader without a valid ticket is refused even if it reaches MediaMTX directly.
  *  4. Ongoing delivery: each admitted relay reader id is recorded with its grant. `sweep()` re-checks
  *     every one with `Access.holds` (session, preview, Policy) and kicks failures through the relay.
  *     It runs on every access change (`revalidate`) and every REVOCATION_SWEEP_SECONDS (default 10 s, max 30 s).
@@ -80,25 +77,18 @@ export class Media {
     return { ticket, path };
   }
 
-  /** Called by MediaMTX (`authHTTPAddress`) for every publish/read/api action. 2xx allows; anything else denies. */
-  hook(secret: string | null, b: HookBody): boolean {
-    const c = config();
-    if (!c.MEDIAMTX_HOOK_SECRET || !secret || !safeEqual(secret, c.MEDIAMTX_HOOK_SECRET)) return false;
-    const api = c.MEDIAMTX_API_SECRET ?? "";
-    if (b.action === "api") return b.user === MTX_API_USER && !!api && safeEqual(b.password ?? "", api);
-    const relay = b.user === MTX_PUBLISH_USER && !!api && safeEqual(b.password ?? "", api) && isInternal(b.ip);
-    // The relay's own FFmpeg: the mock test streams, and real cameras whose audio is retimed (mediamtx.ts).
-    if (b.action === "publish") return relay && !(b.path ?? "").endsWith(SRC_SUFFIX);
-    // That FFmpeg reads the camera from the internal `_src` path over RTSP. Nobody else reads RTSP.
-    if (b.action === "read" && b.protocol === "rtsp") return relay && (b.path ?? "").endsWith(SRC_SUFFIX);
-    if (b.action !== "read" || (b.protocol !== "webrtc" && b.protocol !== "hls")) return false; // RTMP/SRT readers, playback, metrics: never
-    const token = b.token || b.password || "";
-    const t = this.tickets.get(token);
-    if (!t || Date.now() > t.exp || t.path !== b.path || t.kind !== b.protocol || (t.single && t.used) || !b.id || !this.access.holds(t)) return false;
+  /**
+   * Whether the relay may let this viewer read: only with a fresh ticket for that stream and
+   * transport, used once for WebRTC, whose grant still holds. An admitted reader joins the ledger
+   * the sweep checks.
+   */
+  admit(r: ReaderRequest): boolean {
+    const t = r.ticket ? this.tickets.get(r.ticket) : undefined;
+    if (!t || Date.now() > t.exp || t.path !== r.stream || t.kind !== r.kind || (t.single && t.used) || !r.id || !this.access.holds(t)) return false;
     t.used = true;
-    if (t.single) this.tickets.delete(token);
-    if (t.kind === "webrtc") this.admitted.set(token, b.id);
-    this.live.set(b.id, { sessionId: t.sessionId, subjectId: t.subjectId, previewId: t.previewId, cameraId: t.cameraId, kind: t.kind, path: t.path, since: Date.now() });
+    if (t.single) this.tickets.delete(r.ticket);
+    if (t.kind === "webrtc") this.admitted.set(r.ticket, r.id);
+    this.live.set(r.id, { sessionId: t.sessionId, subjectId: t.subjectId, previewId: t.previewId, cameraId: t.cameraId, kind: t.kind, path: t.path, since: Date.now() });
     return true;
   }
 

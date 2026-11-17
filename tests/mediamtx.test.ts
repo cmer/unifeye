@@ -2,8 +2,8 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig, setConfigForTests } from "@/server/config";
-import { MediaMtxRelay } from "@/server/media/mediamtx";
-import { RelayUnavailable } from "@/server/media/relay";
+import { authorizeHook, MediaMtxRelay, type HookBody } from "@/server/media/mediamtx";
+import { RelayUnavailable, type ReaderRequest } from "@/server/media/relay";
 import { TEST_ENV } from "@/server/testing/fixture";
 
 /**
@@ -203,5 +203,56 @@ describe("MediaMTX adapter: HLS", () => {
     seen = []; answer = (_, res) => { res.writeHead(302, { location: "/hls-listener/c_cam1_wall/index.m3u8" }); res.end(); };
     expect(await relay.hlsReader("c_cam1_wall", "t").fetch("index.m3u8", "")).toEqual({ outcome: "failed" });
     expect(seen).toHaveLength(4);
+  });
+});
+
+describe("MediaMTX adapter: auth hook", () => {
+  // The fixture's secrets are "hook" (in the hook URL) and "api". `admit` stands in for the gateway.
+  const asked: ReaderRequest[] = [];
+  const hook = (b: HookBody, secret: string | null = "hook", allow = true) => authorizeHook(secret, b, (r) => { asked.push(r); return allow; });
+  beforeEach(() => { asked.length = 0; });
+
+  it("hands a viewer to the gateway in relay-neutral terms, with the ticket however MediaMTX passed it", () => {
+    expect(hook({ action: "read", protocol: "webrtc", path: "c_cam1_wall", token: "tk", id: "r1", ip: "203.0.113.9" })).toBe(true);
+    expect(hook({ action: "read", protocol: "hls", path: "c_cam1_wall", password: "tk2", id: "r2" }, "hook", false)).toBe(false);
+    expect(asked).toEqual([{ kind: "webrtc", stream: "c_cam1_wall", ticket: "tk", id: "r1" }, { kind: "hls", stream: "c_cam1_wall", ticket: "tk2", id: "r2" }]);
+  });
+
+  it("refuses everything without the hook secret, before asking the gateway", () => {
+    for (const s of ["wrong", null]) {
+      expect(hook({ action: "api", user: "unifeye-api", password: "api" }, s)).toBe(false);
+      expect(hook({ action: "read", protocol: "webrtc", path: "c_cam1_wall", token: "tk", id: "r1" }, s)).toBe(false);
+    }
+    expect(asked).toEqual([]);
+  });
+
+  it("allows the control API only with its own credentials", () => {
+    expect(hook({ action: "api", user: "unifeye-api", password: "api" })).toBe(true);
+    expect(hook({ action: "api", user: "unifeye-api", password: "wrong" })).toBe(false);
+    expect(hook({ action: "api", user: "unifeye-publisher", password: "api" })).toBe(false);
+  });
+
+  it("lets its own FFmpeg, from a loopback or private address, publish a camera path and read only the internal `_src` path over RTSP", () => {
+    const own = (b: HookBody) => hook({ user: "unifeye-publisher", password: "api", ip: "127.0.0.1", ...b });
+    expect(own({ action: "publish", path: "c_cam1_wall" })).toBe(true);
+    expect(own({ action: "publish", path: "c_cam1_wall_src" })).toBe(false);
+    expect(own({ action: "publish", path: "c_cam1_wall", ip: "203.0.113.9" })).toBe(false);
+    expect(own({ action: "read", protocol: "rtsp", path: "c_cam1_wall_src" })).toBe(true);
+    expect(own({ action: "read", protocol: "rtsp", path: "c_cam1_wall" })).toBe(false);
+    expect(own({ action: "read", protocol: "rtsp", path: "c_cam1_wall_src", password: "wrong" })).toBe(false);
+    expect(own({ action: "read", protocol: "rtsp", path: "c_cam1_wall_src", ip: "203.0.113.9" })).toBe(false);
+    // MediaMTX may run on a container network, so private addresses count as its own too.
+    for (const ip of ["10.0.0.5", "172.20.0.3", "192.168.1.2", "::1", "fd00::5"]) expect(own({ action: "publish", path: "c_cam1_wall", ip }), ip).toBe(true);
+    for (const ip of ["172.32.0.1", "8.8.8.8", "2001:db8::1", undefined]) expect(own({ action: "publish", path: "c_cam1_wall", ip }), String(ip)).toBe(false);
+    expect(asked).toEqual([]);
+  });
+
+  it("refuses other readers and actions without asking the gateway", () => {
+    expect(hook({ action: "read", protocol: "rtsp", path: "c_cam1_wall", id: "r1" })).toBe(false);
+    for (const protocol of ["rtmp", "srt"]) expect(hook({ action: "read", protocol, path: "c_cam1_wall", token: "tk", id: "r1" })).toBe(false);
+    for (const action of ["playback", "metrics", "pprof"]) expect(hook({ action, token: "tk" })).toBe(false);
+    expect(hook({ action: "publish", user: "unifeye-publisher", password: "api", ip: "203.0.113.9" })).toBe(false);
+    expect(hook({ action: "read", protocol: "webrtc", path: "c_cam1_wall", token: "tk" })).toBe(false); // no reader id
+    expect(asked).toEqual([]);
   });
 });

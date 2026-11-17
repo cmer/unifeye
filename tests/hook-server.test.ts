@@ -8,7 +8,8 @@ import { makeFixture, type Fixture } from "@/server/testing/fixture";
 
 /**
  * MediaMTX's auth hook is served on its own listener, never on the web port, so no reverse proxy or
- * tunnel in front of Unifeye can reach it. The fixture's secrets are "hook" and "api".
+ * tunnel in front of Unifeye can reach it. The fixture's secrets are "hook" and "api". These tests
+ * go through the listener, `authorizeHook` and the real gateway together.
  */
 let f: Fixture, server: Server, base = "";
 beforeEach(async () => {
@@ -43,6 +44,22 @@ describe("media hook listener", () => {
       const res = await handleApi(new Request(`http://localhost:3000/api${p}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(apiCall) }));
       expect(res.status, p).toBe(404);
     }
+  });
+  it("admits a viewer only through the gateway's ticket check", async () => {
+    // An HLS ticket can be presented again for 30 s, so one issued through the gateway can be sent here too.
+    const cam = f.cam["Front Entrance"], path = `c_${cam}_wall`;
+    const { token } = f.sessions.create(f.u.front, {});
+    const list = await handleApi(new Request(`http://localhost:3000/api/media/live/${cam}/hls/wall/index.m3u8`, { headers: { cookie: `unifeye_session=${token}` } }));
+    expect(list.status).toBe(200);
+    const ticket = f.relay.tickets[0], read = { action: "read", protocol: "hls", path, token: ticket, id: "mtx-hls-1", ip: "203.0.113.9" };
+    expect((await post("/mediamtx-auth?secret=hook", read)).status).toBe(200);
+    expect((await post("/mediamtx-auth?secret=wrong", read)).status).toBe(401);
+    expect((await post("/mediamtx-auth?secret=hook", { ...read, token: "guess" })).status).toBe(401);
+    expect((await post("/mediamtx-auth?secret=hook", { ...read, path: `c_${cam}_focus` })).status).toBe(401); // bound to its stream
+    expect((await post("/mediamtx-auth?secret=hook", { ...read, protocol: "webrtc" })).status).toBe(401); // and its transport
+    // MediaMTX's own login gets no further than a ticket would: a viewer needs a ticket, and none names `_src`.
+    expect((await post("/mediamtx-auth?secret=hook", { action: "read", protocol: "webrtc", user: "unifeye-publisher", password: "api", ip: "127.0.0.1", path: `${path}_src`, id: "r2" })).status).toBe(401);
+    expect((await post("/mediamtx-auth?secret=hook", { action: "read", protocol: "hls", user: "unifeye-publisher", password: "api", ip: "127.0.0.1", path, id: "r3" })).status).toBe(401);
   });
   it("fails to start when its port is taken, rather than running without it", async () => {
     const port = (server.address() as AddressInfo).port;
