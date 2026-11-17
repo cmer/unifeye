@@ -1,3 +1,4 @@
+import { signInMethods } from "../config";
 import { schema, type Db } from "../db";
 import { notFound } from "../util";
 
@@ -17,7 +18,8 @@ export interface CameraInfo {
  * The single source of truth for "who may see which camera".
  *
  * Rules (initial implementation, intentionally small):
- *  - Deny by default. A disabled or unknown user sees nothing.
+ *  - Deny by default. A disabled or unknown user sees nothing, and so does anyone whose sign-in
+ *    method (SIGN_IN_METHODS) is turned off.
  *  - Staff: union of explicit allow grants made to the user and to every group they belong to
  *    (including any group flagged "all staff"). There are no deny rules.
  *  - Admin: every camera known to Unifeye. This is an explicit policy, not a side effect.
@@ -60,13 +62,18 @@ export class Policy {
 
   user(userId: string): UserRow | undefined {
     const u = this.db.$client
-      .prepare("select id, issuer, subject, email, name, role, status, allow_private_views as allowPrivateViews, created_at as createdAt, updated_at as updatedAt, last_login_at as lastLoginAt, version from users where id = ?")
+      .prepare("select id, issuer, subject, email, name, role, auth_method as authMethod, status, allow_private_views as allowPrivateViews, created_at as createdAt, updated_at as updatedAt, last_login_at as lastLoginAt, version from users where id = ?")
       .get(userId) as UserRow | undefined;
     return u ? { ...u, allowPrivateViews: !!u.allowPrivateViews } : undefined;
   }
+  /**
+   * The user, if they may use Unifeye right now: not disabled, and their sign-in method is turned on.
+   * Every session, grant, preview and admin check goes through here, so turning a method off in
+   * configuration locks its people out everywhere at once.
+   */
   activeUser(userId: string): UserRow | undefined {
     const u = this.user(userId);
-    return u && u.status === "active" ? u : undefined;
+    return u && u.status === "active" && signInMethods()[u.authMethod] ? u : undefined;
   }
   isAdmin(userId: string) {
     return this.activeUser(userId)?.role === "admin";

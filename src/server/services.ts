@@ -1,6 +1,8 @@
 import { eq } from "drizzle-orm";
 import { Admin } from "./admin";
 import { audit, pruneAudit } from "./audit";
+import { CloudflareAccess } from "./auth/cloudflare";
+import { LocalAccounts } from "./auth/local";
 import { Oidc } from "./auth/oidc";
 import { Sessions } from "./auth/session";
 import { Access } from "./authz/access";
@@ -25,7 +27,7 @@ import { seedDemo } from "./seed";
 import { log } from "./util";
 
 export interface Services {
-  db: Db; policy: Policy; access: Access; views: Views; sessions: Sessions; previews: Previews; admin: Admin; oidc: Oidc;
+  db: Db; policy: Policy; access: Access; views: Views; sessions: Sessions; previews: Previews; admin: Admin; oidc: Oidc; local: LocalAccounts; cloudflare: CloudflareAccess;
   adapter: ProtectAdapter; media: Media; recordings: Recordings; events: Events;
   state: { startedAt: number; lastCameraSyncAt: number | null; lastCameraSyncError: string | null; timers: NodeJS.Timeout[] };
 }
@@ -41,6 +43,7 @@ export function makeAdapter(): ProtectAdapter {
 export function buildServices(db: Db, adapter: ProtectAdapter, relay: Relay = new MediaMtxRelay()): Services {
   const policy = new Policy(db), views = new Views(db, policy), sessions = new Sessions(db, policy), previews = new Previews(db, policy);
   const admin = new Admin(db, policy, views, sessions), oidc = new Oidc(db, policy, sessions);
+  const local = new LocalAccounts(db, policy, sessions), cloudflare = new CloudflareAccess(db, policy, sessions);
   const get = () => adapter;
   // Access listens to Policy, Sessions and Previews; everything that holds access listens to Access.
   // Events subscribes per open feed (Events.subscribe); the two process-wide holders are wired here.
@@ -48,7 +51,7 @@ export function buildServices(db: Db, adapter: ProtectAdapter, relay: Relay = ne
   const media = new Media(policy, access, get, relay), recordings = new Recordings(db, policy, access, get), events = new Events(policy, access, get);
   access.onChange(() => media.revalidate());
   access.onChange(() => { void recordings.dropDeadExports().catch((e) => log("error", "export cleanup failed", { error: e })); });
-  return { db, policy, access, views, sessions, previews, admin, oidc, adapter, media, recordings, events, state: { startedAt: Date.now(), lastCameraSyncAt: null, lastCameraSyncError: null, timers: [] } };
+  return { db, policy, access, views, sessions, previews, admin, oidc, local, cloudflare, adapter, media, recordings, events, state: { startedAt: Date.now(), lastCameraSyncAt: null, lastCameraSyncError: null, timers: [] } };
 }
 
 const g = globalThis as unknown as { __unifeye?: Services; __unifeyeStart?: Promise<void> };

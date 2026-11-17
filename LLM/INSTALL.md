@@ -101,8 +101,10 @@ Never delete an existing `.env`, `data` volume or `certs` folder.
 
 ## Phase 4: Sign-in provider
 
-Unifeye has no passwords of its own. People sign in through the organization's OpenID Connect
-provider. Read `docs/deployment.md` section 1 and `docs/identity-providers.md`.
+People sign in through the organization's OpenID Connect provider by default. Cloudflare Access and
+administrator-issued password accounts are also possible (`SIGN_IN_METHODS`, see `docs/deployment.md`
+section 1); only set those up if the person asks. Read `docs/deployment.md` section 1 and
+`docs/identity-providers.md`.
 
 1. Ask which provider they use: Microsoft Entra ID, Google Workspace, Keycloak, Zitadel, or other.
 2. Walk the person through creating the client using the matching section of

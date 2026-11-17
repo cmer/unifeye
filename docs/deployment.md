@@ -32,7 +32,78 @@ on-site host, but only about 8 Mbps if Unifeye runs off site. Before moving it, 
 upload speed and make sure each camera has a low-quality stream for the wall (see
 [Prepare Protect](#2-prepare-protect)). That often stretches an on-site host far enough.
 
-## 1. Register Unifeye with your identity provider
+## 1. Choose how people sign in
+
+`SIGN_IN_METHODS` lists the ways in, comma separated. The default is `oidc`.
+
+| Value | People sign in with | Set up |
+| --- | --- | --- |
+| `oidc` | Your organization's identity provider | [Register Unifeye](#register-unifeye-with-your-identity-provider) below |
+| `cloudflare` | Cloudflare Access, already in front of Unifeye | [Cloudflare Access](#cloudflare-access) below |
+| `local` | A username and password an administrator hands out | [Password accounts](#password-accounts) below |
+
+`oidc` and `cloudflare` cannot be combined. Either can be combined with `local`: with `oidc,local`
+the sign-in page offers both; with `cloudflare,local`, people coming through Cloudflare are signed in
+by Access and password accounts are for the local network.
+
+A person belongs to one method for good. Nothing links a work account to a password account, even
+with the same name or email. Turning a method off (and restarting) locks its people out at once;
+they come back if it is turned on again.
+
+### Password accounts
+
+Add `local` to `SIGN_IN_METHODS`. Administrators then see **Add person** under Admin › People. Adding
+someone gives a one-time link (24 hours) for them to choose a password; send it however suits you.
+Unifeye sends no email. For a forgotten password, choose **Password link** next to the person.
+
+With `local` as the only method there is nobody to sign in as at first. Create the first
+administrator on the server:
+
+```sh
+docker compose exec app node cli.mjs create-admin <username> "<Full name>"   # or: pnpm unifeye create-admin ...
+docker compose exec app node cli.mjs password-link <username>               # a new link, if one is lost
+```
+
+When people reach Unifeye at a second address (for example on the local network while `APP_URL`
+goes through Cloudflare), set `LOCAL_APP_URL` to it. Sign-in from that address is then accepted and
+password links point there. In production it must use https; a local DNS name with its own
+certificate, or the same hostname resolved to the local address, both work. The second option needs
+no `LOCAL_APP_URL` at all.
+
+Password sign-in is open to anyone who can reach that address. Do not publish it on the internet.
+
+### Cloudflare Access
+
+Use this when Cloudflare Access (Zero Trust) already sits in front of Unifeye, usually with
+[Cloudflare Tunnel](cloudflare-tunnel.md).
+
+1. In Zero Trust, create a **self-hosted** Access application for the Unifeye hostname, covering the
+   whole hostname, with the policies that decide who gets in. Add no Bypass rules.
+2. From the application's overview, copy the **Application Audience (AUD) tag**.
+3. Set `SIGN_IN_METHODS=cloudflare` (or `cloudflare,local`), `CF_ACCESS_TEAM_DOMAIN` (for example
+   `acme.cloudflareaccess.com`) and `CF_ACCESS_AUD`.
+4. Generate a secret (`openssl rand -hex 24`) and set it as `CF_ACCESS_ORIGIN_SECRET`. In the
+   Cloudflare dashboard for the zone, add a **Transform Rule** › **Modify Request Header** for the
+   Unifeye hostname that **sets** the static header `X-Unifeye-Origin-Secret` to the same value.
+   This proves a request really passed through Cloudflare; without it, a person could send their own
+   Access token straight to the server and keep access after Cloudflare revoked them. It is required
+   with `cloudflare,local` and strongly recommended otherwise.
+5. Make sure Unifeye cannot be reached from outside except through Cloudflare. A request without
+   Access's token is treated as local: with `local` on it may use a password account, otherwise it
+   is refused.
+6. First administrator: open Unifeye through Cloudflare once, then run `node cli.mjs users` on the
+   server, copy the issuer and subject on your row into `BOOTSTRAP_ADMIN_ISSUER` and
+   `BOOTSTRAP_ADMIN_SUBJECT`, restart, and open Unifeye again.
+
+Unifeye checks Access's signed token on every request. When Cloudflare stops letting someone
+through, their session is suspended within `CF_ACCESS_RECHECK_SECONDS` (default 5 minutes, at most
+an hour) and any video they are watching stops. Signing out of Unifeye also signs out of Access. A
+shorter Access session duration also shortens how long a copied token stays usable.
+
+Cloudflare Access can also act as an ordinary OpenID Connect provider ("Access for SaaS"). That works
+with `oidc` and the steps below, with no Cloudflare-specific settings.
+
+### Register Unifeye with your identity provider
 
 Unifeye signs in through any OpenID Connect provider that supports the Authorization Code flow with
 PKCE (Keycloak, Authentik, Zitadel, Authelia, Entra ID, Okta and so on). It does not embed one.
@@ -154,7 +225,12 @@ relay, last backup). Neither exposes configuration or secrets.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `UNIFEYE_MODE` | `mock` in code, `real` in `.env.example` | `mock` serves simulated cameras; sign-in is still OIDC |
+| `UNIFEYE_MODE` | `mock` in code, `real` in `.env.example` | `mock` serves simulated cameras; sign-in works the same |
+| `SIGN_IN_METHODS` | `oidc` | Ways to sign in: `oidc`, `local`, `cloudflare` (see [section 1](#1-choose-how-people-sign-in)) |
+| `LOCAL_APP_URL` | unset | A second address for password sign-in; password links point there |
+| `CF_ACCESS_TEAM_DOMAIN` / `CF_ACCESS_AUD` | unset | Cloudflare Access team and application, required with `cloudflare` |
+| `CF_ACCESS_ORIGIN_SECRET` | unset | Secret Cloudflare adds as `X-Unifeye-Origin-Secret`; required with `cloudflare,local` |
+| `CF_ACCESS_RECHECK_SECONDS` | 300 | How quickly someone Cloudflare stops letting through loses access |
 | `SESSION_IDLE_MINUTES` / `SESSION_ABSOLUTE_HOURS` | 720 / 168 | Session lifetimes |
 | `OIDC_RECHECK_SECONDS` | 300 | How quickly a user disabled at the provider is noticed |
 | `OIDC_MAX_STALE_SECONDS` | 1800 | How long a session survives without a successful re-check |

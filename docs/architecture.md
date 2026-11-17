@@ -11,6 +11,7 @@ flowchart LR
   M -- auth hook for every reader --> A
   A -- OIDC: discovery, token, JWKS --> Z[OIDC provider]
   Z -- back-channel logout --> A
+  A -. Access signing keys .-> CF[Cloudflare Access, optional]
   A -- read-only HTTPS + WebSocket --> N[UNVR Pro / Protect]
   M -- RTSPS pull, on demand --> N
   A --- D[(SQLite /data)]
@@ -23,7 +24,8 @@ HLS and RTSP listeners are internal. Protect credentials and RTSPS URLs never le
 | Data | Owner | What Unifeye does |
 | --- | --- | --- |
 | Cameras, names, capabilities, live video, recordings, events | UniFi Protect | Reads and relays. Stores only a stable reference `(nvr id, Protect camera id)` and a disposable metadata cache. |
-| Identity, credentials, MFA, recovery | OIDC provider | Authenticates through OIDC. |
+| Identity, credentials, MFA, recovery | OIDC provider or Cloudflare Access | Verifies what they assert. |
+| Password accounts (only with `local` on) | Unifeye (SQLite) | Usernames, scrypt hashes, one-time password links. |
 | Profiles, roles, groups, tags, grants, views, sharing, defaults, sessions, preferences, audit | Unifeye (SQLite) | Authoritative. |
 
 No video, snapshot or recording is stored in SQLite. Playback windows and clips live in a
@@ -38,7 +40,7 @@ size- and age-bounded directory.
 | `src/server/authz/views.ts` | Saved views, sanitized resolution, landing precedence. |
 | `src/server/authz/preview.ts` | "See as staff". |
 | `src/server/admin.ts` | Every change to Unifeye data: validation, transaction, audit, cache invalidation. |
-| `src/server/auth/` | OIDC sign-in, sessions, back-channel logout, lifecycle re-validation. |
+| `src/server/auth/` | Sign-in (`oidc.ts`, `local.ts`, `cloudflare.ts`, shared `provision.ts`), sessions, back-channel logout, lifecycle re-validation. |
 | `src/server/protect/` | Adapter contract, the real `unifi-protect` adapter, the mock adapter. |
 | `src/server/media/` | Media gateway and revocation sweep (`gateway.ts`), the relay interface (`relay.ts`) and its MediaMTX adapter (`mediamtx.ts`), playback windows, clip export. |
 | `src/server/testing/` | Test fixture and the in-memory relay used by the automated tests. |
@@ -148,6 +150,30 @@ empty with a way to other views; nothing is borrowed to fill it.
 
 ## Sign-in and sessions
 
+`SIGN_IN_METHODS` turns on any of three ways in. `oidc` and `cloudflare` cannot be combined.
+
+| Method | Who proves identity | Identity `(issuer, subject)` | Who creates the profile |
+| --- | --- | --- | --- |
+| `oidc` (default) | The identity provider | Provider issuer, ID token `sub` | First admitted sign-in |
+| `cloudflare` | Cloudflare Access | `https://<team>.cloudflareaccess.com`, Access token `sub` | First request through Access |
+| `local` | Unifeye (password) | `unifeye:local`, the profile's own id | An administrator, or `unifeye create-admin` |
+
+Rules that hold for all of them:
+
+- Each profile records its method (`users.auth_method`), fixed when it is created. A profile is
+  only ever matched for its own method, so two methods can never share or take over a profile, even
+  with the same issuer and subject. Nothing links profiles across methods, by email or otherwise;
+  the same human with a work account and a password account is two people.
+- `Policy.activeUser` treats a person whose method is turned off as inactive. Every session, grant,
+  preview and admin check goes through it, so removing a method from `SIGN_IN_METHODS` locks its
+  people out everywhere on the next request, and their media stops at the next sweep.
+- A sign-in always creates a new session and revokes the one the browser held before.
+- Signed-out browsers go to `GET /api/auth/login`, which picks the way in: Cloudflare (when the
+  request carries an Access token), straight to the identity provider (when it is the only method
+  besides Cloudflare), or the `/sign-in` page (when passwords are on; it also offers the provider).
+
+### Company sign-in (`oidc`)
+
 - Authorization Code with PKCE (S256), state and nonce, in a single-use transaction that expires in
   ten minutes. The code is exchanged on the server.
 - The ID token is checked by `openid-client` and its signature is verified again explicitly against
@@ -173,6 +199,77 @@ empty with a way to other views; nothing is borrowed to fill it.
 - Provider tokens are encrypted with `TOKEN_ENC_KEY` (AES-256-GCM). Only the ID token (for logout)
   and a refresh token (for re-validation) are kept.
 
+### Password accounts (`local`)
+
+- Only administrators create them (`POST /api/admin/users`, through `Admin`), plus the operator
+  from the command line (`unifeye create-admin`, `unifeye password-link`). There is no sign-up and
+  no email.
+- An account starts with no password. Creating it returns a one-time link to
+  `/set-password#<secret>`, valid 24 hours. Only the SHA-256 of the secret is stored, the secret sits
+  in the URL fragment so it never reaches server or proxy logs, and the page removes it from the
+  address bar. Making a new link invalidates earlier unused ones. A link is consumed inside the write
+  transaction that sets the password, so it works exactly once. Using a link ends all of the person's
+  sessions. A forgotten password is the same flow: an administrator makes a new link. The current
+  password keeps working until the link is used.
+- Links point at `LOCAL_APP_URL` when set (the address these people use), otherwise `APP_URL`.
+- Passwords: at least 10 characters, at most 200, not a well-known password, not containing the
+  username. No composition rules. Stored as `scrypt$N$r$p$salt$hash` with N=2^15, r=8, p=3 (32 MB,
+  one of OWASP's equivalent settings) and a 16-byte salt; verified with a constant-time compare. Two
+  checks run at a time (libuv's four worker threads are shared with file I/O), up to twenty more
+  wait in line, and beyond that a sign-in is refused with "try again in a moment" before it is
+  counted.
+- Sign-in (`POST /api/auth/password`) gives the same answer, after the same scrypt work, for an
+  unknown username, a wrong password and an account with no password yet. Each username (real or
+  not) is locked after five failed tries, for 30 seconds doubling to 15 minutes; the count is taken
+  before the slow check so parallel guesses cannot slip past it. Counts are in memory, forgotten
+  after 30 quiet minutes, and at most 100,000 usernames are tracked; when full, the oldest idle
+  entries go first and a running lock is never dropped, so flooding junk usernames cannot clear one.
+  Every lock is audited. The per-address rate limit also applies. A correct password for
+  a disabled account says so.
+- Password routes take small JSON bodies only (a `Content-Length` of at most 4 KB).
+- Return addresses (`returnTo`) must be same-site paths in printable ASCII: no `//`, backslashes,
+  spaces or control characters (URL parsers drop tabs and newlines), and they must resolve to the
+  same origin.
+- The password routes exist only while `local` is on. They carry no session, so instead of the
+  CSRF token they require a JSON body and an `Origin` naming `APP_URL` or `LOCAL_APP_URL`.
+- People change their own password with the current one (`POST /api/me/password`, CSRF as usual);
+  their other sessions end and any unused password link is cancelled. Wrong guesses there have
+  their own lock, so they cannot lock the person out of signing in. Not available while previewing.
+- Password accounts have no admission claim and no group sync. Groups are manual.
+
+### Cloudflare Access (`cloudflare`)
+
+- Access sits in front of Unifeye and adds `Cf-Access-Jwt-Assertion` to every request it lets
+  through. Unifeye verifies it on every request: RS256 against
+  `https://<team>/cdn-cgi/access/certs`, issuer `https://<team>`, audience in `CF_ACCESS_AUD`, not
+  expired, and a non-empty `sub` (service tokens have none and are refused). The `CF_Authorization`
+  cookie is never read.
+- A valid Access token does not prove the request came through Cloudflare: its holder can attach it
+  to a request sent straight to the server, for example from the local network, and keep using it
+  after Cloudflare has revoked them until the token expires. So Cloudflare also adds a secret
+  request header at its edge (a Transform Rule setting `X-Unifeye-Origin-Secret` to
+  `CF_ACCESS_ORIGIN_SECRET`). When the secret is configured, which is required alongside `local`, a
+  request carrying an Access token but not the secret is refused outright (`forged`), never treated
+  as local. So is a request carrying the secret header without an Access token: Cloudflare forwarded
+  something Access did not cover, and that must not reach password sign-in from the internet.
+- The request's path decides which identities it may carry:
+  - With an Access token (and the secret) it came through Cloudflare. Only the session of exactly the identity in
+    that token is accepted; a different identity, a password session or an invalid token is a 401.
+    Password sign-in and password links are refused.
+  - Without one it reached Unifeye some other way. A Cloudflare session is never accepted there.
+    With `local` on, password sessions and password sign-in work, which is how local-network
+    access is meant to be used; with `local` off, nothing works without the header.
+- `GET /api/auth/login` with a valid token creates the session (and the profile on first use). An
+  invalid token goes to the signed-out page; it never falls back to the password page.
+- Revocation: Cloudflare stops forwarding requests for a person whose Access session ended or was
+  revoked, but sends no notice. Every valid request refreshes the session's validation time, and a
+  session not seen through Cloudflare for `CF_ACCESS_RECHECK_SECONDS` (default 300) is suspended,
+  which stops its media at the next sweep. The app reloads `/me` every 30 seconds, so an open page
+  keeps an active session fresh.
+- Sign-out ends the Unifeye session and sends the browser to `/cdn-cgi/access/logout`.
+- First administrator: sign in once, read the issuer and subject from `unifeye users`, set
+  `BOOTSTRAP_ADMIN_ISSUER` and `BOOTSTRAP_ADMIN_SUBJECT`, restart and sign in again.
+
 ### How revocation reaches Unifeye
 
 | Event | Mechanism | Delay until Unifeye knows |
@@ -180,6 +277,9 @@ empty with a way to other views; nothing is borrowed to fill it.
 | Sign out in Unifeye | Session revoked directly | Immediate |
 | Provider session ended or user signed out | Back-channel logout, if the provider sends it | The provider's delivery time |
 | User disabled or deleted at the provider | Refresh-token check on a schedule; providers usually send no back-channel logout for these | Up to `OIDC_RECHECK_SECONDS` (default 5 minutes) |
+| Access session ended or revoked in Cloudflare | No request carries a valid Access token any more; the session is suspended | Up to `CF_ACCESS_RECHECK_SECONDS` (default 5 minutes) |
+| Password set from a link, or changed | Person's sessions revoked directly (all, or all but the current one) | Immediate |
+| Sign-in method turned off | Its people are inactive in `Policy` (after the restart that applies the setting) | Immediate |
 | Disabled in Unifeye, grant or group change | Policy invalidation | Immediate |
 | "See as staff" exited or no longer allowed | Preview ended directly | Immediate |
 | Session or preview time limit passes | Noticed by the next request, or by the timer | Up to `REVOCATION_SWEEP_SECONDS` |
@@ -394,5 +494,19 @@ zone, so a day is 23, 24 or 25 hours long around daylight-saving changes.
   fixes them, the rebuild is still correct but no longer needed. Audio timing counts samples from
   the start of each stream, so sound and video may drift apart slightly over a long session. H.265
   cameras play only in browsers that support it.
+- With `cloudflare` alone and no `CF_ACCESS_ORIGIN_SECRET`, someone who can reach the server
+  directly can replay their own Access token until it expires, even after Cloudflare revoked them.
+  Set the secret, or make sure the server is reachable only through Cloudflare.
+- With `cloudflare` and `local` both on, password sign-in is open to anyone who can reach Unifeye
+  without going through Cloudflare. Keep the server reachable from outside only through Cloudflare
+  (Tunnel or firewall rules), so that path is the local network. The rate limit is keyed on the
+  first `X-Forwarded-For` address, which a client can set when no proxy overwrites it; the
+  per-username lockout does not depend on it.
+- Password lockouts are kept in memory. A restart clears them. Anyone who knows a username can keep
+  it locked by guessing wrong once every 15 minutes; locks are audited, and the operator can always
+  issue a password link from the command line (using it clears the lock). Someone can also fill
+  the password-check queue to make sign-in answer "try again in a moment" for everyone; the
+  per-address rate limit (spoofable without a proxy that overwrites `X-Forwarded-For`) is the only
+  brake on that.
 - SQLite means one application instance on local disk. Running replicas or placing the database on
   a network filesystem is not supported.

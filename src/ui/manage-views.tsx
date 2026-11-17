@@ -10,9 +10,10 @@ import { api, type Camera } from "./api";
 import { Empty, fail, Page, PageHeader, Select, useApp } from "./app";
 
 export interface Overview {
-  users: { id: string; name: string; email: string | null; role: "admin" | "staff"; status: "active" | "disabled"; allowPrivateViews: boolean; lastLoginAt: number | null; providerGroups: string[]; groupIds: string[]; cameraCount: number; landing: { viewId: string | null; reason: string; viewName: string | null; groupName: string | null } }[];
+  users: { id: string; name: string; email: string | null; username: string | null; passwordSet: boolean; signsInWith: "oidc" | "local" | "cloudflare"; methodOn: boolean; role: "admin" | "staff"; status: "active" | "disabled"; allowPrivateViews: boolean; lastLoginAt: number | null; providerGroups: string[]; groupIds: string[]; cameraCount: number; landing: { viewId: string | null; reason: string; viewName: string | null; groupName: string | null } }[];
   groups: { id: string; name: string; defaultPriority: number; isAllStaff: boolean; providerValues: string[]; memberIds: string[]; syncedMemberIds: string[] }[];
   groupSync: { claim: string | null };
+  signIn: { oidc: boolean; local: boolean; cloudflare: boolean; oidcName: string };
   cameras: Camera[];
   tags: { id: string; name: string }[];
   cameraTags: { cameraId: string; tagId: string }[];

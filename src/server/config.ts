@@ -22,7 +22,7 @@ const list = z
 
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-  /** `mock` serves simulated cameras; `real` talks to the UNVR. Sign-in is OIDC in both. */
+  /** `mock` serves simulated cameras; `real` talks to the UNVR. Sign-in works the same in both. */
   UNIFEYE_MODE: z.enum(["mock", "real"]).default("mock"),
   APP_URL: z.string().url().default("http://localhost:3000"),
   DATABASE_PATH: z.string().default("./data/unifeye.sqlite"),
@@ -32,6 +32,44 @@ const schema = z.object({
   MEDIA_CACHE_DIR: z.string().default("./data/cache"),
   MEDIA_CACHE_MAX_MB: int(2048, 16),
   AUDIT_RETENTION_DAYS: int(365, 1),
+
+  /**
+   * How people sign in, comma separated: `oidc` (your identity provider), `local` (usernames and
+   * passwords that administrators hand out) and `cloudflare` (Cloudflare Access in front of Unifeye).
+   * `oidc` and `cloudflare` cannot be combined. Turning a method off locks out the people who use it.
+   */
+  SIGN_IN_METHODS: z
+    .string()
+    .optional()
+    .transform((v) => [...new Set((v || "oidc").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean))])
+    .pipe(z.array(z.enum(["oidc", "local", "cloudflare"])).min(1, "SIGN_IN_METHODS needs at least one method")),
+  /** Shown on the sign-in page as "Continue with …" when passwords are also on. */
+  OIDC_DISPLAY_NAME: z.string().trim().min(1).max(60).default("your work account"),
+  /** Cloudflare Access team domain, for example `acme.cloudflareaccess.com`. */
+  CF_ACCESS_TEAM_DOMAIN: z
+    .string()
+    .optional()
+    .transform((v) => v?.trim().toLowerCase().replace(/^https:\/\//, "").replace(/\/+$/, "") || undefined)
+    .pipe(z.string().regex(/^[a-z0-9-]+\.cloudflareaccess\.com$/i, "CF_ACCESS_TEAM_DOMAIN must look like acme.cloudflareaccess.com").optional()),
+  /** Application Audience (AUD) tag of the Access application, or several, comma separated. */
+  CF_ACCESS_AUD: list,
+  /**
+   * A Cloudflare session that has not been seen with a valid Access token for this long is
+   * suspended, so streams stop soon after Cloudflare stops letting the person through.
+   */
+  CF_ACCESS_RECHECK_SECONDS: int(300, 60),
+  /**
+   * A secret Cloudflare adds to every request it forwards (a Transform Rule setting the
+   * `X-Unifeye-Origin-Secret` request header). A valid Access token alone does not prove a request
+   * came through Cloudflare, because its holder can attach it themselves. Required when passwords
+   * are on too, since then Unifeye is reachable without Cloudflare by design.
+   */
+  CF_ACCESS_ORIGIN_SECRET: z.string().optional(),
+  /**
+   * Optional second address for password sign-in, such as the address used on the local network
+   * when APP_URL goes through Cloudflare Access. Password links point here when it is set.
+   */
+  LOCAL_APP_URL: z.string().url().optional(),
 
   OIDC_ISSUER: z.string().url().optional(),
   OIDC_CLIENT_ID: z.string().optional(),
@@ -137,10 +175,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const problems: string[] = [];
   const prod = c.NODE_ENV === "production";
   if (c.REVOCATION_SWEEP_SECONDS > 30) problems.push("REVOCATION_SWEEP_SECONDS must be 30 or less");
+  const m = signInMethods(c);
+  if (m.oidc && m.cloudflare) problems.push("SIGN_IN_METHODS cannot combine oidc and cloudflare");
+  if (m.cloudflare && (!c.CF_ACCESS_TEAM_DOMAIN || !c.CF_ACCESS_AUD.length)) problems.push("CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are required when SIGN_IN_METHODS includes cloudflare");
+  if (c.CF_ACCESS_RECHECK_SECONDS > 3600) problems.push("CF_ACCESS_RECHECK_SECONDS must be 3600 or less");
+  if (m.cloudflare && m.local && !c.CF_ACCESS_ORIGIN_SECRET) problems.push("CF_ACCESS_ORIGIN_SECRET is required when SIGN_IN_METHODS combines cloudflare and local");
+  if (c.CF_ACCESS_ORIGIN_SECRET && c.CF_ACCESS_ORIGIN_SECRET.length < MIN_SECRET) problems.push(`CF_ACCESS_ORIGIN_SECRET must be at least ${MIN_SECRET} characters (openssl rand -hex 24)`);
+  if (c.LOCAL_APP_URL && !m.local) problems.push("LOCAL_APP_URL needs SIGN_IN_METHODS to include local");
+  if (c.LOCAL_APP_URL && new URL(c.LOCAL_APP_URL).origin === new URL(c.APP_URL).origin) problems.push("LOCAL_APP_URL must be a different address from APP_URL");
   if (prod) {
-    for (const k of ["OIDC_ISSUER", "OIDC_CLIENT_ID", "TOKEN_ENC_KEY", "MEDIAMTX_HOOK_SECRET", "MEDIAMTX_API_SECRET"] as const)
+    for (const k of ["MEDIAMTX_HOOK_SECRET", "MEDIAMTX_API_SECRET"] as const)
       if (!c[k]) problems.push(`${k} is required in production`);
-    if (!c.OIDC_ADMIT_CLAIM && !c.OIDC_ADMIT_ANY) problems.push("OIDC_ADMIT_CLAIM is required in production (or set OIDC_ADMIT_ANY=1 if the provider already restricts who can sign in)");
+    if (m.oidc) {
+      for (const k of ["OIDC_ISSUER", "OIDC_CLIENT_ID", "TOKEN_ENC_KEY"] as const)
+        if (!c[k]) problems.push(`${k} is required in production`);
+      if (!c.OIDC_ADMIT_CLAIM && !c.OIDC_ADMIT_ANY) problems.push("OIDC_ADMIT_CLAIM is required in production (or set OIDC_ADMIT_ANY=1 if the provider already restricts who can sign in)");
+    }
+    if (c.LOCAL_APP_URL && !c.LOCAL_APP_URL.startsWith("https://")) problems.push("LOCAL_APP_URL must use https in production");
     if (c.OIDC_ISSUER && !c.OIDC_ISSUER.startsWith("https://")) problems.push("OIDC_ISSUER must use https");
     if (c.OIDC_ALLOW_INSECURE_ISSUER) problems.push("OIDC_ALLOW_INSECURE_ISSUER is not allowed in production");
     if (c.PROTECT_TLS_INSECURE) problems.push("PROTECT_TLS_INSECURE is not allowed in production");
@@ -161,6 +212,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     problems.push("BOOTSTRAP_ADMIN_ISSUER and BOOTSTRAP_ADMIN_SUBJECT must be set together");
   if (problems.length) throw new Error("Invalid configuration:\n- " + problems.join("\n- "));
   return c;
+}
+
+export type SignInMethod = "oidc" | "local" | "cloudflare";
+/** Which sign-in methods are turned on. */
+export function signInMethods(c: Config = config()): Record<SignInMethod, boolean> {
+  const on = new Set(c.SIGN_IN_METHODS);
+  return { oidc: on.has("oidc"), local: on.has("local"), cloudflare: on.has("cloudflare") };
+}
+/** The issuer Cloudflare Access puts in its tokens, which is also the issuer of a Cloudflare identity. */
+export const cloudflareIssuer = (c: Config = config()) => (c.CF_ACCESS_TEAM_DOMAIN ? `https://${c.CF_ACCESS_TEAM_DOMAIN}` : null);
+/** The origins a browser may send writes and password sign-ins from. */
+export function allowedOrigins(c: Config = config()): string[] {
+  return [new URL(c.APP_URL).origin, ...(c.LOCAL_APP_URL ? [new URL(c.LOCAL_APP_URL).origin] : [])];
 }
 
 /** The claim group sync reads, or null when the sync is off. */

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Unifeye is a read-only viewer for UniFi Protect cameras. Staff sign in through OIDC (the only sign-in; no local accounts), administrators grant cameras, tag them and build shared views. Unifeye must never write to the recorder: no camera settings, recordings, events or Protect users. Enabling an RTSP stream on a camera counts as a write and is out of bounds.
+Unifeye is a read-only viewer for UniFi Protect cameras. Staff sign in through OIDC, Cloudflare Access or administrator-issued password accounts (`SIGN_IN_METHODS`; passwords are off by default), administrators grant cameras, tag them and build shared views. Unifeye must never write to the recorder: no camera settings, recordings, events or Protect users. Enabling an RTSP stream on a camera counts as a write and is out of bounds.
 
 `docs/architecture.md` is the authoritative description of the permission model, standing access, views, sign-in and media enforcement. Read the relevant section before changing any of those areas, and update it when behaviour changes. `docs/verification.md` records what has and has not been verified; keep it honest when adding tests or checking against real hardware.
 

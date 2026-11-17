@@ -1,17 +1,20 @@
 "use client";
-import { Eye, Plus, RefreshCw } from "lucide-react";
+import { Copy, Eye, KeyRound, Plus, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { api, fmtDay, fmtTime, setPreviewToken } from "./api";
+import { toast } from "sonner";
+import { api, fmtDay, fmtShort, fmtTime, setPreviewToken } from "./api";
 import { fail, Page, PageHeader, Select, useApp } from "./app";
 import { Card, landingReason, Pill, Row, type Overview } from "./manage-views";
 
 const TH = "px-3 py-2.5 text-left text-xs font-medium whitespace-nowrap text-muted-foreground", TD = "border-t px-3 py-2.5 align-middle";
-const ACTION: Record<string, string> = { "auth.login": "Signed in", "auth.logout": "Signed out", "auth.backchannel_logout": "Signed out by the sign-in provider", "auth.provider_revoked": "Access ended by the sign-in provider", "user.provisioned": "First sign-in", "admin.bootstrap": "Became the first administrator", "user.update": "Changed a person", "group.create": "Added a group", "group.update": "Changed a group", "group.delete": "Deleted a group", "group.member.add": "Added to a group", "group.member.remove": "Removed from a group", "group.member.sync_add": "Added to a group by the sign-in provider", "group.member.sync_remove": "Removed from a group by the sign-in provider", "grant.add": "Gave camera access", "grant.revoke": "Removed camera access", "tag.create": "Added a tag", "tag.rename": "Renamed a tag", "tag.delete": "Removed a tag", "camera.tag": "Tagged a camera", "camera.untag": "Untagged a camera", "view.create": "Created a view", "view.update": "Changed a view", "view.convert": "Changed a view's type", "view.delete": "Deleted a view", "view.share": "Changed sharing", "default.set": "Set a starting view", "preview.start": "Started viewing as", "preview.exit": "Stopped viewing as", "preview.end": "Viewing as ended", "preview.mutation": "Tried to make a change while viewing as", "preview.use": "Used an expired view-as session", "clip.export": "Saved a clip", "admin.access": "Tried to open Admin", "system.start": "Unifeye started" };
+const ACTION: Record<string, string> = { "auth.login": "Signed in", "auth.logout": "Signed out", "auth.password_set": "Chose a password", "auth.locked": "Too many wrong passwords", "user.create": "Added a person", "user.password_link": "Made a password link", "auth.backchannel_logout": "Signed out by the sign-in provider", "auth.provider_revoked": "Access ended by the sign-in provider", "user.provisioned": "First sign-in", "admin.bootstrap": "Became the first administrator", "user.update": "Changed a person", "group.create": "Added a group", "group.update": "Changed a group", "group.delete": "Deleted a group", "group.member.add": "Added to a group", "group.member.remove": "Removed from a group", "group.member.sync_add": "Added to a group by the sign-in provider", "group.member.sync_remove": "Removed from a group by the sign-in provider", "grant.add": "Gave camera access", "grant.revoke": "Removed camera access", "tag.create": "Added a tag", "tag.rename": "Renamed a tag", "tag.delete": "Removed a tag", "camera.tag": "Tagged a camera", "camera.untag": "Untagged a camera", "view.create": "Created a view", "view.update": "Changed a view", "view.convert": "Changed a view's type", "view.delete": "Deleted a view", "view.share": "Changed sharing", "default.set": "Set a starting view", "preview.start": "Started viewing as", "preview.exit": "Stopped viewing as", "preview.end": "Viewing as ended", "preview.mutation": "Tried to make a change while viewing as", "preview.use": "Used an expired view-as session", "clip.export": "Saved a clip", "admin.access": "Tried to open Admin", "system.start": "Unifeye started" };
 
 /** Unifeye's own data only: people's access, groups, camera grants and tags. Nothing here changes the recorder or the identity provider. */
 export function Admin() {
@@ -20,6 +23,8 @@ export function Admin() {
   const [ov, setOv] = useState<Overview | null>(null);
   const [log, setLog] = useState<{ id: number; at: number; actor: string; previewSubject: string | null; action: string; outcome: string; detail: Record<string, unknown> | null }[]>([]);
   const [pick, setPick] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [link, setLink] = useState<{ name: string; url: string; expiresAt: number } | null>(null);
   const load = useCallback(() => api<Overview>("/admin/overview").then(setOv).catch(fail), []);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { if (tab === "history") api<{ entries: typeof log }>("/admin/audit").then((r) => setLog(r.entries)).catch(fail); }, [tab]);
@@ -42,20 +47,27 @@ export function Admin() {
   return (
     <Page>
       <PageHeader title="Admin" />
-      <Tabs value={tab} onValueChange={(v) => setTab(String(v))} className="mb-4"><TabsList className="h-auto flex-wrap">{[["people", "People"], ["groups", "Groups"], ["access", "Camera access"], ["tags", "Tags"], ["see", "View as"], ["history", "History"]].map(([k, l]) => <TabsTrigger key={k} value={k}>{l}</TabsTrigger>)}</TabsList></Tabs>
+      <Tabs value={tab} onValueChange={(v) => setTab(String(v))} className="mb-4"><TabsList className="h-auto flex-wrap">{[["people", "People"], ["groups", "Groups"], ["access", "Camera access"], ["tags", "Tags"], ["see", "View as"], ["signin", "Sign-in"], ["history", "History"]].map(([k, l]) => <TabsTrigger key={k} value={k}>{l}</TabsTrigger>)}</TabsList></Tabs>
 
       {tab === "people" && (
         <>
-          <p className="mb-3 text-sm text-muted-foreground">People appear here after they first sign in. Passwords are managed by your sign-in provider.</p>
-          <div className="overflow-auto rounded-xl border"><table className="w-full text-sm"><thead><tr><th className={TH}>Person</th><th className={TH}>Role</th><th className={TH}>Groups</th><th className={TH}>Cameras</th><th className={TH}>Can create views</th><th className={TH}>Active</th><th className={TH} /></tr></thead><tbody>
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <p className="flex-1 text-sm text-muted-foreground">{ov.signIn.local ? (ov.signIn.oidc || ov.signIn.cloudflare ? "People with work accounts appear here after they first sign in. Add people who sign in with a password." : "Add people here. Each one gets a link to choose a password.") : "People appear here after they first sign in. Passwords are managed by your sign-in provider."}</p>
+            {ov.signIn.local && <Button size="sm" onClick={() => setAdding(true)}><Plus />Add person</Button>}
+          </div>
+          <div className="overflow-auto rounded-xl border"><table className="w-full text-sm"><thead><tr><th className={TH}>Person</th><th className={TH}>Signs in with</th><th className={TH}>Role</th><th className={TH}>Groups</th><th className={TH}>Cameras</th><th className={TH}>Can create views</th><th className={TH}>Active</th><th className={TH} /></tr></thead><tbody>
             {ov.users.map((u) => (
-              <tr key={u.id}><td className={TD}>{nameOf(u)}<div className="text-xs text-muted-foreground">{u.email}</div></td>
+              <tr key={u.id}><td className={TD}>{nameOf(u)}<div className="text-xs text-muted-foreground">{u.signsInWith === "local" ? <>{u.username}{!u.passwordSet && " · hasn't chosen a password yet"}</> : u.email}</div></td>
+                <td className={TD}><span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs whitespace-nowrap ${u.methodOn ? "" : "border-amber-500/60 text-amber-700 dark:text-amber-400"}`} title={u.methodOn ? undefined : "This way of signing in is turned off, so they can't sign in."}>{METHOD[u.signsInWith]}{!u.methodOn && " · turned off"}</span></td>
                 <td className={TD}><Select aria-label="Role" value={u.role} onChange={(e) => put(`/admin/users/${u.id}`, { role: e.target.value }, "PATCH")}><option value="staff">Staff</option><option value="admin">Admin</option></Select></td>
                 <td className={TD}>{ov.groups.filter((g) => !g.isAllStaff).map((g) => member(g, u.id, g.name))}</td>
                 <td className={TD}>{u.cameraCount}</td>
                 <td className={TD}><Switch checked={u.allowPrivateViews} onCheckedChange={(v) => put(`/admin/users/${u.id}`, { allowPrivateViews: v }, "PATCH")} aria-label="Can create views" /></td>
                 <td className={TD}><Switch checked={u.status === "active"} onCheckedChange={(v) => put(`/admin/users/${u.id}`, { status: v ? "active" : "disabled" }, "PATCH")} aria-label="Active" /></td>
-                <td className={TD}>{u.role === "staff" && u.status === "active" && <Button size="sm" variant="outline" onClick={() => seeAs(u.id)}>View as</Button>}</td></tr>
+                <td className={`${TD} whitespace-nowrap`}>
+                  {u.signsInWith === "local" && ov.signIn.local && <Button size="sm" variant="outline" className="mr-1.5" onClick={() => act(async () => { const r = await api<{ link: { url: string; expiresAt: number } }>(`/admin/users/${u.id}/password-link`, { method: "POST" }); setLink({ name: nameOf(u), ...r.link }); })}><KeyRound />Password link</Button>}
+                  {u.role === "staff" && u.status === "active" && u.methodOn && <Button size="sm" variant="outline" onClick={() => seeAs(u.id)}>View as</Button>}
+                </td></tr>
             ))}
           </tbody></table></div>
         </>
@@ -107,12 +119,75 @@ export function Admin() {
         </Card>
       ))}
 
+      {tab === "signin" && (
+        <>
+          <div className="overflow-hidden rounded-xl border">
+            {([["oidc", `Work accounts (${ov.signIn.oidcName})`, "People join the first time they sign in."], ["local", "Passwords", "Only people you add here."], ["cloudflare", "Cloudflare Access", "People join the first time they open Unifeye through Cloudflare."]] as const).map(([k, title, hint]) => {
+              const n = ov.users.filter((u) => u.signsInWith === k).length, on = ov.signIn[k];
+              return (
+                <div key={k} className="flex items-center gap-3 border-t px-4 py-3 first:border-t-0">
+                  <div className="flex-1"><div className="text-sm font-medium">{title}</div><div className="text-xs text-muted-foreground">{on ? hint : n ? `${n} ${n === 1 ? "person" : "people"} can't sign in until this is turned back on.` : "Not in use."}</div></div>
+                  <span className={`flex items-center gap-1.5 text-xs ${on ? "" : "text-muted-foreground"}`}><i className={`size-1.5 rounded-full ${on ? "bg-green-500" : "bg-zinc-400"}`} />{on ? "On" : "Off"}</span>
+                </div>
+              );
+            })}
+          </div>
+          <p className="mt-3 text-sm text-muted-foreground">These are set on the server. To change them, update its settings and restart Unifeye.</p>
+        </>
+      )}
+
       {tab === "history" && (
         <div className="overflow-auto rounded-xl border"><table className="w-full text-sm"><thead><tr><th className={TH}>When</th><th className={TH}>Who</th><th className={TH}>Viewing as</th><th className={TH}>What</th></tr></thead><tbody>
           {log.map((r) => <tr key={r.id}><td className={`${TD} whitespace-nowrap`}>{fmtDay(r.at, tz)}, {fmtTime(r.at, tz)}</td><td className={TD}>{r.actor}</td><td className={TD}>{r.previewSubject}</td><td className={TD}>{ACTION[r.action] ?? r.action}{r.outcome !== "ok" && <span className="ml-2 rounded-full border px-2 py-0.5 text-xs text-muted-foreground">blocked</span>}</td></tr>)}
           {!log.length && <tr><td className={`${TD} text-muted-foreground`} colSpan={4}>Nothing yet.</td></tr>}
         </tbody></table></div>
       )}
+      {adding && <AddPerson onClose={() => setAdding(false)} onAdded={(name, l) => { setAdding(false); setLink({ name, ...l }); void load(); }} />}
+      {link && <LinkDialog {...link} onClose={() => setLink(null)} />}
     </Page>
+  );
+}
+
+const METHOD = { oidc: "Work account", local: "Password", cloudflare: "Cloudflare" } as const;
+
+function AddPerson({ onClose, onAdded }: { onClose: () => void; onAdded: (name: string, link: { url: string; expiresAt: number }) => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget), name = String(f.get("name") ?? "").trim();
+    setBusy(true); setError(null);
+    try { const r = await api<{ link: { url: string; expiresAt: number } }>("/admin/users", { method: "POST", body: { name, username: f.get("username"), role: f.get("role") } }); onAdded(name, r.link); }
+    catch (err) { setBusy(false); setError(err instanceof Error ? err.message : "Something went wrong. Try again."); }
+  };
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Add a person</DialogTitle><DialogDescription>They&apos;ll sign in with a username and password.</DialogDescription></DialogHeader>
+        <form id="add-person" className="grid gap-3" onSubmit={submit}>
+          <div className="grid gap-1.5"><Label htmlFor="ap-name">Name</Label><Input id="ap-name" name="name" required maxLength={80} /></div>
+          <div className="grid gap-1.5"><Label htmlFor="ap-username">Username</Label><Input id="ap-username" name="username" required autoCapitalize="none" spellCheck={false} maxLength={64} /></div>
+          <div className="grid gap-1.5"><Label htmlFor="ap-role">Role</Label><Select id="ap-role" name="role" defaultValue="staff"><option value="staff">Staff</option><option value="admin">Admin</option></Select></div>
+          {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+        </form>
+        <DialogFooter><Button variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" form="add-person" disabled={busy}>{busy ? "Adding…" : "Add"}</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Shown once. Only a hash of the link is kept, so it can't be shown again; a new one can always be made. */
+function LinkDialog({ name, url, expiresAt, onClose }: { name: string; url: string; expiresAt: number; onClose: () => void }) {
+  const { tz } = useApp();
+  const copy = () => navigator.clipboard.writeText(url).then(() => toast.success("Link copied"), () => toast.error("Couldn't copy. Select the link and copy it."));
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Send this link to {name}</DialogTitle><DialogDescription>They&apos;ll use it to choose a password. It works once and expires {fmtDay(expiresAt, tz)}, {fmtShort(expiresAt, tz)}.</DialogDescription></DialogHeader>
+        <div className="flex gap-2"><Input readOnly value={url} aria-label="Password link" className="font-mono text-xs" onFocus={(e) => e.currentTarget.select()} /><Button variant="outline" onClick={copy}><Copy />Copy</Button></div>
+        <p className="text-xs text-muted-foreground">You won&apos;t be able to see this link again. You can always make a new one.</p>
+        <DialogFooter><Button onClick={onClose}>Done</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

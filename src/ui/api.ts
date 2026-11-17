@@ -4,7 +4,7 @@
 export interface Camera { id: string; name: string; tags: string[]; missing: boolean; online: boolean; eventTypes: string[]; hasLive: boolean }
 export interface ViewSummary { id: string; name: string; type: "dynamic" | "static"; visibility: "private" | "curated"; columns: number; count: number; editable: boolean }
 export interface Me {
-  user: { id: string; name: string; role: "admin" | "staff" };
+  user: { id: string; name: string; role: "admin" | "staff"; signsInWith: "oidc" | "local" | "cloudflare" };
   csrf: string;
   preview: { subject: { id: string; name: string } } | null;
   subject: { id: string; name: string; role: string; canCreateViews: boolean };
