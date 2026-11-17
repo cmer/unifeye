@@ -75,8 +75,25 @@ reader. They show what the gateway decides, not how MediaMTX behaves.
   issuer and subject mapping, no linking by email, zero-access provisioning, one-time bootstrap,
   session rotation and expiry, CSRF, safe redirects, provider outage, back-channel logout including
   replay and malformed tokens, and lifecycle re-validation.
-- No local login: no login, registration or password routes; no credential tables; mock mode in
-  production still requires OIDC settings.
+- Password accounts off (the default): no password, registration or link routes; admin creation
+  refused; mock mode in production with `oidc` still requires OIDC settings.
+- Password accounts on (`tests/local-accounts.test.ts`): admin-only creation, zero-access profiles
+  keyed by their own id, link secrets stored hashed and kept out of the audit log, one use per link
+  (also under a race), expiry, superseded links, weak passwords refused without using the link,
+  scrypt storage, identical answers for unknown usernames, wrong passwords and unset passwords,
+  lockout for real and unknown usernames (audited, not flushable by flooding the tracker), the
+  concurrency cap on password checks, body size limits, return addresses with stripped characters,
+  a password change cancelling unused links and having its own lock, Origin and JSON checks, `LOCAL_APP_URL`, session rotation,
+  sessions ending on a new password and on disable, changing your own password, and turning `local`
+  or `oidc` off locking those people out.
+- Cloudflare Access against a stubbed key endpoint (`tests/cloudflare.test.ts`): sign-in from a
+  valid token, refusal of forged, foreign-issuer, foreign-audience, expired, unknown-key and
+  subject-less tokens, the token re-checked on every request and bound to the session's identity,
+  Cloudflare sessions refused without the header, tokens sent without Cloudflare's origin secret
+  refused (and not refreshing the session), password sessions and password sign-in refused
+  with it, no fallback to passwords on a bad token, suspension after `CF_ACCESS_RECHECK_SECONDS`,
+  sign-out through Access, bootstrap, no takeover of another method's profile, and turning the
+  method off.
 - Operations: clean install, upgrade from the previous schema with a pre-migration backup, failed
   migration leaving data intact, newer-database refusal, backup integrity under WAL, restore into a
   clean location with permissions preserved and sessions revoked, corrupt backup rejection.
@@ -163,6 +180,8 @@ since the move.
 | "Recording now" indicator on a real UNVR | No recorder available | Relies on the camera `isRecording` field and realtime camera updates; a wrong assumption shows a stale or missing REC mark, never extra access |
 | Recording gaps on a real UNVR | No known endpoint | Timeline shows only the overall recorded period |
 | A real OIDC provider: login, admission claim, logout, back-channel logout, deactivation detection | No instance available | Claim placement, refresh-token or back-channel behaviour, or error codes differ by provider |
+| Cloudflare Access against a real team | No Access application available | Token claims (`sub`, `email`) or key rotation behave differently from the stub; the Transform Rule header not reaching the origin through the tunnel; the 30-second `/me` reload not reaching Unifeye often enough behind Access |
+| Password sign-in and password links in a browser | Checked through the API tests and a production build only | Password-manager autofill, the set-password page on phones |
 | The hook port inside the Compose stack | Checked locally, not yet in Compose | MediaMTX cannot reach `app:3001`, so no video plays |
 | Browser test suite | Not written | Screens were checked by hand in one desktop browser |
 | Phones and tablets | No device testing | Layout or touch problems |

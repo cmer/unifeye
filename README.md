@@ -12,7 +12,7 @@ or Protect users.
 | | |
 | --- | --- |
 | Stack | Node.js, TypeScript, Next.js 16, React 19, shadcn/ui, SQLite + Drizzle, MediaMTX |
-| Sign-in | OpenID Connect only, with any standards-compliant provider. No local accounts or passwords exist. |
+| Sign-in | Any standards-compliant OpenID Connect provider, Cloudflare Access, or usernames and passwords handed out by an administrator. Chosen with `SIGN_IN_METHODS`; passwords are off unless turned on. |
 | Deployment | One Docker Compose stack: the app and MediaMTX, SQLite on a volume |
 
 ## Where things are

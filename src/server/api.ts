@@ -2,11 +2,12 @@ import { desc, lt } from "drizzle-orm";
 import { ZodError } from "zod";
 import { stat } from "node:fs/promises";
 import { audit } from "./audit";
-import { LOGIN_TXN_COOKIE } from "./auth/oidc";
+
+import { LOGIN_TXN_COOKIE, safeReturnTo } from "./auth/oidc";
 import { SESSION_COOKIE, type SessionRow } from "./auth/session";
 import { subjectOf, type Actor } from "./authz/actor";
 import type { CameraInfo, UserRow } from "./authz/policy";
-import { config, groupsClaim } from "./config";
+import { allowedOrigins, config, groupsClaim, signInMethods } from "./config";
 import { schema } from "./db";
 import { backupStatus } from "./db/backup";
 import { fileResponse } from "./media/recordings";
@@ -51,11 +52,27 @@ const camDto = (c: CameraInfo) => ({ id: c.id, name: c.name, tags: c.tags, missi
  * Builds the actor from the server-side session. Nothing the client sends (user id, role, camera
  * list, group list) is trusted. A preview token is honoured only for the administrator session it
  * was issued to; an invalid one fails the request instead of falling back to administrator access.
+ *
+ * With Cloudflare Access on, the request's path decides which identities it may carry:
+ *  - with an Access token (it came through Cloudflare): only the session of exactly that
+ *    Cloudflare identity, and the token must verify on this request;
+ *  - without one (it reached Unifeye some other way, such as the local network): only a password
+ *    session. A Cloudflare session presented without a token is refused, never trusted.
  */
-function authenticate(req: Request, url: URL, s: Services, ip: string, requestId: string) {
-  const session = s.sessions.load(readCookie(req, SESSION_COOKIE));
+async function authenticate(req: Request, url: URL, s: Services, ip: string, requestId: string) {
+  const unauthenticated = () => new HttpError(401, "unauthenticated", "Sign in required");
+  const session = s.sessions.load(readCookie(req, SESSION_COOKIE), false);
   const user = session && s.policy.activeUser(session.userId);
-  if (!session || !user) throw new HttpError(401, "unauthenticated", "Sign in required");
+  if (!session || !user) throw unauthenticated();
+  if (signInMethods().cloudflare) {
+    const ch = s.cloudflare.channel(req);
+    if (ch.via === "forged") throw unauthenticated();
+    if (ch.via === "cloudflare") {
+      const id = await s.cloudflare.verify(ch.assertion);
+      if (!id || !s.cloudflare.accept(session, user, id)) throw unauthenticated();
+    } else if (user.authMethod !== "local") throw unauthenticated();
+  }
+  s.sessions.touch(session);
   const actor: Actor = { userId: user.id, role: user.role, sessionId: session.id, requestId, ip };
   const pv = req.headers.get("x-unifeye-preview") ?? url.searchParams.get("pv");
   if (pv) { const p = s.previews.resolve(session.id, user.id, pv); actor.preview = { id: p.id, subjectId: p.subjectId }; }
@@ -74,13 +91,13 @@ export async function handleApi(req: Request): Promise<Response> {
     const { r, m } = match, s = services(), write = req.method !== "GET" && req.method !== "HEAD";
     rateLimit(ip, r.opts.rate ?? (write ? "write" : "read"));
     const p = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m![i + 1])]));
-    let auth: ReturnType<typeof authenticate> | undefined;
+    let auth: Awaited<ReturnType<typeof authenticate>> | undefined;
     if (!r.opts.public) {
-      auth = authenticate(req, url, s, ip, requestId);
+      auth = await authenticate(req, url, s, ip, requestId);
       if (write) {
         // CSRF: cookie-authenticated writes need the per-session token and a same-origin request.
         const origin = req.headers.get("origin");
-        if (origin && origin !== new URL(config().APP_URL).origin) throw forbidden("bad_origin");
+        if (origin && !allowedOrigins().includes(origin)) throw forbidden("bad_origin");
         if (!safeEqual(req.headers.get("x-csrf-token") ?? "", auth.session.csrfSecret)) throw forbidden("bad_csrf_token");
       }
       if (r.opts.admin && (auth.actor.preview || !s.policy.isAdmin(auth.user.id))) {
@@ -102,15 +119,40 @@ export async function handleApi(req: Request): Promise<Response> {
   return res;
 }
 
-// ---- authentication (OIDC only; there is no other login route) -------
-route("GET", "/auth/login", { public: true, rate: "auth" }, async ({ s, url }) => {
-  try {
-    const { url: to, cookie: txn } = await s.oidc.begin(url.searchParams.get("returnTo"));
-    return redirect(to, [cookie(LOGIN_TXN_COOKIE, txn, 600, "/api/auth")]);
-  } catch (e) {
-    log("warn", "login could not start", { error: e });
-    return redirect("/signed-out?error=sso_unavailable"); // no local fallback exists
+// ---- authentication -------------------------------------------------------------
+/**
+ * Where a signed-out browser is sent. Through Cloudflare Access the person is signed in at once;
+ * with only the identity provider on, straight to it (as before); with passwords on, to the sign-in
+ * page, which offers the identity provider too when both are on.
+ */
+route("GET", "/auth/login", { public: true, rate: "auth" }, async ({ s, req, url, ip }) => {
+  const m = signInMethods(), returnTo = safeReturnTo(url.searchParams.get("returnTo")), ch = s.cloudflare.channel(req);
+  if (ch.via === "forged") {
+    log("warn", "request with a Cloudflare Access token but without the origin secret refused");
+    return redirect("/signed-out?error=login_failed");
   }
+  if (ch.via === "cloudflare") {
+    try {
+      const r = await s.cloudflare.signIn(ch.assertion, { userAgent: req.headers.get("user-agent") ?? undefined, ip, previousSessionToken: readCookie(req, SESSION_COOKIE) });
+      maybeSeedDemo(s);
+      return redirect(returnTo, [cookie(SESSION_COOKIE, r.token, config().SESSION_ABSOLUTE_HOURS * 3600)]);
+    } catch (e) {
+      const reason = (e as { reason?: unknown })?.reason;
+      if (typeof reason !== "string") log("warn", "Cloudflare sign-in failed", { error: e });
+      return redirect(`/signed-out?error=${reason === "user_disabled" ? "not_admitted" : "login_failed"}`);
+    }
+  }
+  if (m.oidc && (!m.local || url.searchParams.get("with") === "oidc")) {
+    try {
+      const { url: to, cookie: txn } = await s.oidc.begin(returnTo);
+      return redirect(to, [cookie(LOGIN_TXN_COOKIE, txn, 600, "/api/auth")]);
+    } catch (e) {
+      log("warn", "login could not start", { error: e });
+      return redirect("/signed-out?error=sso_unavailable"); // passwords are never a fallback for these accounts
+    }
+  }
+  if (m.local) return redirect(`/sign-in${returnTo === "/" ? "" : `?returnTo=${encodeURIComponent(returnTo)}`}`);
+  return redirect("/signed-out?error=cloudflare_required");
 });
 route("GET", "/auth/callback", { public: true, rate: "auth" }, async ({ s, req, url, ip }) => {
   const clear = cookie(LOGIN_TXN_COOKIE, "", 0, "/api/auth");
@@ -125,7 +167,57 @@ route("GET", "/auth/callback", { public: true, rate: "auth" }, async ({ s, req, 
     return redirect(`/signed-out?error=${code}`, [clear]);
   }
 });
-route("POST", "/auth/logout", {}, async ({ s, session }) => json({ redirect: await s.oidc.logout(session) }, 200, { "set-cookie": cookie(SESSION_COOKIE, "", 0) }));
+route("POST", "/auth/logout", {}, async ({ s, session, user }) => {
+  let to = "/signed-out";
+  if (user.authMethod === "oidc") to = await s.oidc.logout(session);
+  else {
+    s.sessions.revoke(session.id, "logout");
+    audit(s.db, { actorId: user.id, action: "auth.logout", targetType: "session", targetId: session.id });
+    // Ends the Cloudflare Access session too, or Access would sign the person straight back in.
+    if (user.authMethod === "cloudflare") to = "/cdn-cgi/access/logout";
+  }
+  return json({ redirect: to }, 200, { "set-cookie": cookie(SESSION_COOKIE, "", 0) });
+});
+
+/**
+ * Password sign-in routes exist only while SIGN_IN_METHODS includes `local`. They take no session,
+ * so instead of the CSRF token they need a JSON body (which a cross-site form cannot send without a
+ * preflight) and an Origin header naming one of Unifeye's own addresses. A request that came through
+ * Cloudflare Access is refused: through Cloudflare, only Cloudflare identities sign in.
+ */
+async function passwordRequest(req: Request, s: Services) {
+  if (!signInMethods().local) throw notFound();
+  const origin = req.headers.get("origin");
+  if (!origin || !allowedOrigins().includes(origin)) throw forbidden("bad_origin");
+  if (!(req.headers.get("content-type") ?? "").startsWith("application/json")) throw badRequest("Invalid request");
+  if (s.cloudflare.channel(req).via !== "direct") throw forbidden("use_cloudflare");
+  // Small fixed bodies only. Browsers always send a length for a fetch with a string body.
+  const len = Number(req.headers.get("content-length"));
+  if (!(len > 0 && len <= 4096)) throw badRequest("Invalid request");
+  const text = await req.text();
+  if (text.length > 4096) throw badRequest("Invalid request");
+  try { const b = JSON.parse(text) as unknown; if (b && typeof b === "object" && !Array.isArray(b)) return b as Record<string, unknown>; } catch { /* below */ }
+  throw badRequest("Invalid JSON");
+}
+const signedIn = (token: string, returnTo: unknown) => json({ redirect: safeReturnTo(typeof returnTo === "string" ? returnTo : "/") }, 200, { "set-cookie": cookie(SESSION_COOKIE, token, config().SESSION_ABSOLUTE_HOURS * 3600) });
+route("POST", "/auth/password", { public: true, rate: "auth" }, async ({ s, req, ip }) => {
+  const b = await passwordRequest(req, s);
+  const r = await s.local.signIn(b.username, b.password, { ip, userAgent: req.headers.get("user-agent") ?? undefined, previousSessionToken: readCookie(req, SESSION_COOKIE) });
+  maybeSeedDemo(s);
+  return signedIn(r.token, b.returnTo);
+});
+route("POST", "/auth/password-link/check", { public: true, rate: "auth" }, async ({ s, req }) => s.local.inspectLink((await passwordRequest(req, s)).token));
+route("POST", "/auth/password-link", { public: true, rate: "auth" }, async ({ s, req, ip }) => {
+  const b = await passwordRequest(req, s);
+  const r = await s.local.useLink(b.token, b.password, { ip, userAgent: req.headers.get("user-agent") ?? undefined, previousSessionToken: readCookie(req, SESSION_COOKIE) });
+  return signedIn(r.token, "/");
+});
+route("POST", "/me/password", { rate: "auth" }, async ({ s, actor, user, session, ip, json: body }) => {
+  if (actor.preview) throw forbidden("preview_read_only");
+  if (user.authMethod !== "local") throw notFound();
+  const b = await body<{ current?: unknown; next?: unknown }>();
+  await s.local.changePassword(user.id, session.id, b.current, b.next, ip);
+});
 route("POST", "/auth/backchannel-logout", { public: true, rate: "auth" }, async ({ s, req }) => {
   const token = new URLSearchParams(await req.text()).get("logout_token");
   if (!token) throw new HttpError(400, "invalid_request");
@@ -137,7 +229,7 @@ route("POST", "/auth/backchannel-logout", { public: true, rate: "auth" }, async 
 route("GET", "/me", {}, ({ s, actor, user, session }) => {
   const subject = subjectOf(actor), su = s.policy.activeUser(subject)!, c = config(), landing = s.views.landing(subject);
   return {
-    user: { id: user.id, name: user.name || user.email || "You", role: user.role },
+    user: { id: user.id, name: user.name || user.email || "You", role: user.role, signsInWith: user.authMethod },
     csrf: session.csrfSecret,
     preview: actor.preview ? { subject: { id: su.id, name: su.name } } : null,
     subject: { id: su.id, name: su.name, role: su.role, canCreateViews: su.role === "admin" || su.allowPrivateViews },
@@ -254,11 +346,13 @@ route("GET", "/exports/:id/download", { rate: "media" }, ({ s, actor, p, req }) 
 route("GET", "/admin/overview", { admin: true }, ({ s }) => {
   const users = s.db.select().from(schema.users).all(), groups = s.db.select().from(schema.groups).all();
   const members = s.db.select().from(schema.groupMembers).all(), defaults = s.db.select().from(schema.defaultViews).all();
+  const creds = new Map(s.db.select().from(schema.localCredentials).all().map((x) => [x.userId, x])), methods = signInMethods();
   const viewName = new Map(s.db.select().from(schema.views).all().map((v) => [v.id, v.name]));
   return {
-    users: users.map((u) => { const l = s.views.landing(u.id); return { id: u.id, name: u.name, email: u.email, role: u.role, status: u.status, allowPrivateViews: u.allowPrivateViews, lastLoginAt: u.lastLoginAt, providerGroups: u.providerGroups, groupIds: members.filter((m) => m.userId === u.id).map((m) => m.groupId), cameraCount: s.policy.cameraIds(u.id).size, landing: { ...l, viewName: l.viewId ? viewName.get(l.viewId) : null, groupName: groups.find((g) => g.id === l.groupId)?.name ?? null } }; }),
+    users: users.map((u) => { const l = s.views.landing(u.id); return { id: u.id, name: u.name, email: u.email, username: creds.get(u.id)?.username ?? null, passwordSet: !!creds.get(u.id)?.passwordHash, signsInWith: u.authMethod, methodOn: methods[u.authMethod], role: u.role, status: u.status, allowPrivateViews: u.allowPrivateViews, lastLoginAt: u.lastLoginAt, providerGroups: u.providerGroups, groupIds: members.filter((m) => m.userId === u.id).map((m) => m.groupId), cameraCount: s.policy.cameraIds(u.id).size, landing: { ...l, viewName: l.viewId ? viewName.get(l.viewId) : null, groupName: groups.find((g) => g.id === l.groupId)?.name ?? null } }; }),
     groups: groups.map((g) => ({ id: g.id, name: g.name, defaultPriority: g.defaultPriority, isAllStaff: g.isAllStaff, providerValues: g.providerValues, memberIds: members.filter((m) => m.groupId === g.id).map((m) => m.userId), syncedMemberIds: members.filter((m) => m.groupId === g.id && m.source === "provider").map((m) => m.userId) })),
     groupSync: { claim: groupsClaim() },
+    signIn: { ...methods, oidcName: config().OIDC_DISPLAY_NAME },
     cameras: s.policy.allCamerasUnchecked().map(camDto).sort((a, b) => a.name.localeCompare(b.name)),
     tags: s.db.select().from(schema.tags).all().map((t) => ({ id: t.id, name: t.name })).sort((a, b) => a.name.localeCompare(b.name)),
     cameraTags: s.db.select().from(schema.cameraTags).all(),
@@ -268,6 +362,8 @@ route("GET", "/admin/overview", { admin: true }, ({ s }) => {
     defaults: defaults.map((d) => ({ scope: d.scope, userId: d.userId, groupId: d.groupId, viewId: d.viewId })),
   };
 });
+route("POST", "/admin/users", { admin: true }, async ({ s, actor, json: body }) => s.admin.createPasswordUser(actor, await body()));
+route("POST", "/admin/users/:id/password-link", { admin: true }, ({ s, actor, p }) => s.admin.passwordLink(actor, p.id));
 route("PATCH", "/admin/users/:id", { admin: true }, async ({ s, actor, p, json: body }) => { s.admin.updateUser(actor, p.id, await body()); });
 route("POST", "/admin/groups", { admin: true }, async ({ s, actor, json: body }) => s.admin.createGroup(actor, String((await body()).name ?? "")));
 route("PATCH", "/admin/groups/:id", { admin: true }, async ({ s, actor, p, json: body }) => { s.admin.updateGroup(actor, p.id, await body()); });

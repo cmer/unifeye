@@ -41,11 +41,13 @@ describe("authentication boundary", () => {
     for (const [m, p] of [["GET", "/me"], ["GET", "/cameras"], ["GET", `/cameras/${cam}/snapshot`], ["GET", `/cameras/${cam}/recordings?from=1&to=2`], ["GET", `/cameras/${cam}/playback?t=1`], ["GET", `/cameras/${cam}/playback/info?t=1`], ["POST", `/media/live/${cam}/whep`], ["GET", `/media/live/${cam}/hls/wall/index.m3u8`], ["GET", "/events"], ["GET", "/events/stream"], ["GET", "/events/x/thumbnail"], ["POST", "/exports"], ["GET", "/exports/x"], ["GET", "/exports/x/download"], ["GET", "/admin/overview"], ["GET", "/views/x"]] as const)
       expect((await call(null, m, p)).status, `${m} ${p}`).toBe(401);
   });
-  it("has no local login, registration or password routes, and no credential tables", async () => {
-    for (const p of ["/auth/register", "/auth/password", "/auth/reset", "/auth/local", "/login"]) for (const m of ["GET", "POST"]) expect((await call(null, m, p)).status).toBe(404);
+  it("with passwords off (the default), has no password, registration or link routes at all", async () => {
+    const origin = { origin: "http://localhost:3000" };
+    for (const p of ["/auth/register", "/auth/password", "/auth/password-link", "/auth/password-link/check", "/auth/reset", "/auth/local", "/login"]) for (const m of ["GET", "POST"]) expect((await call(null, m, p, { body: m === "POST" ? {} : undefined, headers: origin })).status, `${m} ${p}`).toBe(404);
     expect((await call(null, "POST", "/auth/login", { body: { username: "a", password: "b" } })).status).toBe(404); // login is a GET redirect to the identity provider only
-    const ddl = (f.db.$client.prepare("select sql from sqlite_master where sql is not null").all() as { sql: string }[]).map((r) => r.sql).join("\n").toLowerCase();
-    expect(ddl).not.toMatch(/password|credential|recovery|totp/);
+    expect((await call(f.u.admin, "POST", "/admin/users", { body: { name: "X", username: "xx" } })).status).toBe(400);
+    expect((await call(f.u.front, "POST", "/me/password", { body: { current: "a", next: "b" } })).status).toBe(404);
+    expect(f.db.select().from(schema.localCredentials).all()).toEqual([]);
   });
   it("rejects cookie-authenticated writes without the CSRF token or from another origin", async () => {
     expect((await call(f.u.admin, "PUT", "/preferences", { body: { key: "theme", value: "dark" }, csrf: false })).data.error).toBe("bad_csrf_token");

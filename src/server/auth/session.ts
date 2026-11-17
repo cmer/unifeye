@@ -8,9 +8,11 @@ export type SessionRow = typeof schema.sessions.$inferSelect;
 export const SESSION_COOKIE = "unifeye_session";
 
 /**
- * Server-managed sessions for SSO identities. The cookie holds an opaque random token; only its
+ * Server-managed sessions for every sign-in method. The cookie holds an opaque random token; only its
  * SHA-256 is stored. A session is usable only while: not revoked, inside its idle and absolute
- * lifetimes, its user is active, and it was re-validated with the identity provider recently enough.
+ * lifetimes, its user is active (which includes their sign-in method being on), and it was
+ * re-validated recently enough: with the identity provider for `oidc` sessions that hold a refresh
+ * token, or by a request carrying a valid Cloudflare Access token for `cloudflare` sessions.
  */
 export class Sessions {
   private ended = new Set<() => void>();
@@ -28,9 +30,13 @@ export class Sessions {
   private state(s: SessionRow | undefined, t = Date.now()): "live" | "gone" | "expired" | "user_inactive" | "suspended" {
     if (!s || s.revokedAt) return "gone";
     if (t >= s.idleExpiresAt || t >= s.absoluteExpiresAt) return "expired";
-    if (!this.policy.activeUser(s.userId)) return "user_inactive";
+    const u = this.policy.activeUser(s.userId);
+    if (!u) return "user_inactive";
     // Provider re-validation overdue (provider unreachable for too long): suspend, do not extend.
     if (s.refreshTokenEnc && t - s.lastValidatedAt > config().OIDC_MAX_STALE_SECONDS * 1000) return "suspended";
+    // Cloudflare: no request with a valid Access token for too long, so Cloudflare may have stopped
+    // letting this person through. Suspend; the next request through Cloudflare signs in again.
+    if (u.authMethod === "cloudflare" && t - s.lastValidatedAt > config().CF_ACCESS_RECHECK_SECONDS * 1000) return "suspended";
     return "live";
   }
 
@@ -57,14 +63,17 @@ export class Sessions {
   load(token: string | undefined, touch = true): SessionRow | undefined {
     if (!token) return;
     const s = this.db.select().from(schema.sessions).where(eq(schema.sessions.tokenHash, hashToken(token))).get();
-    const c = config(), t = Date.now(), state = this.state(s, t);
+    const t = Date.now(), state = this.state(s, t);
     if (!s || state === "gone" || state === "suspended") return;
     if (state !== "live") return void this.revoke(s.id, state);
-    if (touch && t - s.lastSeenAt > 60_000) {
-      const idle = Math.min(t + c.SESSION_IDLE_MINUTES * 6e4, s.absoluteExpiresAt);
-      this.db.update(schema.sessions).set({ lastSeenAt: t, idleExpiresAt: idle }).where(eq(schema.sessions.id, s.id)).run();
-    }
+    if (touch) this.touch(s, t);
     return s;
+  }
+  /** Extends the idle limit after the session has been accepted for a request. */
+  touch(s: SessionRow, t = Date.now()) {
+    if (t - s.lastSeenAt <= 60_000) return;
+    const idle = Math.min(t + config().SESSION_IDLE_MINUTES * 6e4, s.absoluteExpiresAt);
+    this.db.update(schema.sessions).set({ lastSeenAt: t, idleExpiresAt: idle }).where(eq(schema.sessions.id, s.id)).run();
   }
 
   byId(id: string) {
@@ -85,11 +94,16 @@ export class Sessions {
     if (n) this.notifyEnded();
     return n;
   }
+  revokeWhere(where: SQL, reason: string) { return this.end(where, reason); }
   revoke(id: string, reason: string) { return this.end(eq(schema.sessions.id, id), reason); }
   revokeUser(userId: string, reason: string) { return this.end(eq(schema.sessions.userId, userId), reason); }
   revokeBySid(sid: string, reason: string) { return this.end(eq(schema.sessions.providerSid, sid), reason); }
   revokeAll(reason: string) { return this.end(eq(schema.sessions.id, schema.sessions.id), reason); }
 
+  /** Revokes the session a cookie names, whatever its state. Used when a sign-in replaces it. */
+  revokeToken(token: string | undefined, reason: string) {
+    return token ? this.end(eq(schema.sessions.tokenHash, hashToken(token)), reason) : 0;
+  }
   markValidated(id: string, refreshToken?: string) {
     const c = config();
     this.db.update(schema.sessions).set({ lastValidatedAt: Date.now(), ...(refreshToken && c.TOKEN_ENC_KEY ? { refreshTokenEnc: encrypt(refreshToken, c.TOKEN_ENC_KEY) } : {}) }).where(eq(schema.sessions.id, id)).run();
