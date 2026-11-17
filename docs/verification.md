@@ -21,8 +21,11 @@ should be assumed to work.
 
 **Automated tests (`pnpm test`, 127 tests):**
 
-The media tests run against an in-memory relay that asks the real auth hook before admitting a
-reader. They show what the gateway decides, not how MediaMTX behaves.
+The media tests run against an in-memory relay that asks the gateway (`Media.admit`) before
+admitting a reader. They show what the gateway decides, not how MediaMTX behaves. How the MediaMTX
+auth hook is answered (the hook secret, the control API, MediaMTX's own FFmpeg on loopback and its
+`_src` paths, other protocols refused, viewers handed to the gateway) is pinned separately in
+`tests/mediamtx.test.ts`.
 
 - Permissions: deny by default, individual and group grants, overlapping groups, disabled users,
   group removal, grant revocation, cache invalidation, new cameras ungranted, rename and missing

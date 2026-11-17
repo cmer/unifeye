@@ -67,7 +67,7 @@ These are the rules most likely to be broken by an innocent-looking change:
 
 ### Media
 
-The browser never talks to MediaMTX for authorization. A Unifeye route checks the camera, then issues a short-lived ticket; MediaMTX calls back for every reader on a separate internal port (`HOOK_PORT`, 3001, served by `src/server/media/hook-server.ts`, never published or proxied), and the gateway (`src/server/media/gateway.ts`) answers. HLS is proxied entirely through Unifeye so each playlist and segment is re-authorized. The gateway sweeps admitted readers on every access signal and on a timer, and kicks any reader it does not know. After a restart it kicks everyone (fail closed).
+The browser never talks to MediaMTX for authorization. A Unifeye route checks the camera, then issues a short-lived ticket; MediaMTX calls back for every reader on a separate internal port (`HOOK_PORT`, 3001, served by `src/server/media/hook-server.ts`, never published or proxied). `authorizeHook` in `mediamtx.ts` answers MediaMTX's own traffic and hands each viewer to the gateway (`Media.admit` in `src/server/media/gateway.ts`), which decides. Keep MediaMTX names (usernames, `_src` paths, hook fields) out of the gateway. HLS is proxied entirely through Unifeye so each playlist and segment is re-authorized. The gateway sweeps admitted readers on every access signal and on a timer, and kicks any reader it does not know. After a restart it kicks everyone (fail closed).
 
 ### Database
 

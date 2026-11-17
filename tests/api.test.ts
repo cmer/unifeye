@@ -331,7 +331,7 @@ describe("clip exports made during See as staff", () => {
   });
 });
 
-// The relay here is the in-memory one from the fixture. It asks the real auth hook before admitting any reader.
+// The relay here is the in-memory one from the fixture. It asks the gateway (`Media.admit`) before admitting any reader.
 describe("media tickets and active-stream revocation", () => {
   const whep = (userId: string, camera: string, q = "") => call(userId, "POST", `/media/live/${f.cam[camera]}/whep${q}`, { raw: "v=0 offer" });
   const hls = (userId: string | null, camera: string, file: string) => call(userId, "GET", `/media/live/${f.cam[camera]}/hls/wall/${file}`);
@@ -343,23 +343,11 @@ describe("media tickets and active-stream revocation", () => {
     expect(r.status).toBe(201); expect(r.res.headers.get("location")).toMatch(/^\/api\/media\/live\/whep\//);
     expect(await r.res.text()).toBe("v=0 answer");
     expect(f.relay.tickets).toHaveLength(1);
-    const hook = (b: object, secret = "hook") => f.s.media.hook(secret, { action: "read", protocol: "webrtc", id: "mtx-x", ip: "203.0.113.9", ...b });
-    expect(hook({ path: `c_${cam}_wall`, token: f.relay.tickets[0] })).toBe(false); // single use: replay by anyone fails
-    expect(hook({ path: `c_${cam}_wall`, token: "guess" })).toBe(false);
-    expect(hook({ path: `c_${cam}_wall`, token: "" })).toBe(false); // direct, unauthenticated access to MediaMTX
-    expect(f.s.media.hook("hook", { action: "read", protocol: "rtsp", path: `c_${cam}_wall`, id: "r1" })).toBe(false); // raw RTSP readers are never allowed
-    expect(f.s.media.hook("wrong", { action: "api", user: "unifeye-api", password: "api" })).toBe(false);
-    expect(f.s.media.hook("hook", { action: "api", user: "unifeye-api", password: "api" })).toBe(true);
-    expect(f.s.media.hook("hook", { action: "publish", user: "unifeye-publisher", password: "api", ip: "203.0.113.9" })).toBe(false);
-    // The relay's own FFmpeg, on loopback: may publish a camera path, and read only the internal `_src` path over RTSP.
-    const relayHook = (b: object) => f.s.media.hook("hook", { user: "unifeye-publisher", password: "api", ip: "127.0.0.1", ...b });
-    expect(relayHook({ action: "publish", path: `c_${cam}_wall` })).toBe(true);
-    expect(relayHook({ action: "publish", path: `c_${cam}_wall_src` })).toBe(false);
-    expect(relayHook({ action: "read", protocol: "rtsp", path: `c_${cam}_wall_src` })).toBe(true);
-    expect(relayHook({ action: "read", protocol: "rtsp", path: `c_${cam}_wall` })).toBe(false);
-    expect(relayHook({ action: "read", protocol: "rtsp", path: `c_${cam}_wall_src`, password: "wrong" })).toBe(false);
-    expect(relayHook({ action: "read", protocol: "rtsp", path: `c_${cam}_wall_src`, ip: "203.0.113.9" })).toBe(false);
-    expect(relayHook({ action: "read", protocol: "webrtc", path: `c_${cam}_wall_src`, id: "r2" })).toBe(false); // browsers need a ticket, and none names `_src`
+    const admit = (o: { stream?: string; ticket: string; kind?: "webrtc" | "hls" }) => f.s.media.admit({ kind: "webrtc", stream: `c_${cam}_wall`, id: "mtx-x", ...o });
+    expect(admit({ ticket: f.relay.tickets[0] })).toBe(false); // single use: replay by anyone fails
+    expect(admit({ ticket: "guess" })).toBe(false);
+    expect(admit({ ticket: "" })).toBe(false); // direct, unauthenticated access to the relay
+    // How MediaMTX's own traffic and other protocols are answered is pinned in tests/mediamtx.test.ts.
     // The WHEP resource belongs to the session that created it.
     const secret = r.res.headers.get("location")!.split("/").pop();
     expect((await call(f.u.sec, "DELETE", `/media/live/whep/${secret}`)).status).toBe(404);
@@ -448,8 +436,8 @@ describe("media tickets and active-stream revocation", () => {
     expect((await hls(f.u.front, "Front Entrance", "missing.mp4")).status).toBe(404);
     // An HLS ticket is bound to its transport and path, and nobody else gets in on this reader.
     const cam = f.cam["Front Entrance"], ticket = f.relay.tickets[0];
-    expect(f.s.media.hook("hook", { action: "read", protocol: "webrtc", path: `c_${cam}_wall`, token: ticket, id: "x" })).toBe(false);
-    expect(f.s.media.hook("hook", { action: "read", protocol: "hls", path: `c_${cam}_focus`, token: ticket, id: "x" })).toBe(false);
+    expect(f.s.media.admit({ kind: "webrtc", stream: `c_${cam}_wall`, ticket, id: "x" })).toBe(false);
+    expect(f.s.media.admit({ kind: "hls", stream: `c_${cam}_focus`, ticket, id: "x" })).toBe(false);
     expect((await hls(null, "Front Entrance", "seg1.mp4")).status).toBe(401);
     expect((await hls(f.u.nobody, "Front Entrance", "seg1.mp4")).status).toBe(404);
     expect(f.relay.ids("hls")).toHaveLength(1);

@@ -1,12 +1,40 @@
 import { createHash } from "node:crypto";
 import { config } from "../config";
 import type { LiveSource } from "../protect/types";
-import { RelayUnavailable, type HlsFile, type HlsReader, type ReaderKind, type Relay, type WhepAnswer } from "./relay";
+import { safeEqual } from "../util";
+import { RelayUnavailable, type HlsFile, type HlsReader, type ReaderKind, type ReaderRequest, type Relay, type WhepAnswer } from "./relay";
 
 export const MTX_API_USER = "unifeye-api";
 export const MTX_PUBLISH_USER = "unifeye-publisher";
 /** Suffix of the internal path a retimed stream is pulled into. Only the retiming FFmpeg reads it. */
 export const SRC_SUFFIX = "_src";
+
+/** What MediaMTX sends its HTTP auth hook (`authHTTPAddress`) for every publish, read and API action. */
+export interface HookBody { user?: string; password?: string; token?: string; ip?: string; action?: string; path?: string; protocol?: string; id?: string; query?: string }
+
+const isInternal = (ip = "") => /^(127\.|::1$|::ffff:127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|fd|fc)/.test(ip);
+
+/**
+ * Answers MediaMTX's auth hook. `secret` is the one in the hook URL. MediaMTX's own traffic is
+ * decided here: its control API (`MTX_API_USER`), and the FFmpeg it runs on loopback
+ * (`MTX_PUBLISH_USER`), which may publish a camera path and read only the internal `_src` path over
+ * RTSP. A viewer reading over WebRTC or HLS is handed to `admit` in relay-neutral terms. Everything
+ * else (other RTSP readers, RTMP, SRT, playback, metrics) is refused.
+ */
+export function authorizeHook(secret: string | null, b: HookBody, admit: (r: ReaderRequest) => boolean): boolean {
+  const c = config();
+  if (!c.MEDIAMTX_HOOK_SECRET || !secret || !safeEqual(secret, c.MEDIAMTX_HOOK_SECRET)) return false;
+  const api = c.MEDIAMTX_API_SECRET ?? "";
+  if (b.action === "api") return b.user === MTX_API_USER && !!api && safeEqual(b.password ?? "", api);
+  const relay = b.user === MTX_PUBLISH_USER && !!api && safeEqual(b.password ?? "", api) && isInternal(b.ip);
+  // The relay's own FFmpeg: the mock test streams, and real cameras whose audio is retimed.
+  if (b.action === "publish") return relay && !(b.path ?? "").endsWith(SRC_SUFFIX);
+  // That FFmpeg reads the camera from the internal `_src` path over RTSP. Nobody else reads RTSP.
+  if (b.action === "read" && b.protocol === "rtsp") return relay && (b.path ?? "").endsWith(SRC_SUFFIX);
+  if (b.action !== "read" || (b.protocol !== "webrtc" && b.protocol !== "hls") || !b.id || !b.path) return false;
+  // Browsers send the ticket as a Bearer token; MediaMTX passes it as `token`, or as `password` for basic auth.
+  return admit({ kind: b.protocol, stream: b.path, ticket: b.token || b.password || "", id: b.id });
+}
 
 /**
  * The FFmpeg that MediaMTX runs to publish `<name>` from `<name>_src`. `$RTSP_PORT` and `$MTX_PATH`
@@ -32,7 +60,7 @@ function retimeCommand(name: string) {
 /**
  * The MediaMTX relay: its control API (v3), its WHEP listener and its HLS listener. This file is
  * the only place that knows MediaMTX's URL shapes, the Bearer-ticket convention, the WHEP
- * `location` format and the HLS cookie and redirect mechanics. MediaMTX is never reachable from
+ * `location` format, the HLS cookie and redirect mechanics, and its auth hook (`authorizeHook`). MediaMTX is never reachable from
  * browsers: these listeners stay on the internal network, and every reader is authorized by
  * Unifeye through the HTTP auth hook. Only the WebRTC media port (ICE) is published.
  *

@@ -1,5 +1,4 @@
-import type { HookBody } from "../media/gateway";
-import { RelayUnavailable, type HlsFile, type HlsReader, type ReaderKind, type Relay, type WhepAnswer } from "../media/relay";
+import { RelayUnavailable, type HlsFile, type HlsReader, type ReaderKind, type ReaderRequest, type Relay, type WhepAnswer } from "../media/relay";
 import type { LiveSource } from "../protect/types";
 
 export const HLS_PLAYLIST = "#EXTM3U\n#EXT-X-VERSION:9\n#EXT-X-TARGETDURATION:2\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:2.0,\nseg1.mp4\n";
@@ -7,13 +6,13 @@ export const HLS_SEGMENT = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
 
 /**
  * An in-memory media relay for tests. It behaves like MediaMTX as far as Unifeye can observe:
- *  - it admits no reader on its own: every WHEP offer and every HLS request asks the auth hook
- *    (the function behind the hook listener, `hook-server.ts`) with the ticket it was given, and refuses
- *    when the hook refuses;
+ *  - it admits no reader on its own: every WHEP offer and every HLS request asks `Media.admit`
+ *    with the ticket it was given, and refuses when that refuses;
  *  - admitted readers are sessions with ids, which `readers` lists and `kick` removes;
  *  - a stream must have been set up before anyone can read it;
  *  - it can be down, and it can forget everything like a restarted relay.
- * It has no cookies or redirects: those are MediaMTX mechanics that live inside the MediaMTX adapter.
+ * It has no cookies, redirects, auth-hook bodies or internal publishers: those are MediaMTX mechanics
+ * that live inside the MediaMTX adapter.
  */
 export class MemoryRelay implements Relay {
   /** Simulates an unreachable relay. */
@@ -24,12 +23,12 @@ export class MemoryRelay implements Relay {
   /** Every reader id kicked, in order. */
   readonly kicked: string[] = [];
   private sessions = new Map<string, { kind: ReaderKind; stream: string; resource?: string }>();
-  private hook: (body: HookBody) => boolean = () => false;
+  private admitReader: (r: ReaderRequest) => boolean = () => false;
   private seq = 0;
   private held: Promise<void> | null = null;
 
-  /** Where the relay sends its auth requests. Until this is called, every reader is refused. */
-  connect(hook: (body: HookBody) => boolean) { this.hook = hook; }
+  /** Who decides whether a reader may read. Until this is called, every reader is refused. */
+  connect(admit: (r: ReaderRequest) => boolean) { this.admitReader = admit; }
 
   // ---- test controls ----
   /** Ids of attached readers of one kind, oldest first. */
@@ -44,7 +43,7 @@ export class MemoryRelay implements Relay {
   private up() { if (this.down) throw new RelayUnavailable(); }
   private admit(kind: ReaderKind, stream: string, ticket: string, id: string) {
     this.tickets.push(ticket);
-    return this.hook({ action: "read", protocol: kind, path: stream, token: ticket, id, ip: "10.0.0.5" });
+    return this.admitReader({ kind, stream, ticket, id });
   }
 
   // ---- Relay ----

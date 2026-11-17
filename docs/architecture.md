@@ -393,21 +393,27 @@ keeps the decisions:
 | Which paths are already configured | MediaMTX adapter | Saves a control API call per request. |
 
 The adapter (`src/server/media/mediamtx.ts`) is the only file that knows MediaMTX's URLs, the
-Bearer-ticket convention and the WHEP `location` format. Its cache of configured paths is dropped
+Bearer-ticket convention, the WHEP `location` format, and the auth hook's body, usernames and
+internal `_src` paths. Its cache of configured paths is dropped
 when MediaMTX may have restarted: all of it when a request cannot connect or the health check
 fails, one stream when MediaMTX answers 404 to a WHEP offer or an HLS playlist for it. The path is
 then configured again the next time a ticket is issued for it, at most 25 seconds later for HLS.
 
-The other direction, MediaMTX asking the hook, is not part of the interface: it arrives at
-`POST /mediamtx-auth` on a separate listener (`src/server/media/hook-server.ts`, `HOOK_HOST` and
-`HOOK_PORT`, 3001 by default) and is answered by the gateway. The hook is not served on the web
+In the other direction, the relay asks the gateway before admitting a viewer, as a relay-neutral
+`ReaderRequest` (reader kind, stream, ticket, reader id) answered by `Media.admit`. MediaMTX asks
+through its auth hook, which arrives at `POST /mediamtx-auth` on a separate listener
+(`src/server/media/hook-server.ts`, `HOOK_HOST` and `HOOK_PORT`, 3001 by default).
+`authorizeHook` in the MediaMTX adapter checks the hook secret, answers MediaMTX's own traffic (its
+control API, and the FFmpeg it runs on loopback, which may publish a camera path and read only its
+internal `_src` path over RTSP), refuses every other protocol and action, and hands viewers reading
+over WebRTC or HLS to the gateway. The hook is not served on the web
 port at all, so it cannot be reached through whatever reverse proxy or tunnel is in front of
 Unifeye; the hook port is never published. Every call must still carry `MEDIAMTX_HOOK_SECRET`.
 Production refuses to start unless both MediaMTX secrets are at least 32 characters. If the hook
 port cannot be opened, start-up aborts, since no video could play without it.
 
 Tests use an in-memory relay (`src/server/testing/relay.ts`). It admits no reader without asking
-the same hook, tracks readers so listing and kicking work, and can be switched to unreachable. It
+`Media.admit`, tracks readers so listing and kicking work, and can be switched to unreachable. It
 is a model of what Unifeye can observe, not of MediaMTX itself.
 
 ## "See as staff"

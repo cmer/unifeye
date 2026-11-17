@@ -1,17 +1,22 @@
 import type { LiveSource } from "../protect/types";
 
 /**
- * Everything Unifeye says to the media relay. `Media` (gateway.ts) decides who may watch what and
+ * Everything Unifeye says to the media relay, and what it hears back. `Media` (gateway.ts) decides who may watch what and
  * owns tickets, grants and the sweep; a relay only carries those decisions out. The production
  * adapter is MediaMTX (mediamtx.ts); tests use the in-memory one (testing/relay.ts).
  *
- * The other direction is not part of this interface: the relay asks `Media.hook()` before it
- * admits any reader, and the reader id it reports there is the id used by `readers` and `kick`.
+ * The other direction: before admitting any reader, the relay asks `Media.admit()` with a
+ * `ReaderRequest`, and the reader id in it is the id used by `readers` and `kick`. How a relay
+ * receives that question, and how it recognises its own internal traffic (for MediaMTX, the auth
+ * hook's body, its usernames and internal paths), stays inside the adapter.
  *
  * A `stream` is the relay-side name of one camera at one quality; `Media` chooses the names.
  * Every method except `healthy` and `kick` throws `RelayUnavailable` when the relay cannot be reached.
  */
 export type ReaderKind = "webrtc" | "hls";
+
+/** A viewer asking the relay to read `stream` with `ticket`. `id` is the relay's reader id. */
+export interface ReaderRequest { kind: ReaderKind; stream: string; ticket: string; id: string }
 
 export class RelayUnavailable extends Error {
   constructor() { super("media relay unavailable"); }
