@@ -338,7 +338,17 @@ A clip longer than five minutes is therefore exported in five-minute pieces,
 `CLIP_EXPORT_PARALLEL` at a time (default 3), and joined with an FFmpeg stream copy
 (`exportPieces` in `src/server/media/recordings.ts`). Each piece starts on the keyframe before its
 start, so the overlap is cut from the end of the piece before it, using the same lead calculation as
-playback windows. A piece with nothing recorded is left out. The job reports the share of pieces
+playback windows. A piece with nothing recorded is left out.
+
+The recorder can fail an export without meaning "nothing recorded": the UniFi adapter reports a 5xx,
+408 or 429 answer as `RecorderBusyError` and keeps 404, other refusals and near-empty bodies as
+`NoRecordingError`. A clip piece whose export fails for any reason other than "nothing recorded" is
+tried twice more, after 10 s and then 30 s (`exportRetrying`); playback windows are not retried. A
+piece the recorder still fails is left out rather than failing the whole clip, and a clip where no
+piece could be exported fails with "The recorder is busy". When the job finishes, the clip's real
+length is stored (`duration_ms`). If it is at least 5 s (or 1%) shorter than asked, `gap` says why:
+`busy` when a piece was lost to recorder failures, otherwise `unrecorded`. The dialog then shows the
+real length and says that part of the time is missing. The job reports the share of pieces
 done, and the status route adds a rough time left (average piece time, times the pieces left, divided
 by the parallel count). When the job is ready the browser starts the download on its own, and the
 dialog stays open with a way to download it again.

@@ -58,6 +58,17 @@ export interface EventQuery {
 }
 export class ProtectUnavailableError extends Error {}
 export class NoRecordingError extends Error { override name = "NoRecordingError"; }
+/**
+ * The recorder answered an export with a server error, a timeout or "too many requests" (`status`).
+ * Unlike NoRecordingError, this says nothing about what was recorded, so it is worth trying again.
+ */
+export class RecorderBusyError extends ProtectUnavailableError {
+  override name = "RecorderBusyError";
+  constructor(readonly status: number) { super(`recorder answered ${status}`); }
+}
+// Matched by name as well, because the server bundles these modules more than once.
+export const isNoRecording = (e: unknown) => e instanceof NoRecordingError || (e as Error)?.name === "NoRecordingError";
+export const isRecorderBusy = (e: unknown) => e instanceof RecorderBusyError || (e as Error)?.name === "RecorderBusyError";
 
 export interface ProtectAdapter {
   readonly mode: "mock" | "real";

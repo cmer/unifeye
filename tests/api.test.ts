@@ -228,6 +228,62 @@ describe("long clip exports", () => {
   }, 120_000);
 });
 
+describe("clip exports when the recorder fails part of the clip", () => {
+  const setup = async () => {
+    const cam = f.cam["Loading Dock"], t = Date.now() - 2 * 3600e3;
+    const rec = (await call(f.u.front, "GET", `/cameras/${cam}/recordings?from=${t - 3600e3}&to=${t}`)).data.ranges as [number, number][];
+    const [, b] = rec.find(([x, y]) => y - x >= 12 * 60_000)!, startMs = b - 11 * 60_000, endMs = b - 30_000;
+    f.s.recordings.retryDelaysMs = [10, 10];
+    const real = f.adapter.exportClip.bind(f.adapter), types = await import("@/server/protect/types");
+    return { cam, startMs, endMs, middle: startMs + 5 * 60_000, real, types };
+  };
+  const run = async (cam: string, startMs: number, endMs: number) => {
+    const { id } = (await call(f.u.front, "POST", "/exports", { body: { cameraId: cam, startMs, endMs } })).data;
+    await wait(async () => (await call(f.u.front, "GET", `/exports/${id}`)).data.status !== "running", 90_000);
+    const j = (await call(f.u.front, "GET", `/exports/${id}`)).data;
+    const file = f.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, id)).get()!.filePath!;
+    return { j, file };
+  };
+
+  it("tries a piece again and keeps all of it when the recorder recovers", async () => {
+    const { cam, startMs, endMs, middle, real, types } = await setup();
+    let fails = 2;
+    vi.spyOn(f.adapter, "exportClip").mockImplementation((id, s0, e0, dest, o) => s0 === middle && fails > 0 ? (fails--, Promise.reject(new types.RecorderBusyError(503))) : real(id, s0, e0, dest, o));
+    const { j, file } = await run(cam, startMs, endMs);
+    expect(fails).toBe(0);
+    expect(j.status).toBe("ready"); expect(j.gap).toBeNull();
+    expect(j.durationMs / 1000).toBeCloseTo((endMs - startMs) / 1000, 0);
+    const { probe } = await import("@/server/protect/ffmpeg");
+    expect((await probe(file)).duration).toBeCloseTo((endMs - startMs) / 1000, 0);
+  }, 120_000);
+
+  it("says time is missing because the recorder was busy when a piece keeps failing", async () => {
+    const { cam, startMs, endMs, middle, real, types } = await setup();
+    let tries = 0;
+    vi.spyOn(f.adapter, "exportClip").mockImplementation((id, s0, e0, dest, o) => s0 === middle ? (tries++, Promise.reject(new types.RecorderBusyError(500))) : real(id, s0, e0, dest, o));
+    const { j } = await run(cam, startMs, endMs);
+    expect(tries).toBe(6); // three tries on the high channel, then three on the low one
+    expect(j.status).toBe("ready"); expect(j.gap).toBe("busy");
+    expect(j.durationMs / 1000).toBeCloseTo((endMs - startMs - 5 * 60_000) / 1000, 0);
+  }, 120_000);
+
+  it("says time wasn't recorded when the recorder has nothing for a piece, without retrying", async () => {
+    const { cam, startMs, endMs, middle, real, types } = await setup();
+    let tries = 0;
+    vi.spyOn(f.adapter, "exportClip").mockImplementation((id, s0, e0, dest, o) => s0 === middle ? (tries++, Promise.reject(new types.NoRecordingError())) : real(id, s0, e0, dest, o));
+    const { j } = await run(cam, startMs, endMs);
+    expect(tries).toBe(2); // once per channel
+    expect(j.status).toBe("ready"); expect(j.gap).toBe("unrecorded");
+  }, 120_000);
+
+  it("fails with a busy message when no piece could be exported", async () => {
+    const { cam, startMs, endMs, types } = await setup();
+    vi.spyOn(f.adapter, "exportClip").mockImplementation(() => Promise.reject(new types.RecorderBusyError(503)));
+    const { j } = await run(cam, startMs, endMs);
+    expect(j.status).toBe("failed"); expect(j.error).toBe("The recorder is busy. Try again in a few minutes.");
+  }, 60_000);
+});
+
 describe("clip exports made during See as staff", () => {
   it("are refused and cleaned up once that preview ends, even through another live preview of the same person", async () => {
     const cam = f.cam["Loading Dock"], t = Date.now() - 2 * 3600e3;

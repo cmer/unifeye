@@ -90,8 +90,15 @@ reader. They show what the gateway decides, not how MediaMTX behaves.
   five-minute 2688x1512 piece took about 1 s.
 - UniFi export streaming, against a mocked recorder (undici `MockAgent`, `tests/unifi-export.test.ts`):
   the separate sign-in (root CSRF token, login, `TOKEN` cookie), the body streamed to disk, one
-  re-sign-in after a 401, and refusals or tiny bodies reported as nothing recorded. This pins what
-  Unifeye sends, not what a real UNVR answers.
+  re-sign-in after a 401, refusals or tiny bodies reported as nothing recorded, and 500, 503, 429 and
+  408 answers reported as busy without marking the recorder down. This pins what Unifeye sends, not
+  what a real UNVR answers.
+- Recorder failures during a long clip (`tests/api.test.ts`, "clip exports when the recorder fails
+  part of the clip", mock mode): a piece that fails twice as busy and then succeeds is kept, and the
+  clip comes out the full length with no warning. A piece that keeps failing is tried three times
+  per channel, left out, and the clip is marked `busy` with its real (five minutes shorter) length.
+  A piece with nothing recorded is not retried and is marked `unrecorded`. A clip where every piece
+  fails ends with "The recorder is busy. Try again in a few minutes."
 - Preview: subject's permissions on data and media, administrator stays the actor, all mutations and
   admin routes blocked, forged, foreign and expired contexts rejected, two tabs kept apart, both
   identities audited, subject's profile untouched.
@@ -195,7 +202,7 @@ since the move.
 | Sound from a real UNVR in Unifeye end to end | The retiming relay was checked outside Unifeye only (see Verified) | HLS sound, wall-quality streams, other camera models; recordings from Protect may lack audio |
 | Sound in Safari and Firefox | Only Chromium was used | "No audio" shown wrongly, or the speaker missing; no level meter in Safari for HLS and recordings |
 | Clip export in the browser | Checked by hand in Chromium with mock cameras: zooming and panning the clip timeline, and a 2-hour clip (prepared in about 2.5 minutes, 7200 s long). Long clips in pieces (mock mode, headless Chromium): a 21-minute clip showed the sweep, then 57% and 76% with a time left, then "Putting the pieces together", started its download by itself and came out 1260.0 s long | Not checked on a phone or with touch |
-| Long clips from a real UNVR | One 1 h 55 min clip from one camera with adaptive recording (see Verified); fourteen of its pieces joined outside Unifeye after the fix | How long Protect takes before sending the first byte of an hour-long export (Unifeye waits up to 15 minutes), whether it caps export length, the disk space a clip needs, whether exporting pieces in parallel is faster than one long export on your recorder, and whether the joins between pieces are seamless on real camera streams |
+| Long clips from a real UNVR | One 1 h 55 min clip from one camera with adaptive recording (see Verified); fourteen of its pieces joined outside Unifeye after the fix. A 2 h clip from the same camera, saved before adaptive pieces were combined, came out 1 h 17 min: the burned-in clock showed 15 fps throughout but skipped between motion stretches, and about four minutes of low-resolution night footage were missing too | How long Protect takes before sending the first byte of an hour-long export (Unifeye waits up to 15 minutes), whether it caps export length, the disk space a clip needs, whether exporting pieces in parallel is faster than one long export on your recorder, whether the joins between pieces are seamless on real camera streams, and which status a real UNVR answers when it is overloaded or has nothing recorded (a 5xx for "nothing recorded" would be retried, then reported as busy) |
 | Clip resizing on a GPU in Linux (VAAPI with Intel Quick Sync or AMD, NVENC) | No such GPU available; only "no device, so the CPU" was checked | The driver rejects the settings and every clip resizes on the CPU (logged at start-up of the first clip), or a driver encodes at a quality that looks worse |
 | Clip resizing and combining with real adaptive recordings | Synthetic files and mock mode only | Real low-resolution pieces that are not 4:3 or change size in a way the keyframe scan misses; players that still resize on a real joined file; file size; whether Protect's channel 0 export of a piece with no motion is low resolution, empty or an error (each case is handled, but only the mock was seen); how long combining takes on a small server |
 | Activity live updates in the browser | Checked through the API tests only | UI wiring |

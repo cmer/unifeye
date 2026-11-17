@@ -46,6 +46,15 @@ describe("UniFi clip export", () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it("reports a server error, timeout or overload as busy rather than nothing recorded", async () => {
+    signIn();
+    const pool = agent.get(ORIGIN);
+    for (const [s, code] of [[1000, 500], [3000, 503], [5000, 429], [7000, 408]]) pool.intercept({ path: exportPath(s, s + 1000), method: "GET" }).reply(code, "");
+    for (const s of [1000, 3000, 5000, 7000]) await expect(adapter.exportClip("cam1", s, s + 1000, join(dir, `busy${s}.mp4`), { quality: "focus" })).rejects.toMatchObject({ name: "RecorderBusyError" });
+    expect(adapter.health().state).not.toBe("down"); // a busy recorder is still reachable
+    agent.assertNoPendingInterceptors();
+  });
+
   it("reports nothing recorded for a refusal or an empty clip, and a failed sign-in as unavailable", async () => {
     signIn();
     const pool = agent.get(ORIGIN);

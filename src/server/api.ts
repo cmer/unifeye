@@ -241,7 +241,7 @@ route("GET", "/events/:id", {}, async ({ s, actor, p }) => (await s.events.get(a
 route("GET", "/events/:id/thumbnail", { rate: "media" }, async ({ s, actor, p, req }) => new Response(new Uint8Array(await s.events.thumbnail(actor, p.id, req.signal)), { headers: { "content-type": "image/jpeg", "cache-control": "private, no-store" } }));
 
 // ---- clip export -----------------------------------------------------------------
-const jobDto = (j: { id: string; status: string; progress: number; error: string | null; expiresAt: number }) => ({ id: j.id, status: j.status, progress: j.progress, error: j.error, expiresAt: j.expiresAt });
+const jobDto = (j: { id: string; status: string; progress: number; error: string | null; durationMs: number | null; gap: string | null; expiresAt: number }) => ({ id: j.id, status: j.status, progress: j.progress, error: j.error, durationMs: j.durationMs, gap: j.gap, expiresAt: j.expiresAt });
 route("POST", "/exports", { rate: "media" }, async ({ s, actor, json: body }) => { const b = await body<{ cameraId: string; startMs: number; endMs: number }>(); return s.recordings.createExport(actor, String(b.cameraId), Number(b.startMs), Number(b.endMs)); });
 route("GET", "/exports/:id", {}, async ({ s, actor, p }) => {
   const j = s.recordings.exportJob(actor, p.id), file = j.status === "ready" ? s.recordings.downloadPath(actor, j.id) : null;
