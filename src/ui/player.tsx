@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from "@/components/ui/popover";
 import { api, dateInput, dayBounds, EVENT_COLOR, EVENT_LABEL, fmtDay, fmtShort, fmtTime, mediaUrl, timeInput, zonedParts, zonedToUtc, type ActivityEvent, type Camera } from "./api";
 import { Empty, fail, RecMark, Select, useApp, useRecording } from "./app";
-import { LiveVideo, type Transport } from "./live";
+import { LiveVideo, type LiveInfo, type Transport, type VideoSource } from "./live";
 import type { WindowInfo as WinInfo } from "@/server/media/recordings";
 import { canHandOver, clipStartOf, offsetFor, overlayStartFor, shouldArm, stepFrame, windowStart } from "./recorded-playback";
 import { dragTrim, nearestEnd, panTrim, startTrim as newTrim, TRIM_SPAN, typeTrim as typedTrim, zoomedSpan, zoomTrim as zoomedTrim, type End, type Trim } from "./trim";
@@ -45,7 +45,7 @@ export function Player({ cameraId }: { cameraId: string }) {
   const startAt = Number(loc.query.get("t")) || 0;
   const [cam, setCam] = useState<Camera | null | "gone">(null);
   const [live, setLive] = useState(!startAt);
-  const [via, setVia] = useState<Transport | null>(null);
+  const [via, setVia] = useState<LiveInfo | null>(null);
   const [t, setT] = useState(() => startAt || Date.now());
   const [target, setTarget] = useState({ ms: startAt, n: 0 });
   const [playing, setPlaying] = useState(true);
@@ -288,7 +288,7 @@ export function Player({ cameraId }: { cameraId: string }) {
       <div className={`absolute inset-x-0 top-0 flex items-center gap-2.5 bg-gradient-to-b from-black/70 to-transparent px-4 pt-3.5 pb-10 transition-opacity ${idle ? "opacity-0" : ""}`}>
         <Button variant="ghost" size="icon" className={ghost} aria-label="Back to cameras" onClick={back}><ArrowLeft /></Button>
         <b className="truncate text-[15px] font-semibold">{cam.name}</b>
-        {live ? <LiveLabel via={via} /> : <span className="text-xs text-zinc-300">Recorded</span>}
+        {live ? <LiveLabel info={via} /> : <span className="text-xs text-zinc-300">Recorded</span>}
         <span className="flex-1" />
         {recording.has(cameraId) && <RecMark />}
         <Button variant="outline" className="border-white/30 bg-transparent text-white hover:bg-white/15 hover:text-white" onClick={() => setJump((j) => !j)}><CalendarDays />{fmtDay(t, tz)}</Button>
@@ -436,14 +436,22 @@ function ClipDialog({ name, startMs, endMs, first, onClose }: { name: string; st
 }
 
 const VIA: Record<Transport | "none", [string, string]> = {
-  webrtc: ["Real-time", "Direct connection (WebRTC). Under a second behind."],
+  webrtc: ["Real-time", "Connected with WebRTC."],
   hls: ["A few seconds behind", "Real-time isn't reachable from this network, so this uses standard streaming (HLS)."],
   none: ["Connecting", "Live video is starting."],
 };
 
+const SOURCE: Record<VideoSource, [string, string?]> = {
+  camera: ["Camera"],
+  recorder: ["Recorder"],
+  fallback: ["Recorder", "Couldn\u2019t reach the camera directly. Trying again in a few minutes."],
+};
+
 /** "Live" in the player's top bar. A ring around the dot means real-time (WebRTC); hover or tap explains. */
-function LiveLabel({ via }: { via: Transport | null }) {
+function LiveLabel({ info }: { info: LiveInfo | null }) {
+  const via = info?.via ?? null;
   const [title, text] = VIA[via ?? "none"];
+  const source = info?.source ? SOURCE[info.source] : null;
   return (
     <Popover>
       <PopoverTrigger openOnHover delay={150} aria-label={`Live: ${title}`} className="flex cursor-default items-center gap-1.5 rounded text-xs text-zinc-300 underline decoration-white/40 decoration-dotted underline-offset-[3px] outline-none focus-visible:ring-2 focus-visible:ring-white">
@@ -451,6 +459,12 @@ function LiveLabel({ via }: { via: Transport | null }) {
       </PopoverTrigger>
       <PopoverContent align="start" sideOffset={8} className="w-60">
         <PopoverHeader><PopoverTitle>{title}</PopoverTitle><PopoverDescription>{text}</PopoverDescription></PopoverHeader>
+        {source && (
+          <div className="grid gap-1 border-t pt-2.5 text-sm">
+            <div className="flex justify-between gap-3"><span className="text-muted-foreground">Source</span><span className="font-medium">{source[0]}</span></div>
+            {source[1] && <p className="text-xs text-muted-foreground">{source[1]}</p>}
+          </div>
+        )}
       </PopoverContent>
     </Popover>
   );

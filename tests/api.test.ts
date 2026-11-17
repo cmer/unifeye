@@ -681,15 +681,19 @@ describe("video straight from the camera", () => {
     const path = `c_${f.cam["Roof Terrace"]}_focus`;
     expect((await direct(f.u.admin, "Roof Terrace", { enabled: true, username: "admin", password: "secret" })).status).toBe(200);
     const src = vi.spyOn(f.adapter, "directSource").mockResolvedValue(CAM_SRC);
-    expect((await whep("Roof Terrace")).status).toBe(201);
+    const first = await whep("Roof Terrace");
+    expect(first.status).toBe(201); expect(first.res.headers.get("x-video-source")).toBe("camera");
     expect(src).toHaveBeenCalledWith("mock-08", "focus", { username: "admin", password: "secret" });
     expect(f.relay.streams.get(path)).toEqual(CAM_SRC);
     // The camera sends nothing: the attempt fails and the next one goes through the recorder.
     f.relay.whepFailsAfterAdmit = true;
     expect((await whep("Roof Terrace")).status).toBe(502);
     f.relay.whepFailsAfterAdmit = false;
-    expect((await whep("Roof Terrace")).status).toBe(201);
+    const fallback = await whep("Roof Terrace");
+    expect(fallback.status).toBe(201); expect(fallback.res.headers.get("x-video-source")).toBe("fallback");
     expect(f.relay.streams.get(path)?.kind).toBe("command");
+    const hls = await call(f.u.admin, "GET", `/media/live/${f.cam["Roof Terrace"]}/hls/focus/index.m3u8`);
+    expect(hls.status).toBe(200); expect(hls.res.headers.get("x-video-source")).toBe("fallback");
     // Saving the settings again tries the camera again.
     expect((await direct(f.u.admin, "Roof Terrace", { enabled: true })).status).toBe(200);
     expect((await whep("Roof Terrace")).status).toBe(201);
@@ -697,7 +701,8 @@ describe("video straight from the camera", () => {
     // Turned off: back to the recorder, without asking the camera.
     src.mockClear();
     expect((await direct(f.u.admin, "Roof Terrace", { enabled: false })).status).toBe(200);
-    expect((await whep("Roof Terrace")).status).toBe(201);
+    const off = await whep("Roof Terrace");
+    expect(off.status).toBe(201); expect(off.res.headers.get("x-video-source")).toBe("recorder");
     expect(src).not.toHaveBeenCalled();
     expect(f.relay.streams.get(path)?.kind).toBe("command");
   });
