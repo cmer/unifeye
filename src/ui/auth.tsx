@@ -96,7 +96,6 @@ export function SetPasswordForm() {
     if (password !== f.get("again")) return setError("The passwords don't match.");
     setBusy(true); setError(null);
     const r = await post("/auth/password-link", { token, password });
-    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
     if (r.ok) return void location.assign("/");
     setBusy(false);
     if (r.data.error === "link_expired") setInfo("gone"); else setError(message(r.data));

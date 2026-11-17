@@ -90,7 +90,7 @@ export function ManageViews() {
               ) : (
                 <div className="my-2.5 flex items-start gap-2"><span className="w-28 shrink-0 pt-1.5 text-sm text-muted-foreground">In this order</span>
                   <div className="max-w-md flex-1">
-                    {d.cameras.map((c, i) => (
+                    {d.cameras.map((c) => (
                       <div key={c.id} className="mb-1.5 flex items-center gap-2 rounded-lg border py-1 pr-1 pl-3 text-sm"><i className={`size-1.5 rounded-full ${c.missing ? "bg-zinc-400" : c.online ? "bg-green-500" : "bg-red-500"}`} /><span className="flex-1 truncate">{c.name}{c.missing && <span className="text-muted-foreground"> (removed)</span>}</span>
                         <Button variant="ghost" size="icon-sm" disabled={ro} aria-label="Move up" onClick={() => move(d.definition.cameraIds.indexOf(c.id), -1)}><ArrowUp /></Button><Button variant="ghost" size="icon-sm" disabled={ro} aria-label="Move down" onClick={() => move(d.definition.cameraIds.indexOf(c.id), 1)}><ArrowDown /></Button><Button variant="ghost" size="icon-sm" disabled={ro} aria-label="Remove" onClick={() => save({ cameraIds: d.definition.cameraIds.filter((x) => x !== c.id) })}><X /></Button></div>
                     ))}

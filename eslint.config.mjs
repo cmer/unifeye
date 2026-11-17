@@ -5,6 +5,14 @@ import nextTs from "eslint-config-next/typescript";
 const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
+  {
+    rules: {
+      // Images are signed-in snapshots served by our API; next/image cannot optimize them.
+      "@next/next/no-img-element": "off",
+      // The client app does its own routing; these are deliberate full reloads (sign-in, preview changes).
+      "@next/next/no-location-assign-relative-destination": "off",
+    },
+  },
   // Override default ignores of eslint-config-next.
   globalIgnores([
     // Default ignores of eslint-config-next:
