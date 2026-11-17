@@ -127,3 +127,7 @@ Inside the Docker container, run the same commands as `node cli.mjs <command>`, 
 - [LLM/INSTALL.md](LLM/INSTALL.md): the install guide for AI agents.
 - [prototype/protect-viewer-mockup.html](prototype/protect-viewer-mockup.html): the original
   clickable prototype. Open it in a browser. Everything in it is simulated.
+
+## License
+
+[MIT](LICENSE)
