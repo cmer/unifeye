@@ -1,27 +1,35 @@
 # syntax=docker/dockerfile:1
-FROM node:24-bookworm-slim AS deps
+# Build caches (apt downloads, the pnpm store, Next's compiler cache) live in BuildKit cache mounts:
+# they survive between builds on the same machine but never end up in an image layer.
+FROM node:24-bookworm-slim AS base
+# The base image deletes apt downloads after every install; keep them for the cache mounts below.
+RUN rm -f /etc/apt/apt.conf.d/docker-clean
+
+FROM base AS deps
 WORKDIR /app
 # better-sqlite3 compiles from source when no prebuilt binary matches this Node version.
 # The toolchain stays in the build stages; the run stage only gets the compiled module.
-RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
-  && rm -rf /var/lib/apt/lists/*
-RUN corepack enable
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked --mount=type=cache,target=/var/lib/apt,sharing=locked \
+  apt-get update && apt-get install -y --no-install-recommends python3 make g++
+ENV COREPACK_HOME=/corepack
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm-store \
+  corepack enable && pnpm install --frozen-lockfile --store-dir=/pnpm-store
 
 FROM deps AS build
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN pnpm build
+# .next/cache holds Turbopack's build cache, so an unchanged module is not compiled again.
+RUN --mount=type=cache,id=next-cache,target=/app/.next/cache pnpm build
 
-FROM node:24-bookworm-slim AS run
+FROM base AS run
 # FFmpeg probes and retimes recorded video for playback and clip exports (stream copy, plus
 # audio analysis), resizes the low-resolution stretches of adaptive clips, and generates mock mode's
 # simulated media. Live video is relayed by MediaMTX. The VAAPI drivers let that resize use an
 # Intel (Quick Sync) or AMD GPU when the host passes one in; without one, FFmpeg uses the CPU.
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates mesa-va-drivers \
-    $([ "$(dpkg --print-architecture)" = amd64 ] && echo intel-media-va-driver) \
-  && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked --mount=type=cache,target=/var/lib/apt,sharing=locked \
+  apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates mesa-va-drivers \
+    $([ "$(dpkg --print-architecture)" = amd64 ] && echo intel-media-va-driver)
 WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0 HOOK_HOST=0.0.0.0 HOOK_PORT=3001 \
     DATABASE_PATH=/data/unifeye.sqlite BACKUP_DIR=/data/backups MEDIA_CACHE_DIR=/cache MIGRATIONS_DIR=/app/drizzle

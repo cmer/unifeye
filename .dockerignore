@@ -1,9 +1,26 @@
+# Only what `pnpm build` reads goes into the build context. Anything else listed here can change
+# without invalidating the build layer.
 node_modules
 .next
 dist
 data
+tmp
+coverage
 .git
 .env*
 !.env.example
 prototype
 tests
+docs
+assets
+LLM
+.claude
+.agents
+*.md
+Dockerfile
+.dockerignore
+compose.yaml
+compose.override.yaml
+docker
+.worktreeinclude
+.local-changes-*.diff
