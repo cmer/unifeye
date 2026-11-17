@@ -434,6 +434,9 @@ begins a few seconds early. The description's `leadMs` says by how much. The pla
 wall-clock time with it, hands over to the next window when the wall-clock window ends (not when the
 file ends), and starts the next window at its own lead, so nothing is replayed or skipped at a
 handover. When the file runs out first, the old load-on-end path applies.
+These decisions, and the overlay's per-frame sync described below, live in
+`src/ui/recorded-playback.ts`; the player only wires them to its video elements. Choosing a clip's
+ends on the timeline follows the rules in `src/ui/trim.ts`.
 
 Adaptive recording (Protect records the low channel, and the high channel only around motion) needs
 two corrections. Both live in one module, `src/server/media/recorded.ts` (`fetchRecorded`), which

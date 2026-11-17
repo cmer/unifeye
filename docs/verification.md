@@ -92,6 +92,13 @@ reader. They show what the gateway decides, not how MediaMTX behaves.
   missing time" when the low channel keeps failing; which error wins when both channels fail; every
   export retimed before it is read, and kept when retiming fails; a clip piece combined into one
   file, or saved in low resolution when combining fails; the keyframe lead, capped at 10 s.
+- Recorded playback and clip choice in the player (`tests/player.test.ts`), with fake video
+  elements, no browser: where media time 0 sits (lead, first recorded moment), when the next window
+  is buffered and when it may take over, the handover at the window's end rather than the file's,
+  the overlay moved when it drifts more than 0.25 s, played, paused and sped up with the base, shown
+  only with the right frame, parked at the next stretch between stretches and never shown when
+  broken; a clip's ends dragged and typed within the length limits and never past two seconds ago,
+  and the timeline's zoom, pan and refitting. The React wiring around them is not tested.
 - Resize speed (synthetic 640x480 7 fps source, five minutes, Apple M5 Max, 4 threads): 8.5 s to
   2688x1512 with libx264 `veryfast`, 7.6 s with VideoToolbox. Reading the picture sizes of a
   five-minute 2688x1512 piece took about 1 s.
