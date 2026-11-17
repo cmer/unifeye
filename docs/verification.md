@@ -19,12 +19,13 @@ should be assumed to work.
 
 ## Verified
 
-**Automated tests (`pnpm test`, 127 tests):**
+**Automated tests (`pnpm test`, 254 tests):**
 
 The media tests run against an in-memory relay that asks the gateway (`Media.admit`) before
 admitting a reader. They show what the gateway decides, not how MediaMTX behaves. How the MediaMTX
-auth hook is answered (the hook secret, the control API, MediaMTX's own FFmpeg on loopback and its
-`_src` paths, other protocols refused, viewers handed to the gateway) is pinned separately in
+auth hook is answered (the hook secret, the control API, MediaMTX's own FFmpeg from loopback or
+private addresses and its `_src` paths, RTSP and other protocols refused, viewers handed to the
+gateway) is pinned separately in
 `tests/mediamtx.test.ts`.
 
 - Permissions: deny by default, individual and group grants, overlapping groups, disabled users,
@@ -40,8 +41,10 @@ auth hook is answered (the hook secret, the control API, MediaMTX's own FFmpeg o
   byte-for-byte the same as a missing one for snapshots, recordings, playback, live setup, HLS
   files, events and exports; event IDs and export IDs do not bypass camera checks; counts and
   "has more" reflect authorized cameras only.
-- Media tickets: single use, bound to path and transport, refused without the hook secret, RTSP
-  readers refused, WHEP resource tied to its session; active sessions kicked on grant removal,
+- Media tickets: single use, bound to path and transport, WHEP resource tied to its session; through
+  the hook listener with the real gateway (`tests/hook-server.test.ts`), a viewer admitted with an
+  issued ticket and refused with the wrong secret, ticket, stream or transport, and MediaMTX's own
+  login refused as a viewer; active sessions kicked on grant removal,
   account disablement and session revocation; unknown readers kicked on both transports; a
   revocation arriving during a sweep is swept straight after it; a sweep with nothing revoked kicks
   nobody.
@@ -92,9 +95,12 @@ auth hook is answered (the hook secret, the control API, MediaMTX's own FFmpeg o
   operations, no FFmpeg: channel 0 alone when it covers the window; the low channel as base with the
   high-resolution stretches placed by audio when channel 0 is more than a second short; the low
   channel alone when the audio cannot place them, and when channel 0 has nothing or is busy; "may be
-  missing time" when the low channel keeps failing; which error wins when both channels fail; every
-  export retimed before it is read, and kept when retiming fails; a clip piece combined into one
-  file, or saved in low resolution when combining fails; the keyframe lead, capped at 10 s.
+  missing time" when the low channel keeps failing; which error wins when both channels fail; the
+  exact 1 s and 2 s thresholds; channel 0 kept, with no lead, when it cannot be read; every export
+  retimed before it is read, kept when retiming fails, and a cancel during a retime stopping the
+  fetch; a clip piece combined into one file, or saved in low resolution when combining fails; the
+  keyframe lead, capped at 10 s. `Recordings` itself (retries, the join's use of each piece's lead)
+  is still covered only by the FFmpeg-backed tests.
 - Recorded playback and clip choice in the player (`tests/player.test.ts`), with fake video
   elements, no browser: where media time 0 sits (lead, first recorded moment), when the next window
   is buffered and when it may take over, the handover at the window's end rather than the file's,

@@ -404,8 +404,8 @@ In the other direction, the relay asks the gateway before admitting a viewer, as
 through its auth hook, which arrives at `POST /mediamtx-auth` on a separate listener
 (`src/server/media/hook-server.ts`, `HOOK_HOST` and `HOOK_PORT`, 3001 by default).
 `authorizeHook` in the MediaMTX adapter checks the hook secret, answers MediaMTX's own traffic (its
-control API, and the FFmpeg it runs on loopback, which may publish a camera path and read only its
-internal `_src` path over RTSP), refuses every other protocol and action, and hands viewers reading
+control API, and the FFmpeg it runs, with the publisher login from a loopback or private-network
+address, which may publish a camera path and read only its internal `_src` path over RTSP), refuses every other protocol and action, and hands viewers reading
 over WebRTC or HLS to the gateway. The hook is not served on the web
 port at all, so it cannot be reached through whatever reverse proxy or tunnel is in front of
 Unifeye; the hook port is never published. Every call must still carry `MEDIAMTX_HOOK_SECRET`.

@@ -23,7 +23,7 @@ export const TEST_ENV = { NODE_ENV: "test", UNIFEYE_MODE: "mock", TOKEN_ENC_KEY:
 export function makeFixture(db: Db = openDb(":memory:")) {
   setConfigForTests(loadConfig(TEST_ENV));
   migrate(db, { migrationsFolder: join(process.cwd(), "drizzle") });
-  const adapter = new MockProtectAdapter("default", { liveEvents: false, rtspPublishUrl: (p) => `rtsp://127.0.0.1:8554/${p}` });
+  const adapter = new MockProtectAdapter("default", { liveEvents: false, publishUrl: "rtsp://127.0.0.1:8554/$MTX_PATH" });
   // The relay is in memory and asks the gateway before admitting a reader, as MediaMTX does through its auth hook.
   const relay = new MemoryRelay();
   const s = buildServices(db, adapter, relay);

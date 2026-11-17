@@ -16,9 +16,9 @@ const isInternal = (ip = "") => /^(127\.|::1$|::ffff:127\.|10\.|192\.168\.|172\.
 
 /**
  * Answers MediaMTX's auth hook. `secret` is the one in the hook URL. MediaMTX's own traffic is
- * decided here: its control API (`MTX_API_USER`), and the FFmpeg it runs on loopback
- * (`MTX_PUBLISH_USER`), which may publish a camera path and read only the internal `_src` path over
- * RTSP. A viewer reading over WebRTC or HLS is handed to `admit` in relay-neutral terms. Everything
+ * decided here: its control API (`MTX_API_USER`), and the FFmpeg it runs (`MTX_PUBLISH_USER`, from
+ * a loopback or private-network address, since MediaMTX may sit on a container network), which may
+ * publish a camera path and read only the internal `_src` path over RTSP. A viewer reading over WebRTC or HLS is handed to `admit` in relay-neutral terms. Everything
  * else (other RTSP readers, RTMP, SRT, playback, metrics) is refused.
  */
 export function authorizeHook(secret: string | null, b: HookBody, admit: (r: ReaderRequest) => boolean): boolean {
@@ -37,6 +37,15 @@ export function authorizeHook(secret: string | null, b: HookBody, admit: (r: Rea
 }
 
 /**
+ * Where an FFmpeg that MediaMTX runs on demand publishes the path it was started for: MediaMTX's own
+ * RTSP listener on loopback, with the publisher credentials the auth hook accepts. `$RTSP_PORT` and
+ * `$MTX_PATH` are filled in by MediaMTX. The mock adapter's test streams use it (services.ts).
+ */
+export function commandPublishUrl() {
+  return `rtsp://${MTX_PUBLISH_USER}:${encodeURIComponent(config().MEDIAMTX_API_SECRET ?? "")}@127.0.0.1:$RTSP_PORT/$MTX_PATH`;
+}
+
+/**
  * The FFmpeg that MediaMTX runs to publish `<name>` from `<name>_src`. `$RTSP_PORT` and `$MTX_PATH`
  * are filled in by MediaMTX. The probe must last until the first video frame: on a cold start the
  * camera's sound arrives a few seconds before its picture, and a short probe (half a second) ended on
@@ -47,13 +56,12 @@ export function authorizeHook(secret: string | null, b: HookBody, admit: (r: Rea
  * is used (AAC on Protect, present on every camera with a microphone); `?` makes it optional.
  */
 function retimeCommand(name: string) {
-  const auth = `${MTX_PUBLISH_USER}:${encodeURIComponent(config().MEDIAMTX_API_SECRET ?? "")}`;
   return [
     "ffmpeg -hide_banner -loglevel error -analyzeduration 10000000 -probesize 10000000 -fpsprobesize 0",
-    `-rtsp_transport tcp -i rtsp://${auth}@127.0.0.1:$RTSP_PORT/${name}${SRC_SUFFIX}`,
+    `-rtsp_transport tcp -i rtsp://${MTX_PUBLISH_USER}:${encodeURIComponent(config().MEDIAMTX_API_SECRET ?? "")}@127.0.0.1:$RTSP_PORT/${name}${SRC_SUFFIX}`,
     "-map 0:v:0 -map 0:a:0? -map 0:a:0? -c:v copy -filter:a asetpts=N/SR/TB",
     "-c:a:0 aac -b:a:0 48k -c:a:1 libopus -b:a:1 48k",
-    `-f rtsp -rtsp_transport tcp rtsp://${auth}@127.0.0.1:$RTSP_PORT/$MTX_PATH`,
+    `-f rtsp -rtsp_transport tcp ${commandPublishUrl()}`,
   ].join(" ");
 }
 

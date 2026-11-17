@@ -30,18 +30,19 @@ const HI = (duration: number, audio = true): MediaInfo => ({ start: 0, duration,
 const LO = (duration: number, audio = true): MediaInfo => ({ start: 0, duration, width: 640, audio });
 
 function fake(rec: Recorder, opts: { envelope?: Partial<Record<Channel, Float64Array>>; combine?: Error } = {}) {
-  const asked: Channel[] = [], retimed: string[] = [], infos = new Map<string, MediaInfo>();
+  const asked: Channel[] = [], retimed: string[] = [], trail: string[] = [], infos = new Map<string, MediaInfo>();
   const exporter: ExportChannel = async (ch, dest) => {
     asked.push(ch);
     const r = rec[ch] ?? new NoRecordingError();
     if (r instanceof Error) throw r;
     writeFileSync(dest, ch);
     infos.set(dest, r);
+    trail.push(`export ${ch}`);
   };
   const channelOf = (p: string): Channel => (readFileSync(p, "utf8").startsWith("focus") ? "focus" : "wall");
   const ops: MediaOps = {
-    probe: async (p) => { const i = infos.get(p); if (!i) throw new Error("no such file"); return i; },
-    retime: async (p) => { retimed.push(p); return false; },
+    probe: async (p) => { trail.push(`probe ${channelOf(p)}`); const i = infos.get(p); if (!i) throw new Error("no such file"); return i; },
+    retime: async (p) => { retimed.push(p); trail.push(`retime ${channelOf(p)}`); return false; },
     envelope: async (p) => opts.envelope?.[channelOf(p)] ?? new Float64Array(0),
     combine: async (base, high, spans, dest) => {
       if (opts.combine) throw opts.combine;
@@ -50,7 +51,7 @@ function fake(rec: Recorder, opts: { envelope?: Partial<Record<Channel, Float64A
       return { encoder: "fake", ms: 7 };
     },
   };
-  return { exporter, ops, asked, retimed };
+  return { exporter, ops, asked, retimed, trail };
 }
 
 const signal = new AbortController().signal;
@@ -80,6 +81,7 @@ describe("fetchRecorded", () => {
     expect(r.overlay).toEqual([{ at: 14, from: 0, len: 18 }]);
     // Both exports are retimed before anything reads them.
     expect(f.retimed).toEqual([fl.focus, fl.wall]);
+    expect(f.trail).toEqual(["export focus", "retime focus", "probe focus", "export wall", "retime wall", "probe wall"]);
   });
 
   it("plays the low channel alone when the audio cannot place the high-resolution part", async () => {
@@ -125,9 +127,31 @@ describe("fetchRecorded", () => {
   });
 
   it("keeps an export whose retime fails", async () => {
-    const f = fake({ focus: HI(60) });
+    const f = fake({ focus: HI(61.5) }), fl = files();
     f.ops.retime = async () => { throw new Error("ffmpeg exited 1"); };
-    expect((await fetchRecorded(f.exporter, A, B, { files: files(), signal, ops: f.ops })).high).toBeNull();
+    expect(await fetchRecorded(f.exporter, A, B, { files: fl, signal, ops: f.ops })).toMatchObject({ base: fl.focus, high: null, overlay: [], leadMs: 1500, busy: false });
+  });
+
+  it("stops when cancelled during a retime, rather than carrying on with an unrepaired file", async () => {
+    const ac = new AbortController(), f = fake({ focus: HI(60) });
+    f.ops.retime = async () => { ac.abort(); throw new Error("ffmpeg killed"); };
+    await expect(fetchRecorded(f.exporter, A, B, { files: files(), signal: ac.signal, ops: f.ops })).rejects.toThrow("ffmpeg killed");
+  });
+
+  it("keeps channel 0, with no lead, when it cannot be read", async () => {
+    const f = fake({ focus: HI(60), wall: LO(62) }), fl = files();
+    f.ops.probe = async () => { throw new Error("ffprobe exited 1"); };
+    expect(await fetchRecorded(f.exporter, A, B, { files: fl, signal, ops: f.ops })).toMatchObject({ base: fl.focus, info: null, leadMs: 0, high: null });
+    expect(f.asked).toEqual(["focus"]);
+  });
+
+  it("asks for the low channel only when channel 0 is more than a second short, and uses it only when more than 2 s longer", async () => {
+    const exactly = fake({ focus: HI(59), wall: LO(62) });
+    await fetchRecorded(exactly.exporter, A, B, { files: files(), signal, ops: exactly.ops });
+    expect(exactly.asked).toEqual(["focus"]);
+    const short = fake({ focus: HI(58.9), wall: LO(60.9) }), fl = files();
+    expect((await fetchRecorded(short.exporter, A, B, { files: fl, signal, ops: short.ops })).base).toBe(fl.focus); // exactly 2 s longer: not enough
+    expect(short.asked).toEqual(["focus", "wall"]);
   });
 });
 

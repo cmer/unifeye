@@ -232,7 +232,7 @@ describe("MediaMTX adapter: auth hook", () => {
     expect(hook({ action: "api", user: "unifeye-publisher", password: "api" })).toBe(false);
   });
 
-  it("lets its own FFmpeg, on loopback, publish a camera path and read only the internal `_src` path over RTSP", () => {
+  it("lets its own FFmpeg, from a loopback or private address, publish a camera path and read only the internal `_src` path over RTSP", () => {
     const own = (b: HookBody) => hook({ user: "unifeye-publisher", password: "api", ip: "127.0.0.1", ...b });
     expect(own({ action: "publish", path: "c_cam1_wall" })).toBe(true);
     expect(own({ action: "publish", path: "c_cam1_wall_src" })).toBe(false);
@@ -241,6 +241,9 @@ describe("MediaMTX adapter: auth hook", () => {
     expect(own({ action: "read", protocol: "rtsp", path: "c_cam1_wall" })).toBe(false);
     expect(own({ action: "read", protocol: "rtsp", path: "c_cam1_wall_src", password: "wrong" })).toBe(false);
     expect(own({ action: "read", protocol: "rtsp", path: "c_cam1_wall_src", ip: "203.0.113.9" })).toBe(false);
+    // MediaMTX may run on a container network, so private addresses count as its own too.
+    for (const ip of ["10.0.0.5", "172.20.0.3", "192.168.1.2", "::1", "fd00::5"]) expect(own({ action: "publish", path: "c_cam1_wall", ip }), ip).toBe(true);
+    for (const ip of ["172.32.0.1", "8.8.8.8", "2001:db8::1", undefined]) expect(own({ action: "publish", path: "c_cam1_wall", ip }), String(ip)).toBe(false);
     expect(asked).toEqual([]);
   });
 
