@@ -98,7 +98,7 @@ export function Player({ cameraId }: { cameraId: string }) {
     let off = false;
     const to = Math.min(dayEnd, Date.now());
     api<Ranges>(`/cameras/${cameraId}/recordings?from=${dayStart}&to=${to}`).then((r) => !off && setRec(r)).catch(() => !off && setRec({ ranges: [], precision: "exact" }));
-    api<{ events: ActivityEvent[] }>(`/events?cameraId=${cameraId}&from=${dayStart}&to=${to}&limit=200`).then((r) => !off && setEvents(r.events)).catch(() => {});
+    api<{ events: ActivityEvent[] }>(`/events?cameraId=${cameraId}&from=${dayStart}&to=${to}&limit=1000`).then((r) => !off && setEvents(r.events)).catch(() => {});
     return () => { off = true; };
   }, [cameraId, dayStart, dayEnd, ready, refresh]);
   // While live, pick up newly recorded time and new activity every few minutes.

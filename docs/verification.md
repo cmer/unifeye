@@ -210,6 +210,7 @@ since the move.
 | --- | --- | --- |
 | Real UNVR: login, camera discovery, snapshots, events, thumbnails, video export, RTSPS relay | No recorder available | Private endpoint shapes or required privileges differ on your Protect version |
 | "Recording now" indicator on a real UNVR | No recorder available | Relies on the camera `isRecording` field and realtime camera updates; a wrong assumption shows a stale or missing REC mark, never extra access |
+| Camera filter on the events query (`cameras=`) | No recorder available | If Protect ignores it, a busy recorder's other cameras use up the page budget and the player shows markers only for the latest hours; if Protect refuses it with a 400, Unifeye logs a warning and filters locally |
 | Recording gaps on a real UNVR | No known endpoint | Timeline shows only the overall recorded period |
 | A real OIDC provider: login, admission claim, logout, back-channel logout, deactivation detection | No instance available | Claim placement, refresh-token or back-channel behaviour, or error codes differ by provider |
 | Cloudflare Access against a real team | No Access application available | Token claims (`sub`, `email`) or key rotation behave differently from the stub; the Transform Rule header not reaching the origin through the tunnel; the 30-second `/me` reload not reaching Unifeye often enough behind Access |

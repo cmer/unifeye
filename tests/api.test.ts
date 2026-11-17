@@ -111,6 +111,15 @@ describe("a forbidden camera is indistinguishable from a missing one, on every r
     expect(a.status).toBe(404); expect(a.text).toBe(b.text);
     expect((await call(f.u.front, "GET", `/events/${foreign.id}/thumbnail`)).status).toBe(404);
   });
+  it("one camera's timeline gets a busy day of events, not just the newest 200", async () => {
+    const cam = f.cam["Front Entrance"], protectId = f.policy.camera(f.u.front, cam).protectId, to = Date.now() - 60_000, from = to - 6 * 3600e3;
+    for (let i = 0; i < 400; i++) f.adapter.emit({ id: `busy.${i}`, protectCameraId: protectId, type: "motion", startMs: from + i * 50_000, endMs: from + i * 50_000 + 5000, hasThumbnail: false });
+    const r = (await call(f.u.front, "GET", `/events?cameraId=${cam}&from=${from}&to=${to}&limit=1000`)).data;
+    expect(r.events.filter((e: { id: string }) => e.id.startsWith("busy.")).length).toBe(400);
+    expect(r.events.some((e: { id: string }) => e.id === "busy.0")).toBe(true); // the oldest is still there
+    // Mixed feeds keep the smaller cap.
+    expect((await call(f.u.front, "GET", `/events?from=${from}&to=${to}&limit=1000`)).data.events).toHaveLength(200);
+  });
   it("authorized media works: snapshot, recording ranges and a playback window with byte ranges", async () => {
     const cam = f.cam["Front Entrance"], t = Date.now() - 2 * 3600e3;
     const snap = await call(f.u.front, "GET", `/cameras/${cam}/snapshot`);

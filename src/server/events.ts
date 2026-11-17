@@ -4,6 +4,9 @@ import type { CameraInfo, Policy } from "./authz/policy";
 import { EVENT_TYPES, type EventType, type ProtectAdapter, type ProtectEvent } from "./protect/types";
 import { badRequest, HttpError, notFound } from "./util";
 
+/** Most events returned for a single camera, enough for a busy day on the player's timeline. */
+export const MAX_ONE_CAMERA = 1000;
+
 export interface EventDto { id: string; cameraId: string; cameraName: string; type: EventType; startMs: number; endMs: number | null; hasThumbnail: boolean }
 
 /**
@@ -29,7 +32,8 @@ export class Events {
     if (q.cameraId) { const one = this.policy.camera(subject, q.cameraId); cams = new Map([[one.protectId, one]]); }
     if (!(q.toMs > q.fromMs) || q.toMs - q.fromMs > 31 * 864e5) throw badRequest("Invalid time range");
     const types = (q.types ?? []).filter((t): t is EventType => (EVENT_TYPES as string[]).includes(t));
-    const limit = Math.min(Math.max(q.limit ?? 48, 1), 200);
+    // One camera's timeline may need a whole busy day of markers; mixed feeds stay small.
+    const limit = Math.min(Math.max(q.limit ?? 48, 1), q.cameraId ? MAX_ONE_CAMERA : 200);
     // What these cameras can detect at all, so the UI can tell "unsupported" from "no results".
     const supported = [...new Set([...cams.values()].flatMap((c) => (c.meta.eventTypes as EventType[] | undefined) ?? []))];
     if (!cams.size) return { events: [] as EventDto[], hasMore: false, supportedTypes: supported };
