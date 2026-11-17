@@ -301,7 +301,7 @@ route("GET", "/cameras/:id/playback", { rate: "media" }, async ({ s, actor, p, u
 // ---- live video -----------------------------------------------------------------
 route("POST", "/media/live/:id/whep", { rate: "media" }, async ({ s, actor, p, url, req }) => {
   const r = await s.media.whepCreate(actor, p.id, quality(url.searchParams.get("q")), await req.text());
-  return new Response(r.sdp, { status: 201, headers: { "content-type": "application/sdp", location: `/api/media/live/whep/${r.secret}`, "cache-control": "no-store", ...(r.etag ? { etag: r.etag } : {}) } });
+  return new Response(r.sdp, { status: 201, headers: { "content-type": "application/sdp", location: `/api/media/live/whep/${r.secret}`, "cache-control": "no-store", "x-video-source": r.source, ...(r.etag ? { etag: r.etag } : {}) } });
 });
 for (const method of ["PATCH", "DELETE"] as const)
   route(method, "/media/live/whep/:secret", { rate: "media" }, async ({ s, actor, p, req }) => {

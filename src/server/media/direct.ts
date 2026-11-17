@@ -51,6 +51,9 @@ export class DirectVideo {
     return this.resolve(r);
   }
 
+  /** Whether the camera is set to stream directly, even if it is falling back to the recorder right now. */
+  enabled(cameraId: string) { return !!this.row(cameraId)?.enabled; }
+
   /** What the admin page needs, without passwords. */
   settings() {
     return this.db.select().from(schema.cameraDirect).all().map((r) => ({ cameraId: r.cameraId, enabled: r.enabled, username: r.username, ownPassword: !!r.passwordEnc }));

@@ -31,7 +31,7 @@ export const setPreviewToken = (t: string | null) => { if (t) sessionStorage.set
 export const mediaUrl = (path: string) => { const t = previewToken(); return t ? `${path}${path.includes("?") ? "&" : "?"}pv=${encodeURIComponent(t)}` : path; };
 
 /** `keepalive`: the request still goes out when the page is closing (releasing a stream on the way out). */
-export async function api<T = unknown>(path: string, init: { method?: string; body?: unknown; raw?: string; signal?: AbortSignal; keepalive?: boolean } = {}): Promise<T> {
+export async function api<T = unknown>(path: string, init: { method?: string; body?: unknown; raw?: string; signal?: AbortSignal; keepalive?: boolean; onHeaders?: (h: Headers) => void } = {}): Promise<T> {
   const headers: Record<string, string> = {};
   const method = init.method ?? "GET", pv = previewToken();
   if (method !== "GET") headers["x-csrf-token"] = csrf;
@@ -48,6 +48,7 @@ export async function api<T = unknown>(path: string, init: { method?: string; bo
     if (res.status === 409 && j.error === "preview_ended") { setPreviewToken(null); location.assign("/admin"); }
     throw new ApiError(res.status, j.error ?? "error", j.message ?? "Something went wrong");
   }
+  init.onHeaders?.(res.headers);
   const type = res.headers.get("content-type") ?? "";
   return (type.includes("json") ? await res.json() : type.includes("sdp") ? { sdp: await res.text(), location: res.headers.get("location") } : undefined) as T;
 }

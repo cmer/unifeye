@@ -8,6 +8,8 @@ import type { DirectVideo } from "./direct";
 import { RelayUnavailable, type HlsReader, type ReaderKind, type ReaderRequest, type Relay } from "./relay";
 
 export type Quality = "wall" | "focus";
+/** Where a live stream is read from. "fallback": the camera is set to stream directly but can't right now, so the recorder is used. */
+export type VideoSource = "camera" | "recorder" | "fallback";
 /** One HLS reader per session, subject, preview and stream: tiles and retries in a tab share it. */
 const jarKey = (a: Actor, path: string) => `${a.sessionId}|${subjectOf(a)}|${a.preview?.id ?? ""}|${path}`;
 /** Distinct live streams one session may hold: the wall's tiles plus a few for the player and handovers. */
@@ -46,7 +48,7 @@ export class Media {
   /** WebRTC ticket -> relay reader id, between the hook admitting the reader and `whepCreate` reading it back. */
   private admitted = new Map<string, string>();
   /** One entry per session + subject + preview + stream: who it was opened for, when to re-issue, the current ticket and the relay's reader. */
-  private hlsJar = new Map<string, { grant: Grant; exp: number; ticket: string; reader: HlsReader }>();
+  private hlsJar = new Map<string, { grant: Grant; exp: number; ticket: string; reader: HlsReader; source: VideoSource }>();
   /** Streams currently read from the camera itself rather than the recorder: path -> camera id. */
   private directPaths = new Map<string, string>();
   private sweeping = false;
@@ -66,7 +68,7 @@ export class Media {
   }
 
   /** Authorizes a live view and prepares the relay path. Throws 404 for anything the subject may not see. */
-  private async issue(a: Actor, cameraId: string, q: Quality, kind: ReaderKind): Promise<{ ticket: string; path: string }> {
+  private async issue(a: Actor, cameraId: string, q: Quality, kind: ReaderKind): Promise<{ ticket: string; path: string; source: VideoSource }> {
     const cam = this.policy.camera(subjectOf(a), cameraId), path = pathFor(cameraId, q);
     // The limit is on distinct streams (camera + quality), not relay readers: HLS takes a new reader
     // every 25 s and a WebRTC attempt may precede it, and none of that is another stream on screen.
@@ -77,12 +79,13 @@ export class Media {
     const login = this.direct.login(cameraId);
     let src = login ? await this.adapter().directSource(cam.protectId, q, login).catch(() => null) : null;
     if (src) this.directPaths.set(path, cameraId); else this.directPaths.delete(path);
+    const source: VideoSource = src ? "camera" : this.direct.enabled(cameraId) ? "fallback" : "recorder";
     src ??= await this.adapter().liveSource(cam.protectId, q).catch(() => { throw new HttpError(503, "nvr_unavailable"); });
     if (!src) throw new HttpError(409, "no_live_stream", "This camera has no live stream available");
     await this.relay.ensureStream(path, src).catch((e) => { log("error", "relay path setup failed", { error: e }); throw new HttpError(503, "relay_unavailable"); });
     const ticket = randomToken();
     this.tickets.set(ticket, { ...this.access.grant(a, cameraId), path, kind, exp: Date.now() + 30_000, single: kind === "webrtc", used: false });
-    return { ticket, path };
+    return { ticket, path, source };
   }
 
   /**
@@ -102,7 +105,7 @@ export class Media {
 
   // ---- WebRTC (WHEP). Signalling is proxied; media flows over ICE to MediaMTX's UDP/TCP port. ----
   async whepCreate(a: Actor, cameraId: string, q: Quality, sdpOffer: string) {
-    const { ticket, path } = await this.issue(a, cameraId, q, "webrtc");
+    const { ticket, path, source } = await this.issue(a, cameraId, q, "webrtc");
     let readerId: string | undefined;
     const r = await this.relay.whepCreate(path, ticket, sdpOffer).catch(relayDown).finally(() => {
       readerId = this.admitted.get(ticket);
@@ -118,7 +121,7 @@ export class Media {
     const secret = r.resource;
     if (!/^[A-Za-z0-9-]{8,80}$/.test(secret)) throw new HttpError(502, "relay_error");
     this.whep.set(secret, { ...this.access.grant(a, cameraId), path, readerId });
-    return { sdp: r.sdp, secret, etag: r.etag };
+    return { sdp: r.sdp, secret, etag: r.etag, source };
   }
   /** ICE trickle (PATCH) and teardown (DELETE). Only the session that created the WHEP resource may touch it. */
   async whepForward(a: Actor, secret: string, method: "PATCH" | "DELETE", body: string | undefined, headers: Record<string, string>) {
@@ -143,15 +146,15 @@ export class Media {
     if (!jar || Date.now() > jar.exp) {
       // Renewal re-checks the stream limit and issues a fresh ticket, but keeps the reader: the
       // player's media playlists and segments belong to the relay session it already holds.
-      const { ticket } = await this.issue(a, cameraId, q, "hls");
-      jar = { grant: this.access.grant(a, cameraId), exp: Date.now() + 25_000, ticket, reader: jar?.reader ?? this.relay.hlsReader(path) };
+      const { ticket, source } = await this.issue(a, cameraId, q, "hls");
+      jar = { grant: this.access.grant(a, cameraId), exp: Date.now() + 25_000, ticket, source, reader: jar?.reader ?? this.relay.hlsReader(path) };
       this.hlsJar.set(key, jar);
     }
     const r = await jar.reader.fetch(file, search, jar.ticket).catch(relayDown);
     // The camera itself didn't deliver: the player's retry starts over through the recorder.
     if (r.outcome !== "ok" && file.endsWith(".m3u8") && this.directPaths.has(path)) { this.directFailed(path); this.hlsJar.delete(key); }
     if (r.outcome !== "ok") throw new HttpError(r.outcome === "not_found" ? 404 : 502, r.outcome === "not_found" ? "not_found" : "relay_error");
-    return new Response(r.body, { status: 200, headers: { "content-type": r.contentType ?? "application/octet-stream", "cache-control": "no-store" } });
+    return new Response(r.body, { status: 200, headers: { "content-type": r.contentType ?? "application/octet-stream", "cache-control": "no-store", "x-video-source": jar.source } });
   }
   /** A stream read from the camera itself sent nothing: read that camera through the recorder for a while. */
   private directFailed(path: string) {

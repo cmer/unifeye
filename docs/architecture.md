@@ -411,6 +411,9 @@ administrator can switch live video to come from the camera itself (Admin > Live
 - If a stream read from the camera fails (a WebRTC offer that finds no stream, or an HLS playlist
   that does not load), that camera goes back to the recorder's stream for two minutes, so the
   player's retry plays. Saving the camera's settings again tries the camera at once.
+- The WebRTC offer and every HLS response carry `x-video-source`: `camera`, `recorder`, or
+  `fallback` (switched to the camera but using the recorder right now). The player's "Live" popup
+  shows it as the source. It is sent only after the camera check, so it reveals nothing extra.
 - One MediaMTX pull per stream is shared by every viewer and closes ten seconds after the last one
   leaves, so a camera serves at most two extra connections however many people watch it.
 

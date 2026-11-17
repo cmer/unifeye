@@ -39,10 +39,14 @@ const skipWebrtc = () => {
  */
 /** How live video is reaching the browser: WebRTC (real-time) or the HLS fallback (a few seconds behind). */
 export type Transport = "webrtc" | "hls";
+/** Where the video comes from: the camera itself, the recorder, or the recorder because the camera can't stream directly right now. */
+export type VideoSource = "camera" | "recorder" | "fallback";
+export interface LiveInfo { via: Transport; source: VideoSource | null }
+const sourceOf = (h: Headers): VideoSource | null => { const v = h.get("x-video-source"); return v === "camera" || v === "recorder" || v === "fallback" ? v : null; };
 
 export function LiveVideo({ cameraId, quality, active, online, className = "", onGone, onTransport, sound = false, onAudio, onMedia }: {
   cameraId: string; quality: "wall" | "focus"; active: boolean; online: boolean; className?: string; onGone?: () => void;
-  /** Reports the transport while video is playing, null otherwise. */ onTransport?: (t: Transport | null) => void;
+  /** Reports the transport and source while video is playing, null otherwise. */ onTransport?: (t: LiveInfo | null) => void;
   /** Play this camera's sound. Off by default; see `sound.tsx`. */ sound?: boolean;
   /** Reports whether the playing stream carries sound, null while unknown or not playing. */ onAudio?: (has: boolean | null) => void;
   /** The video element, for the level meter. */ onMedia?: (el: HTMLVideoElement | null) => void;
@@ -54,6 +58,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
   const [wake, setWake] = useState(0);
   const [still, setStill] = useState(0);
   const [via, setVia] = useState<Transport>("webrtc");
+  const [source, setSource] = useState<VideoSource | null>(null);
 
   const playingNow = active && online && raw === "playing";
   useEffect(() => {
@@ -74,7 +79,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
       if (closed) return;
       hlsOpen = true;
       // Ask once ourselves: the browser's own HLS player hides the status, and a refusal for now must wait, not fail.
-      try { await api(`${stream}/index.m3u8`); } catch (e) { if (closed) return; if (e instanceof ApiError && e.status === 429) return busy(); }
+      try { await api(`${stream}/index.m3u8`, { onHeaders: (h) => { if (!closed) setSource(sourceOf(h)); } }); } catch (e) { if (closed) return; if (e instanceof ApiError && e.status === 429) return busy(); }
       if (closed) return;
       const src = mediaUrl(`/api${stream}/index.m3u8`);
       try {
@@ -100,6 +105,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reflects the connection this effect is opening
     setState("connecting");
     setAudio(null);
+    setSource(null);
     el.muted = true; // every connection starts muted, so autoplay is always allowed; the sound effect below unmutes once playing
     if (webrtcSkipped()) { void viaHls(); return cleanup; }
     // Media never arrived: this network cannot reach the WebRTC port. Switch transport and remember it.
@@ -143,7 +149,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
           const t = setTimeout(done, 1500);
           pc!.onicegatheringstatechange = () => { if (pc!.iceGatheringState === "complete") { clearTimeout(t); done(); } };
         });
-        const ans = await api<{ sdp: string; location: string | null }>(`/media/live/${cameraId}/whep?q=${quality}`, { method: "POST", raw: pc.localDescription!.sdp });
+        const ans = await api<{ sdp: string; location: string | null }>(`/media/live/${cameraId}/whep?q=${quality}`, { method: "POST", raw: pc.localDescription!.sdp, onHeaders: (h) => { if (!closed) setSource(sourceOf(h)); } });
         resource = ans.location;
         // The tile stopped while the offer was on its way, so cleanup had nothing to release yet.
         // Release it now: otherwise the session holds one of this tab's stream slots until it times out.
@@ -174,7 +180,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
 
   const state: State = active && online ? raw : "idle";
   const shown = state === "playing" ? via : null;
-  useEffect(() => { onTransport?.(shown); }, [shown]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { onTransport?.(shown && { via: shown, source }); }, [shown, source]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => onTransport?.(null), []); // eslint-disable-line react-hooks/exhaustive-deps
   const hasAudio = state === "playing" ? audio : null;
   useEffect(() => { onAudio?.(hasAudio); }, [hasAudio]); // eslint-disable-line react-hooks/exhaustive-deps
