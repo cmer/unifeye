@@ -10,16 +10,16 @@ should be assumed to work.
 | Node.js | 26.13 (local); image uses 24 | Tests and local runs |
 | Next.js / React | 16.4.6 / 19.3.0 | Built and run locally |
 | drizzle-orm / better-sqlite3 | 0.45.4 / 13.2.0 | Tests |
-| openid-client / jose | 6.9.0 / 6.2 | Tests against a test identity provider |
-| unifi-protect | 5.4.2 | Compiled against its types only |
-| MediaMTX | 1.21.4 (macOS binary) | Run locally with `docker/mediamtx.yml` |
-| UniFi Protect / UNVR Pro | none | Not available |
-| OIDC provider | none (only the test provider) | Not available |
-| Docker image, Compose | Docker Engine with Compose v2 on a Linux VM | Built and run with `compose.yaml` against a real UNVR |
+| openid-client / jose | 6.9.0 / 6.2 | Tests against a test identity provider; Zitadel in production |
+| unifi-protect | 5.4.2 | In production against a real UNVR |
+| MediaMTX | 1.21.4 (macOS binary; `1.21.4-ffmpeg` image) | Run locally with `docker/mediamtx.yml`, and in production with Compose |
+| UniFi Protect | 7.3.74 on one UNVR, 42 cameras | In production, through a read-only account |
+| OIDC provider | Zitadel (self-hosted), plus the test provider | In production, with a project role as the admission claim |
+| Docker image, Compose | Docker Engine with Compose v2 on a Linux VM | In production with `compose.yaml`, behind Cloudflare Tunnel |
 
 ## Verified
 
-**Automated tests (`pnpm test`, 254 tests):**
+**Automated tests (`pnpm test`, 259 tests):**
 
 The media tests run against an in-memory relay that asks the gateway (`Media.admit`) before
 admitting a reader. They show what the gateway decides, not how MediaMTX behaves. How the MediaMTX
@@ -158,8 +158,8 @@ gateway) is pinned separately in
 
 These checks were made before the MediaMTX calls were moved behind the relay interface
 (`src/server/media/relay.ts`, `mediamtx.ts`). The requests were moved without intended change and
-are now pinned by the stub tests above, but nothing below has been repeated against a real MediaMTX
-since the move.
+are now pinned by the stub tests above. Production has since run live video through the moved code
+(see "In production" below), but the individual checks below were not repeated.
 
 - Sign-in through the test provider, bootstrap administrator, demo seed, landing view.
 - Eight simultaneous WebRTC streams admitted through the auth hook.
@@ -225,7 +225,19 @@ since the move.
 - The data volume survived `docker compose down` and `up`.
 - MediaMTX's auth hook on its own port (`HOOK_PORT`) was checked with a real MediaMTX 1.21.4 in the
   QA stack: the control API is admitted through it, and `POST /api/internal/mediamtx-auth` on the
-  web port returns 404. That check was local, not in the Compose stack.
+  web port returns 404. The production check below covers the hook in the Compose stack.
+
+**In production (checked 2026-11-17 on `5a3fd7e`, Compose, real UNVR, Zitadel, Cloudflare Tunnel):**
+
+Read from the running stack, its audit log and its logs. Nothing was changed.
+
+- `/api/ready` reports the recorder in real mode and connected, the relay up, and a recent camera
+  sync. All 42 cameras are synced.
+- Live video through the hook port in Compose, after the relay refactor: over 8 hours MediaMTX
+  logged 178 admitted readers and 134 WebRTC sessions, plus HLS. No authentication failures.
+- Zitadel: 19 sign-ins, sign-out, 2 back-channel logouts, profiles created on first sign-in,
+  admission by project role, and group membership synced from the provider's claims.
+- 9 clip exports from the real recorder, and one restore.
 
 **Wall tiles refused with 429 after a restart (2026-11-17):**
 
@@ -296,17 +308,16 @@ since the move.
 
 | Area | Why | What could go wrong |
 | --- | --- | --- |
-| Real UNVR: login, camera discovery, snapshots, events, thumbnails, video export, RTSPS relay | No recorder available | Private endpoint shapes or required privileges differ on your Protect version |
-| "Recording now" indicator on a real UNVR | No recorder available | Relies on the camera `isRecording` field and realtime camera updates; a wrong assumption shows a stale or missing REC mark, never extra access |
-| Camera filter on the events query (`cameras=`) | No recorder available | If Protect ignores it, a busy recorder's other cameras use up the page budget and the player shows markers only for the latest hours; if Protect refuses it with a 400, Unifeye logs a warning and filters locally |
+| Other Protect versions and recorder models | Only Protect 7.3.74 on one UNVR | Private endpoint shapes or required privileges differ on your Protect version |
+| "Recording now" indicator on a real UNVR | Not checked against the recorder | Relies on the camera `isRecording` field and realtime camera updates; a wrong assumption shows a stale or missing REC mark, never extra access |
+| Camera filter on the events query (`cameras=`) | Not checked against the recorder | If Protect ignores it, a busy recorder's other cameras use up the page budget and the player shows markers only for the latest hours; if Protect refuses it with a 400, Unifeye logs a warning and filters locally |
 | Recording gaps on a real UNVR | No known endpoint | Timeline shows only the overall recorded period |
-| A real OIDC provider: login, admission claim, logout, back-channel logout, deactivation detection | No instance available | Claim placement, refresh-token or back-channel behaviour, or error codes differ by provider |
+| Identity providers other than Zitadel, and deactivation detection on any provider | Only Zitadel was used | Claim placement, refresh-token or back-channel behaviour, or error codes differ by provider; a person disabled at the provider keeps access longer than expected |
 | Cloudflare Access against a real team | No Access application available | Token claims (`sub`, `email`) or key rotation behave differently from the stub; the Transform Rule header not reaching the origin through the tunnel; the 30-second `/me` reload not reaching Unifeye often enough behind Access |
 | Password sign-in and password links in a browser | Checked through the API tests and a production build only | Password-manager autofill, the set-password page on phones |
-| The hook port inside the Compose stack | Checked locally, not yet in Compose | MediaMTX cannot reach `app:3001`, so no video plays |
 | Browser test suite | Not written | Screens were checked by hand in one desktop browser |
 | Phones and tablets | No device testing | Layout or touch problems |
-| HLS playback in a browser | Only the gateway responses were checked | Player-level issues |
+| HLS playback in a browser | Used in Chrome in production, where it turned up the HLS bugs above; the fixes are not yet checked there | Player-level issues |
 | Sound from a real UNVR in Unifeye end to end | The retiming relay was checked outside Unifeye only (see Verified) | HLS sound, wall-quality streams, other camera models; recordings from Protect may lack audio |
 | Sound in Safari and Firefox | Only Chromium was used | "No audio" shown wrongly, or the speaker missing; no level meter in Safari for HLS and recordings |
 | Clip export in the browser | Checked by hand in Chromium with mock cameras: zooming and panning the clip timeline, and a 2-hour clip (prepared in about 2.5 minutes, 7200 s long). Long clips in pieces (mock mode, headless Chromium): a 21-minute clip showed the sweep, then 57% and 76% with a time left, then "Putting the pieces together", started its download by itself and came out 1260.0 s long | Not checked on a phone or with touch |
@@ -315,7 +326,6 @@ since the move.
 | Clip resizing and combining with real adaptive recordings | Synthetic files and mock mode only | Real low-resolution pieces that are not 4:3 or change size in a way the keyframe scan misses; players that still resize on a real joined file; file size; whether Protect's channel 0 export of a piece with no motion is low resolution, empty or an error (each case is handled, but only the mock was seen); how long combining takes on a small server |
 | Activity live updates in the browser | Checked through the API tests only | UI wiring |
 | Revocation bound under load | Checked with three streams | Slower with many sessions |
-| MediaMTX after the relay refactor | Not re-run against a real process | A request that differs from the hand-checked one in a way the stub tests do not catch |
 | Recovery after a MediaMTX restart | Cache invalidation tested against the stub only | Which status MediaMTX returns for a path it no longer has; whether re-adding an identical path disturbs readers |
 
 ## Checking a real UNVR (read-only)
