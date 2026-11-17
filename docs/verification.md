@@ -85,6 +85,13 @@ reader. They show what the gateway decides, not how MediaMTX behaves.
   nothing is taken from the low channel instead. Passed on FFmpeg 9.0 (macOS) and 5.1 (Debian
   bookworm). Combining a five-minute piece (640x480 7 fps base, 90 s of 2688x1512 15 fps stretches)
   took 14 s with libx264 and 16 s with VideoToolbox on an Apple M5 Max (4 threads).
+- Adaptive recording decisions (`tests/recorded.test.ts`), with a fake recorder and fake media
+  operations, no FFmpeg: channel 0 alone when it covers the window; the low channel as base with the
+  high-resolution stretches placed by audio when channel 0 is more than a second short; the low
+  channel alone when the audio cannot place them, and when channel 0 has nothing or is busy; "may be
+  missing time" when the low channel keeps failing; which error wins when both channels fail; every
+  export retimed before it is read, and kept when retiming fails; a clip piece combined into one
+  file, or saved in low resolution when combining fails; the keyframe lead, capped at 10 s.
 - Resize speed (synthetic 640x480 7 fps source, five minutes, Apple M5 Max, 4 threads): 8.5 s to
   2688x1512 with libx264 `veryfast`, 7.6 s with VideoToolbox. Reading the picture sizes of a
   five-minute 2688x1512 piece took about 1 s.

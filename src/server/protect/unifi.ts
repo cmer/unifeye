@@ -4,7 +4,6 @@ import { pipeline } from "node:stream/promises";
 import { Agent, request, type Dispatcher } from "undici";
 import { ProtectClient } from "unifi-protect";
 import { log } from "../util";
-import { retimeVideoToAudio } from "./ffmpeg";
 import { NoRecordingError, ProtectUnavailableError, RecorderBusyError, type AdapterHealth, type EventQuery, type EventType, type LiveSource, type ProtectAdapter, type ProtectCamera, type ProtectEvent, type RecordingRanges } from "./types";
 
 interface RawEvent { id: string; type: string; start: number; end?: number | null; camera?: string; cameraId?: string; smartDetectTypes?: string[]; thumbnailId?: string; modelKey?: string }
@@ -218,8 +217,6 @@ export class UnifiProtectAdapter implements ProtectAdapter {
         await pipeline(r.body, createWriteStream(destPath, { mode: 0o600 }), { signal: opts.signal });
         if ((await stat(destPath)).size < 1024) throw new NoRecordingError();
         this.ok();
-        // Adaptive recording's Low channel comes out with a short, fast video clock (see retimeVideoToAudio).
-        await retimeVideoToAudio(destPath, opts.signal).catch((err) => { if (!opts.signal?.aborted) log("warn", "could not retime export", { error: err }); });
         return;
       } catch (e) {
         if (e instanceof NoRecordingError || e instanceof RecorderBusyError || opts.signal?.aborted) throw e;

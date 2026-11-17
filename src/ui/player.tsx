@@ -9,15 +9,10 @@ import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitl
 import { api, dateInput, dayBounds, EVENT_COLOR, EVENT_LABEL, fmtDay, fmtShort, fmtTime, mediaUrl, timeInput, zonedParts, zonedToUtc, type ActivityEvent, type Camera } from "./api";
 import { Empty, fail, RecMark, Select, useApp, useRecording } from "./app";
 import { LiveVideo, type Transport } from "./live";
+import type { WindowInfo as WinInfo } from "@/server/media/recordings";
 import { applySound, claimSound, play, setSound, SoundButton, useSound, watchAudio } from "./sound";
 
 type Ranges = { ranges: [number, number][]; precision: "exact" | "bounds" };
-/**
- * A recorded window as the server describes it. The base file starts `leadMs` before the window. With
- * adaptive recording, `overlay` lists where the high-resolution file's stretches sit in the base
- * (seconds of media time: `len` seconds from overlay time `from` belong at base time `at`).
- */
-type WinInfo = { startMs: number; endMs: number; leadMs: number; overlay: { at: number; from: number; len: number }[] };
 const ZONES: [string, string][] = [["local", "My time zone"], ["UTC", "UTC"], ["America/Toronto", "Toronto"], ["America/Vancouver", "Vancouver"], ["America/Chicago", "Chicago"], ["Europe/London", "London"], ["Europe/Paris", "Paris"], ["Australia/Sydney", "Sydney"]];
 const ghost = "text-white hover:bg-white/15 hover:text-white";
 /** `gap`: why a finished clip is noticeably shorter than asked (`durationMs` is its real length). */
