@@ -98,7 +98,16 @@ export interface ProtectAdapter {
   /** Asks the camera to describe its streams with this login (no video is read). Used before turning direct video on. */
   checkDirect(protectCameraId: string, login: CameraLogin): Promise<DirectCheck>;
   recordingRanges(protectCameraId: string, fromMs: number, toMs: number): Promise<RecordingRanges>;
-  /** Writes an MP4 covering [startMs, endMs) to `destPath`. Throws NoRecordingError when nothing was recorded. */
+  /**
+   * What the recorder lists as recorded for one channel ("focus": high, "wall": low) around
+   * [fromMs, toMs): segments, each from the first keyframe of a recorded run to its last keyframe,
+   * with short gaps inside left out. Null when the recorder doesn't offer the list.
+   */
+  recordedSegments(protectCameraId: string, fromMs: number, toMs: number, quality: "wall" | "focus", signal?: AbortSignal): Promise<[number, number][] | null>;
+  /**
+   * Writes an MP4 covering [startMs, endMs) to `destPath`: the recorder's GOPs joined, starting with
+   * the last keyframe at or before `startMs`. Throws NoRecordingError when nothing was recorded.
+   */
   exportClip(protectCameraId: string, startMs: number, endMs: number, destPath: string, opts?: { quality?: "wall" | "focus"; signal?: AbortSignal }): Promise<void>;
   /** Newest first. The caller has already reduced `protectCameraIds` to authorized cameras. */
   listEvents(q: EventQuery): Promise<ProtectEvent[]>;

@@ -1,6 +1,6 @@
 "use client";
 import { ArrowLeft, CalendarDays, CircleAlert, CircleCheck, Download, Lock, Maximize, Pause, Play, RotateCcw, RotateCw, ZoomIn, ZoomOut } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -10,7 +10,7 @@ import { api, dateInput, dayBounds, EVENT_COLOR, EVENT_LABEL, fmtDay, fmtShort, 
 import { Empty, fail, RecMark, Select, useApp, useRecording } from "./app";
 import { LiveVideo, type LiveInfo, type Transport, type VideoSource } from "./live";
 import type { WindowInfo as WinInfo } from "@/server/media/recordings";
-import { canHandOver, clipStartOf, offsetFor, overlayStartFor, shouldArm, stepFrame, windowStart } from "./recorded-playback";
+import { canHandOver, carryOnAt, cursorAt, cursorAtBase, positionAt, shouldArm, stepEntries, windowStart, type Cursor } from "./recorded-playback";
 import { dragTrim, nearestEnd, panTrim, startTrim as newTrim, TRIM_SPAN, typeTrim as typedTrim, zoomedSpan, zoomTrim as zoomedTrim, type End, type Trim } from "./trim";
 import { applySound, claimSound, play, setSound, SoundButton, useSound, watchAudio } from "./sound";
 import { fmtAgo, tickTimes, timelineBounds } from "./timeline";
@@ -76,6 +76,13 @@ export function Player({ cameraId }: { cameraId: string }) {
   /** Window descriptions by `${window start}:${seek count}`; "none" when the window has no recording. */
   const [infos, setInfos] = useState<Record<string, WinInfo | "none">>({});
   const infoReq = useRef(new Map<string, AbortController>()), handed = useRef(""), frame = useRef<() => void>(() => {});
+  /**
+   * Where the current window stands (`stepEntries`). `seek`: it began with a seek rather than playing
+   * on from the window before. `pending`: its entries are for the base alone, fuller ones are coming.
+   */
+  const cur = useRef<{ key: string; c: Cursor; seek: boolean; pending: boolean } | null>(null);
+  /** The wall-clock time on screen, and the last one passed to `setT` (which re-renders, so it is held back). */
+  const shown = useRef(0), shownSet = useRef(0);
   const hiVideo = useRef<HTMLVideoElement>(null);
   /** Whether the live stream and the recording carry sound (null while unknown), and the element the level meter listens to. */
   const [liveAudio, setLiveAudio] = useState<boolean | null>(null), [recAudio, setRecAudio] = useState<boolean | null>(null);
@@ -165,7 +172,9 @@ export function Player({ cameraId }: { cameraId: string }) {
   const ws = windowStart(target.ms, W), curKey = `${ws}:${target.n}`, nextKey = `${ws + W}:${target.n}`;
   const info = infos[curKey], nextInfo = armed === ws + W ? infos[nextKey] : undefined;
   // Fetch the descriptions of this window and, once armed, the next. A description no longer wanted
-  // (after a seek) is cancelled, which also cancels its export on the server.
+  // (after a seek) is cancelled, which also cancels its export on the server. The first answer comes
+  // as soon as the base file is ready; an adaptive window then says `pending`, and a second request
+  // brings the order with the high-resolution file.
   useEffect(() => {
     if (live || !target.ms) return;
     const want = new Map([[curKey, ws], ...(armed === ws + W ? [[nextKey, ws + W] as const] : [])]), reqs = infoReq.current;
@@ -174,38 +183,60 @@ export function Player({ cameraId }: { cameraId: string }) {
       if (reqs.has(k)) continue;
       const ac = new AbortController();
       reqs.set(k, ac);
-      api<WinInfo>(`/cameras/${cameraId}/playback/info?t=${at}`, { signal: ac.signal }).then((i) => setInfos((p) => ({ ...p, [k]: i })), () => { if (!ac.signal.aborted) setInfos((p) => ({ ...p, [k]: "none" })); });
+      const get = (early: boolean) => api<WinInfo>(`/cameras/${cameraId}/playback/info?t=${at}${early ? "&early=1" : ""}`, { signal: ac.signal });
+      get(true).then((i) => {
+        setInfos((p) => ({ ...p, [k]: i }));
+        // Without the high-resolution order, the base plays on alone.
+        if (i.pending) get(false).then((f) => setInfos((p) => ({ ...p, [k]: f })), () => {});
+      }, () => { if (!ac.signal.aborted) setInfos((p) => ({ ...p, [k]: "none" })); });
     }
   }, [live, target.ms, curKey, nextKey, armed, ws, W, cameraId]);
   useEffect(() => { const reqs = infoReq.current; return () => { for (const ac of reqs.values()) ac.abort(); reqs.clear(); }; }, []);
-  // Media time 0 is `leadMs` before the window (the export began on an earlier keyframe). Without a
-  // lead, the clip starts at the window start or at the first recorded moment inside it.
-  const lead = info && info !== "none" ? info.leadMs : 0, missing = !live && (noRec || info === "none");
-  const clipStart = useMemo(() => clipStartOf(ws, W, lead, rec), [rec, ws, W, lead]);
+  const missing = !live && (noRec || info === "none");
   const url = (at: number, high = false) => mediaUrl(`/api/cameras/${cameraId}/playback?t=${at}${high ? "&layer=high" : ""}`);
-  const src = !live && target.ms && info && info !== "none" ? url(ws) : undefined, hiSrc = src && info !== "none" && info?.overlay.length ? url(ws, true) : undefined;
-  // The following window loads in hidden elements while this one plays (armed once it is fully recorded).
+  const ok = info && info !== "none" ? info : null, withHigh = (i: WinInfo | null) => !!i?.high && !i.pending;
+  const src = !live && target.ms && ok ? url(ws) : undefined, hiSrc = src && withHigh(ok) ? url(ws, true) : undefined;
+  // The following window loads in hidden elements while this one plays (armed once it is fully recorded),
+  // each file already waiting where that window will start.
   const nextOk = src && nextInfo && nextInfo !== "none" ? nextInfo : null;
-  const nextSrc = nextOk ? url(ws + W) : undefined, nextHiSrc = nextOk?.overlay.length ? url(ws + W, true) : undefined;
+  const nextSrc = nextOk ? url(ws + W) : undefined, nextHiSrc = withHigh(nextOk) ? url(ws + W, true) : undefined;
+  const nextAt = ok && nextOk ? positionAt(nextOk.entries, carryOnAt(ok, nextOk)) : null;
   /** At the end of a window, the buffered next one takes over in place (same keys, so React keeps the elements). */
   const advance = () => {
     if (handed.current === curKey) return;
     handed.current = curKey;
     const nx = ws + W;
-    if (canHandOver(nextSrc ? nextVideo.current : null, nx, now())) { setT(nx); setTarget((p) => ({ ms: nx, n: p.n })); }
-    else seek(nx);
+    if (ok && nextOk && canHandOver(nextSrc ? nextVideo.current : null, nx, now())) {
+      const i = carryOnAt(ok, nextOk);
+      cur.current = { key: nextKey, c: { i, ...positionAt(nextOk.entries, i) }, seek: false, pending: !!nextOk.pending };
+      setT(nx); setTarget((p) => ({ ms: nx, n: p.n }));
+    } else seek(nx);
   };
-  // Every animation frame: hand over at the window's end, and keep the high-resolution overlay in step (see `stepFrame`).
+  // Every animation frame: play the window's entries in order and hand over at their end (see `stepEntries`).
   useEffect(() => { frame.current = () => {
     const v = video.current, h = hiVideo.current;
-    if (!v || live) return;
-    const r = stepFrame(v, h, { overlay: info && info !== "none" ? info.overlay : [], clipStart, windowEnd: ws + W });
-    if (r.handOver) advance();
+    if (!v || live || !ok) return;
+    let c = cur.current;
+    if (c?.key !== curKey) c = cur.current = { key: curKey, c: cursorAt(ok.entries, target.ms), seek: true, pending: !!ok.pending };
+    else if (c.pending && !ok.pending) {
+      // The high-resolution order arrived. Shortly after a seek, start again from the moment asked
+      // for, which may be one only the high-resolution file has; later, carry on from the base.
+      c.pending = false;
+      const atSeek = c.c.base != null || Math.abs(shown.current - target.ms) < 10_000;
+      c.c = c.seek && atSeek ? cursorAt(ok.entries, target.ms) : cursorAtBase(ok.entries, v.currentTime);
+    }
+    const r = stepEntries(v, h, ok.entries, c.c, { playing, rate: speed, start: (m) => play(m as HTMLVideoElement) });
+    c.c = r.cur;
     if (h) h.style.visibility = r.showHigh ? "visible" : "hidden";
+    if (r.wall != null) {
+      shown.current = r.wall;
+      if (Math.abs(r.wall - shownSet.current) >= 250) { shownSet.current = r.wall; setT(r.wall); }
+    }
+    if (r.handOver) advance();
   }; });
   useEffect(() => { if (live) return; let id = 0; const tick = () => { frame.current(); id = requestAnimationFrame(tick); }; id = requestAnimationFrame(tick); return () => cancelAnimationFrame(id); }, [live]);
-  useEffect(() => { const v = video.current; if (v) v.playbackRate = speed; }, [speed, src]);
-  useEffect(() => { const v = video.current; if (!v || live) return; if (playing) play(v); else v.pause(); }, [playing, live, src]);
+  // Pausing takes effect at once, even where animation frames are held back (a tab in the background).
+  useEffect(() => { if (!playing) { video.current?.pause(); hiVideo.current?.pause(); } }, [playing, src]);
   // Each recorded window is its own element: find out whether it has sound, and apply the sound setting to it.
   useEffect(() => { const v = video.current; if (!v || live) return; setRecEl(v); return watchAudio(v, setRecAudio); }, [live, curKey, ready]);
   useEffect(() => { const v = video.current; if (v && !live) applySound(v, soundOn && recAudio === true); }, [soundOn, recAudio, live, curKey, ready]);
@@ -267,14 +298,13 @@ export function Player({ cameraId }: { cameraId: string }) {
     <div ref={box} className="relative min-h-0 flex-1 overflow-hidden bg-black text-white">
       {live ? <LiveVideo cameraId={cameraId} quality="focus" active={!down} online={cam.online && !down} onTransport={setVia} sound={soundOn} onAudio={setLiveAudio} onMedia={setLiveEl} />
         : [<video ref={video} key={curKey} src={src} playsInline muted className="absolute inset-0 size-full object-contain"
-            onLoadedMetadata={(e) => { const v = e.currentTarget; v.currentTime = offsetFor(target.ms, clipStart); v.playbackRate = speed; if (playing) play(v); }}
-            onTimeUpdate={(e) => { setT(clipStart + e.currentTarget.currentTime * 1000); if (armed !== ws + W && shouldArm(ws, W, now())) setArmed(ws + W); }}
-            onEnded={advance} onError={() => setNoRec(true)} />,
+            onTimeUpdate={() => { if (armed !== ws + W && shouldArm(ws, W, now())) setArmed(ws + W); }}
+            onError={() => setNoRec(true)} />,
           hiSrc && <video ref={hiVideo} key={`${curKey}:hi`} src={hiSrc} preload="auto" playsInline muted aria-hidden style={{ visibility: "hidden" }} className="absolute inset-0 size-full object-contain" />,
           nextSrc && <video ref={nextVideo} key={nextKey} src={nextSrc} preload="auto" playsInline muted aria-hidden className="invisible absolute inset-0 size-full object-contain"
-            onLoadedMetadata={(e) => { e.currentTarget.currentTime = (nextOk?.leadMs ?? 0) / 1000; }} />,
+            onLoadedMetadata={(e) => { if (nextAt) e.currentTarget.currentTime = nextAt.base; }} />,
           nextHiSrc && <video key={`${nextKey}:hi`} src={nextHiSrc} preload="auto" playsInline muted aria-hidden style={{ visibility: "hidden" }} className="absolute inset-0 size-full object-contain"
-            onLoadedMetadata={(e) => { e.currentTarget.currentTime = nextOk ? overlayStartFor(nextOk) : 0; }} />]}
+            onLoadedMetadata={(e) => { if (nextAt?.high != null) e.currentTarget.currentTime = nextAt.high; }} />]}
       {(missing || (live && !cam.online)) && !down && (
         <div className="absolute inset-0 grid place-items-center bg-zinc-900 p-6 text-center text-sm text-zinc-400">
           <div><div className="mb-1 font-medium text-zinc-50">{missing ? `No recording at ${fmtTime(t, tz)}` : "Camera offline"}</div>
@@ -398,8 +428,11 @@ function ClipDialog({ name, startMs, endMs, first, onClose }: { name: string; st
   const close = () => { if (job.status === "running") void api(`/exports/${job.id}`, { method: "DELETE" }).catch(() => {}); onClose(job.status === "ready"); };
   const ready = job.status === "ready", pct = job.progress ?? 0, measured = job.status === "running" && pct > 0 && pct < 95;
   const note = pct >= 95 ? "Putting the pieces together…" : left != null ? fmtLeft(left) : pct > 0 ? "Estimating time left…" : "Waiting for the recorder…";
-  const len = job.durationMs ?? endMs - startMs, short = `The clip is ${fmtLen(len)} instead of ${fmtLen(endMs - startMs)}.`;
-  const gap = !ready || !job.gap ? null : job.gap === "busy" ? `The recorder was busy, so part of this time is missing. ${short} Try again in a few minutes.` : `Part of this time wasn\u2019t recorded. ${short}`;
+  // Missing time is measured on what the clip covers, so the file can be as long as asked (sharper
+  // moments the low-quality recording lacks add to it). Its length is only worth a word when shorter.
+  const len = job.durationMs ?? endMs - startMs, asked = endMs - startMs;
+  const short = len < asked && fmtLen(len) !== fmtLen(asked) ? ` The clip is ${fmtLen(len)} instead of ${fmtLen(asked)}.` : "";
+  const gap = !ready || !job.gap ? null : job.gap === "busy" ? `The recorder was busy, so part of this time is missing.${short} Try again in a few minutes.` : `Part of this time wasn\u2019t recorded.${short}`;
   return (
     <Dialog open onOpenChange={(o) => !o && close()}>
       <DialogContent>

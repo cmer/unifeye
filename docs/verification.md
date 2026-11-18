@@ -84,9 +84,11 @@ gateway) is pinned separately in
   database whose "All Staff" group is renamed. The admin switches
   and the hidden player button have not been checked in a browser.
 - Long clips in pieces (`tests/api.test.ts`, "long clip exports"): a 10.5-minute clip is exported as
-  three pieces, reports progress and a time left, and, with every piece starting 2.5 s early as the
-  recorder does, joins to the requested length plus only the first piece's lead. It also runs with a
-  relative cache folder, which once broke the join.
+  three pieces, reports progress and a time left. With every piece cut from one recording as the
+  recorder does (from the last keyframe at or before its start, so its first GOP is byte for byte the
+  last one of the piece before), the joins drop each repeated lead by keyframe hash and the clip comes
+  out the requested length plus half a GOP at each end. It also runs with a relative cache folder,
+  which once broke the join.
 - One picture size across a clip (`tests/match-size.test.ts`, and "play at one size" in
   `tests/api.test.ts`): with synthetic files, pieces at 640x480 (4:3), 960x540 and one that changes
   from 640x480 to 1280x720 partway, added before the 1280x720 piece, all come out 1280x720 with every
@@ -101,31 +103,71 @@ gateway) is pinned separately in
   is wrong there, not the retiming.
 - Saving adaptive recordings in full (`tests/api.test.ts`, "keep every minute of an adaptive
   recording" and "keep a stretch the recorder only has in low resolution"; `tests/match-size.test.ts`,
-  "combining an adaptive recording's two exports"): in mock mode, a six-minute clip from a camera with
-  high resolution only in 9 s of every 30 came out 362 s long (the 2 s lead included) at 1280x720,
-  where before it would have held only the high-resolution stretches. With synthetic red (low) and
-  blue (high) files, blue shows exactly inside the two placed spans and red everywhere else, the high
-  stretches keep 15 fps, and the low recording's sound is kept. A piece whose channel 0 export has
-  nothing is taken from the low channel instead. Passed on FFmpeg 9.0 (macOS) and 5.1 (Debian
-  bookworm). Combining a five-minute piece (640x480 7 fps base, 90 s of 2688x1512 15 fps stretches)
-  took 14 s with libx264 and 16 s with VideoToolbox on an Apple M5 Max (4 threads).
+  "rendering an adaptive recording's two exports in playback order"): in mock mode, a six-minute clip
+  from a camera with high resolution in seconds 12-21 of every 30 and low resolution everywhere but
+  seconds 15-18 came out 361 s long (the 1 s low-resolution lead included) at 1280x720. With synthetic
+  files (low red then yellow, high blue then green), `renderEntries` shows each colour exactly where
+  its entries put it, inserts included, keeps the high stretches at 15 fps and keeps sound. A piece
+  whose channel 0 export has nothing is taken from the low channel instead. The earlier combine
+  (overlay by audio) passed on FFmpeg 9.0 (macOS) and 5.1 (Debian bookworm) and took 14 s with
+  libx264 and 16 s with VideoToolbox for a five-minute piece (640x480 7 fps base, 90 s of 2688x1512
+  15 fps stretches) on an Apple M5 Max; `renderEntries` has been run on FFmpeg 9.0 only, and its speed
+  on real five-minute pieces has not been measured. In mock mode a one-minute piece rendered in about
+  1 s with VideoToolbox.
 - Adaptive recording decisions (`tests/recorded.test.ts`), with a fake recorder and fake media
-  operations, no FFmpeg: channel 0 alone when it covers the window; the low channel as base with the
-  high-resolution stretches placed by audio when channel 0 is more than a second short; the low
-  channel alone when the audio cannot place them, and when channel 0 has nothing or is busy; "may be
-  missing time" when the low channel keeps failing; which error wins when both channels fail; the
-  exact 1 s and 2 s thresholds; channel 0 kept, with no lead, when it cannot be read; every export
-  retimed before it is read, kept when retiming fails, and a cancel during a retime stopping the
-  fetch; a clip piece combined into one file, or saved in low resolution when combining fails; the
-  keyframe lead, capped at 10 s. `Recordings` itself (retries, the join's use of each piece's lead)
-  is still covered only by the FFmpeg-backed tests.
+  operations (GOPs and thumbnails made up per moment), no FFmpeg: which channels the segment lists
+  call for (`channelsFor`: high alone when the low one lists nothing, low alone when the high one
+  lists nothing within a minute, both otherwise); with both, the low file as base, matched high GOPs laid over it and the ones it lacks
+  inserted into its hole, every second of both files played once, wall-clock times from the
+  segments, and the early answer with the base alone; the low file alone when channel 0 hands back
+  the same low pictures, has nothing or is busy (then "may be missing time"); channel 0 alone when the
+  low channel keeps failing; without segment lists, the old size and length rules; which error wins
+  when both channels fail; a retime failure kept, a cancel during one stopping the fetch; a clip piece
+  rendered without its leads after the first piece and without its high lead on the first, or saved
+  from the low file with its lead and covered time when rendering fails. `tests/placement.test.ts`
+  drives the placement module through `placeStretch` on made-up recordings of made-up scenes (a room
+  whose picture changes smoothly, and a still one) and checks what the player would show against
+  each frame's true time: segment times, a lead from an earlier segment, hidden time put at a picture
+  jump, the order cut where time skips; with adaptive recording, overs and inserts with every frame
+  played once and time moving forward, an over cut where the base jumps, the high file's times pinned
+  by placed GOPs, a later moment that looks like an earlier one placed forward, a lone GOP laid over
+  only when no other moment looks like it, a still scene left to recorder times, and the pictures at
+  a hole's edges weighed against recorder times. Breaking each of these rules in the code fails a
+  test (checked once by hand), except the order's own check against backward placements, which the
+  matcher already prevents. `tests/timeline.test.ts` covers reading entries (`entryFor`, `wallAt`,
+  `skipLead`).
+  `tests/playback.test.ts` checks a mock adaptive window's order second by second, its early answer
+  and the cache, with real files.
+- Placing adaptive recordings on real exports (read-only exports of eight five-minute windows from six
+  adaptive-recording cameras on the production UNVR, 2026-11-18; 330 high GOPs beside about 19 minutes
+  of low-resolution video). The cameras' burned-in clocks, read by OCR, were used to check results
+  only; nothing in Unifeye reads them. The footage and clock readings are in the private repository
+  `cmer/unifeye-test-footage`; the numbers below come from `scripts/adaptive-eval` (`placement.mts`,
+  `order.mts`, `clock.mts`), which reruns them on the current code. Of the 315 high GOPs with a readable clock, 144 were placed on
+  the low file: 120 within a second of the right moment and 24 elsewhere. Of the 171 left unplaced
+  and played as inserts, 143 show moments the low file lacks (right) and 28 moments it also has
+  (shown twice in effect). Base keyframe times from the segment lists were within 4.1 s of the clock
+  at the median and 16 s at the 90th percentile (worst 36 s); four of the eight stretches had a
+  steady offset of 5 to 20 s. About half of that error comes from deciding which GOPs belong to which
+  segment: with that read off the clock instead (seven of the eight stretches; one had unreadable
+  segment starts), the times would be within 1.1 s at the median, 9.1 s at the 90th percentile and
+  28.5 s at worst (measured once on 2026-11-18; the scripts no longer include this check). Played in order, the entries stepped back in time 42 times across the
+  eight stretches, mostly by 3 to 37 s and twice by about 80 s (inserts placed in the wrong hole); one
+  of the 42, a step of 354 s, came from a misread clock, not from the order. No moment of either file was
+  left out. Placing took 0.2 to 0.4 s per stretch. After the placement became one module
+  (`placeStretch`), the scripts gave exactly the same numbers.
 - Recorded playback and clip choice in the player (`tests/player.test.ts`), with fake video
-  elements, no browser: where media time 0 sits (lead, first recorded moment), when the next window
-  is buffered and when it may take over, the handover at the window's end rather than the file's,
-  the overlay moved when it drifts more than 0.25 s, played, paused and sped up with the base, shown
-  only with the right frame, parked at the next stretch between stretches and never shown when
-  broken; a clip's ends dragged and typed within the length limits and never past two seconds ago,
-  and the timeline's zoom, pan and refitting. The React wiring around them is not tested.
+  elements, no browser: when the next window is buffered and when it may take over; where a seek
+  lands (the entry showing the moment, the high file waiting where it is next needed, a moment only
+  the high file has); where playing on starts (past both leads when the keyframes match, else on the
+  base lead); carrying on from the base when the full order arrives; and `stepEntries` frame by frame:
+  the high file parked and hidden under base entries, kept in step under overs (moved past 0.25 s of
+  drift, matched in speed, shown only with the right frame), playing alone through an insert with the
+  base paused and parked, waiting for a high file still loading, inserts skipped and overs played as
+  the base without a usable high file, seeks applied once each file can move, the handover at the
+  end of the entries only while playing, and pausing. A clip's ends dragged and typed within the
+  length limits and never past two seconds ago, and the timeline's zoom, pan and refitting. The React
+  wiring around them is not tested.
 - Resize speed (synthetic 640x480 7 fps source, five minutes, Apple M5 Max, 4 threads): 8.5 s to
   2688x1512 with libx264 `veryfast`, 7.6 s with VideoToolbox. Reading the picture sizes of a
   five-minute 2688x1512 piece took about 1 s.
@@ -230,10 +272,22 @@ are now pinned by the stub tests above. Production has since run live video thro
   held only 18 s (the motion, 20:22:32-20:22:50 by the camera's clock), and a 50 s request around
   the start of the motion returned 8 s. Matching their audio against the low channel placed both at
   the same moment (correlation 0.99 or better in every chunk), which agrees with the burned-in clock
-  and the motion event. The full player was not run against the real recorder.
-- Adaptive playback in mock mode (headless Chromium, 10-second windows, `MOCK_ADAPTIVE=mock-06`, so
-  motion crosses window boundaries): over a minute and six handovers, wall-clock time never jumped
-  or repeated. The overlay appeared within about 0.1 s of motion starting and disappeared within
+  and the motion event. The full player was not run against the real recorder. Later exports showed
+  that this does not hold in general: channel 0 returns low pictures where it has no high ones, the
+  high channel's sound drifts from its picture, and both channels have gaps, so placement by audio
+  was replaced by placement by picture (see "Placing adaptive recordings on real exports").
+- Adaptive playback in mock mode with the entry-based player (headless Chrome through Playwright,
+  10-second windows, `MOCK_ADAPTIVE=mock-06`, 2026-11-18): opened 8 s before motion and watched for
+  42 s across four handovers. The low file played alone, the high file showed over it at 12 s, the
+  low file held still while the high file played the 3 s it alone has, then both ran together to the
+  end of motion, including across a handover. Each new window started just past its 1 s lead (the
+  seams matched), and the picture never stopped except for 0.3 s at the start. This run found two
+  bugs, both fixed: windows with motion at an edge were sent the high file alone, losing low-only
+  seconds (`channelsFor`), and the simulated recorder's high exports did not repeat GOPs byte for byte,
+  so a handover replayed its lead. Clips, seeking by hand and slow connections were not tried.
+- Adaptive playback in mock mode with the earlier overlay player (headless Chromium, 10-second
+  windows, `MOCK_ADAPTIVE=mock-06`, so motion crosses window boundaries): over a minute and six handovers, wall-clock time never
+  jumped or repeated. The overlay appeared within about 0.1 s of motion starting and disappeared within
   0.1 s of it ending, stayed up across a boundary, and each window started at its 2 s lead. Opened
   mid-motion and paused, the overlay showed the matching frame. `tests/playback.test.ts` checks
   placement for two joined stretches in a 60-second window.
@@ -388,6 +442,7 @@ Read from the running stack, its audit log and its logs. Nothing was changed.
 | Clip export in the browser | Checked by hand in Chromium with mock cameras: zooming and panning the clip timeline, and a 2-hour clip (prepared in about 2.5 minutes, 7200 s long). Long clips in pieces (mock mode, headless Chromium): a 21-minute clip showed the sweep, then 57% and 76% with a time left, then "Putting the pieces together", started its download by itself and came out 1260.0 s long | Not checked on a phone or with touch |
 | Long clips from a real UNVR | One 1 h 55 min clip from one camera with adaptive recording (see Verified); fourteen of its pieces joined outside Unifeye after the fix. A 2 h clip from the same camera, saved before adaptive pieces were combined, came out 1 h 17 min: the burned-in clock showed 15 fps throughout but skipped between motion stretches, and about four minutes of low-resolution night footage were missing too | How long Protect takes before sending the first byte of an hour-long export (Unifeye waits up to 15 minutes), whether it caps export length, the disk space a clip needs, whether exporting pieces in parallel is faster than one long export on your recorder, whether the joins between pieces are seamless on real camera streams, and which status a real UNVR answers when it is overloaded or has nothing recorded (a 5xx for "nothing recorded" would be retried, then reported as busy) |
 | Clip resizing on a GPU in Linux (VAAPI with Intel Quick Sync or AMD, NVENC) | No such GPU available; only "no device, so the CPU" was checked | The driver rejects the settings and every clip resizes on the CPU (logged at start-up of the first clip), or a driver encodes at a quality that looks worse |
+| Adaptive playback and clips in a browser and on the real recorder | The entry-based player is checked with fake video elements and in mock mode in headless Chrome; placement was measured on saved exports (see Verified), not through Unifeye | Stalls at entry changes on slow connections (the high file must be loaded before an insert can play); how quickly a seek starts on the real recorder, whose high-resolution exports are larger; whether `playback-history` answers the same on other Protect versions; CPU use of matching on a small server; moments shown out of order where placement is wrong (measured above) |
 | Clip resizing and combining with real adaptive recordings | Synthetic files and mock mode only | Real low-resolution pieces that are not 4:3 or change size in a way the keyframe scan misses; players that still resize on a real joined file; file size; whether Protect's channel 0 export of a piece with no motion is low resolution, empty or an error (each case is handled, but only the mock was seen); how long combining takes on a small server |
 | Diagnostics on blocked or slow networks | Only loopback with the mock stack; the verdict, report, candidate filtering and statistics parsing are unit-tested | A blocked transport reported differently than expected; browsers other than Chromium report statistics or codecs differently; the download sample under-reads very fast or very slow links |
 | Activity live updates in the browser | Checked through the API tests only | UI wiring |

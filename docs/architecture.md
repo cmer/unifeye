@@ -583,39 +583,81 @@ foreign or expired token fails the request; it never falls back to the administr
 Time is cut into fixed windows (`PLAYBACK_WINDOW_SECONDS`, default 60, aligned to the epoch). A seek
 loads only the window containing the chosen moment and starts at the right offset. The player first
 asks for the window's description (`GET /api/cameras/:id/playback/info`), then loads its video
-(`GET /api/cameras/:id/playback`). While a window plays, the player buffers the next one in hidden
+(`GET /api/cameras/:id/playback`, and `?layer=high` for an adaptive window's high-resolution file). While a window plays, the player buffers the next one in hidden
 video elements and swaps it in, so playback continues without a black gap (the next window is
 buffered only once it is fully recorded; near live, the old load-on-end path still applies). Windows
 are cached on disk within a size and age limit. A seek that is abandoned cancels its export if nobody
 else is waiting for it. Clicking an event starts `EVENT_PREROLL_SECONDS` (default 5) before it.
 
-The recorder starts an export on the keyframe before the requested time, so a window's file usually
-begins a few seconds early. The description's `leadMs` says by how much. The player maps media time to
-wall-clock time with it, hands over to the next window when the wall-clock window ends (not when the
-file ends), and starts the next window at its own lead, so nothing is replayed or skipped at a
-handover. When the file runs out first, the old load-on-end path applies.
-These decisions, and the overlay's per-frame sync described below, live in
-`src/ui/recorded-playback.ts`; the player only wires them to its video elements. Choosing a clip's
-ends on the timeline follows the rules in `src/ui/trim.ts`.
+The recorder exports a plain run of GOPs (a keyframe and the frames that follow) with no times
+inside, starting with the last keyframe at or before the requested time: the window's lead, which
+the window before ends with. The description's `entries` say in what order to play the window's
+files and which wall-clock time each stretch shows (`src/server/media/timeline.ts`):
 
-Adaptive recording (Protect records the low channel, and the high channel only around motion) needs
-two corrections. Both live in one module, `src/server/media/recorded.ts` (`fetchRecorded`), which
-playback windows and clip pieces share; the Protect adapters only export one channel as asked.
+- `base`: the base file plays.
+- `over`: the base plays and the high-resolution file runs in step over it (an adaptive window).
+- `insert`: the high-resolution file plays on its own while the base waits: a moment the base lacks.
+
+Every frame of both files appears in exactly one entry, so nothing recorded is left out. Lead entries
+come first and are flagged. Wall-clock times come from the recorder's segment lists (see below); a
+seek picks the entry that shows the chosen moment, and the time on screen is read from the entry
+playing. The description also carries `seams`, the keyframe hashes of each file's first and last
+GOP. The recorder exports the same GOP byte for byte every time, so when a window's first base GOP is
+the window before's last, playing on skips the leads; otherwise the base lead plays too. The next
+window's files wait in hidden elements at that entry. These decisions live in
+`src/ui/recorded-playback.ts` (`stepEntries` runs on every animation frame); the player only wires
+them to its video elements. Choosing a clip's ends on the timeline follows the rules in `src/ui/trim.ts`.
+
+Adaptive recording (Protect records the low channel, and the high channel around motion) is handled
+in one module, `src/server/media/recorded.ts` (`fetchRecorded`), which playback windows and clip
+pieces share; the Protect adapters only export one channel as asked and list its segments. It hands
+the times and the order to the placement module, `src/server/media/placement/`, whose one function
+`placeStretch` takes the window and each file's GOPs, segment list and thumbnails, and returns the
+entries and a trace of what it found (keyframe times, picture jumps, matches). Every weight and
+threshold it uses is in one settings object, `PLACEMENT`. Its other files (`pictures.ts`, `clock.ts`,
+`order.ts`) are its implementation; nothing else imports them, and its tests and
+`scripts/adaptive-eval` go through `placeStretch` too.
 
 - **Video clock.** Some cameras' low channel exports with a video clock that runs fast (a 60-second
   window holds about 38 seconds of video beside 60 seconds of audio), which made the picture race
-  ahead and then freeze. Every export is retimed before anything reads it: the video frames are
+  ahead and then freeze. The base export is retimed before anything reads it: the video frames are
   spread evenly across the audio's span with an FFmpeg stream copy (`retimeVideoToAudio` in
-  `src/server/protect/ffmpeg.ts`). Files that are already consistent are left alone.
-- **High-resolution stretches.** A channel 0 export of a window containing motion holds only the
-  high-resolution stretches, joined, with nothing saying where they belong. When that export is more
-  than a second shorter than the window, the window is also exported from the low channel, which
-  becomes the base. The high-resolution file becomes an overlay (`?layer=high`), and its stretches are
-  placed by matching both files' audio (`alignSpans` in `src/server/media/align.ts`), to within 10 ms.
-  The description lists them as overlay spans. The player keeps the base as the clock and, on every
-  animation frame, keeps the overlay in step and shows it only inside its spans and only once it has
-  the right frame. If the audio cannot place the overlay (no audio, silence), the window plays in low
-  resolution rather than at the wrong moment.
+  `src/server/protect/ffmpeg.ts`). Files that are already consistent are left alone. The
+  high-resolution file is never retimed: its sound is stored apart from its picture and drifts from it.
+- **Which channels.** The two channels take turns, with gaps in both, and overlap in places. A
+  channel 0 export where high resolution is missing returns the low pictures instead, joined, with
+  nothing saying where time is missing. Unifeye asks the recorder which stretches each channel holds
+  (`recordedSegments`: Protect's `playback-history`, each segment from the first keyframe of a
+  recorded run to its last, with gaps shorter than about 20 s left out) and exports only what is
+  needed (`channelsFor`): channel 0 alone when the low channel lists nothing in the window, the low
+  channel alone when the high one lists nothing within a minute of it, and both otherwise. The rule
+  leans towards both because the high lists are off by many seconds: trusting them to say the high
+  channel covers the window lost low-only seconds at the edges of motion. Without segment lists,
+  channel 0 is exported first and the low channel added only when channel 0 comes back more than a
+  second short and the low one is longer and smaller.
+- **Times.** The base's keyframes get wall-clock times by fitting its GOPs into the low channel's
+  segments: a small search over which GOPs belong to which segment, with time hidden inside a
+  segment placed where the picture jumps, or spread evenly when nothing says where.
+  The high channel's segment lists are not reliable (off by 6 to 30 seconds on the recorder tested),
+  so they serve only where pictures say nothing.
+- **Placing the high-resolution file.** Each high GOP is placed on the base by its picture:
+  small grey thumbnails of every base frame and every high keyframe,
+  without the top and bottom bands where cameras draw their clock and name, compared both as they
+  are and minus each channel's usual picture. A search keeps placements moving forward, rewards runs
+  of GOPs that agree, and leaves a GOP unplaced unless it clearly beats every other moment. Placed GOPs
+  become `over` entries. Unplaced ones become `insert` entries in a hole of the base (a picture jump
+  or a skip in its times), chosen by how well the GOPs match the frames at the hole's edges and by
+  their own recorder times. Placed GOPs also pin the high file's times where its segment list hides
+  a gap. No burned-in clock is read: cameras need not show one.
+- **Early answer.** The high-resolution export is larger and placing it takes a moment, so
+  `info?early=1` answers as soon as the base is ready, with entries for the base alone and
+  `pending: true`. The player starts on the base and asks again for the full order; when it arrives
+  shortly after a seek, playback restarts at the chosen moment (which may be one only the high file
+  has), and later it carries on from where the base is.
+
+The player shows the high-resolution file only once it has the right frame; sound comes from the base
+alone, so inserts are silent. Without a usable high-resolution file, inserts are skipped and overs
+play as the base.
 
 Saved clips can be up to `CLIP_MAX_SECONDS` long (default two hours). The UniFi adapter streams
 every export (playback windows and clips) from the recorder straight to disk over a second
@@ -626,9 +668,11 @@ stays downloadable for ten minutes. Each session prepares at most two clips at a
 The recorder builds a whole export before it sends the first byte, so one request gives no progress.
 A clip longer than five minutes is therefore exported in five-minute pieces,
 `CLIP_EXPORT_PARALLEL` at a time (default 3), and joined with an FFmpeg stream copy
-(`exportPieces` in `src/server/media/recordings.ts`). Each piece starts on the keyframe before its
-start, so the overlap is cut from the end of the piece before it, using the same lead calculation as
-playback windows. A piece with nothing recorded is left out.
+(`exportPieces` in `src/server/media/recordings.ts`). Each piece starts with its lead, which the
+piece before ends with: a plain piece is joined from just past its lead when its first keyframe is
+the same GOP as the last one of the piece before (by keyframe hash), and an adaptive piece after the
+first is rendered without its leads. The first adaptive piece keeps the low channel's lead but not the
+high one's, which can be a moment from long before. A piece with nothing recorded is left out.
 
 The recorder can fail an export without meaning "nothing recorded": the UniFi adapter reports a 5xx,
 408 or 429 answer as `RecorderBusyError` and keeps 404, other refusals and near-empty bodies as
@@ -636,23 +680,21 @@ The recorder can fail an export without meaning "nothing recorded": the UniFi ad
 tried twice more, after 10 s and then 30 s (`exporter` in `recordings.ts`); playback windows are not retried. A
 piece the recorder still fails is left out rather than failing the whole clip, and a clip where no
 piece could be exported fails with "The recorder is busy". When the job finishes, the clip's real
-length is stored (`duration_ms`). If it is at least 5 s (or 1%) shorter than asked, `gap` says why:
-`busy` when a piece was lost to recorder failures, otherwise `unrecorded`. The dialog then shows the
-real length and says that part of the time is missing. The job reports the share of pieces
+length is stored (`duration_ms`). If the time its pieces cover (from their entries, `coveredMs`) is at
+least 5 s (or 1%) less than asked, `gap` says why: `busy` when a piece was lost to recorder failures,
+otherwise `unrecorded`. The dialog then says that part of the time is missing, and gives the real
+length when the file is shorter than asked (moments only the high resolution has can make it longer). The job reports the share of pieces
 done, and the status route adds a rough time left (average piece time, times the pieces left, divided
 by the parallel count). When the job is ready the browser starts the download on its own, and the
 dialog stays open with a way to download it again.
 
-With adaptive recording, a channel 0 export of a piece that contains motion holds only the motion,
-so each piece is fetched as playback windows are (`fetchRecorded`): when the channel 0 export is more
-than a second short, the low channel is exported too and the high-resolution stretches are placed
-by their audio. A clip needs one file, so `fetchRecordedFile` combines them (`overlayStretches` in
-`src/server/protect/ffmpeg.ts`): the low recording, scaled up and repeated to the high frame rate,
-with the high-resolution frames laid over it inside their spans, and the low recording's sound,
-which has no gaps. This re-encodes the whole piece at full size (about 14 s for five minutes at
-2688x1512 on a fast desktop CPU; a GPU barely helps because the scaling runs on the CPU). If the audio
-cannot place the stretches, or the combine fails, the piece is saved in low resolution, so no time is
-missing. If channel 0 has nothing for a piece, the low channel is tried before the piece is left out.
+With adaptive recording, each piece is fetched as playback windows are (`fetchRecorded`). A clip
+needs one file, so `fetchRecordedFile` renders the entries in order (`renderEntries` in
+`src/server/protect/ffmpeg.ts`): base stretches scaled up and repeated to the high frame rate,
+high-resolution stretches as they are, in one FFmpeg run, with the base's sound under base and over
+entries and silence under inserts. This re-encodes the whole piece at full size. If rendering fails,
+the piece is saved as the low channel alone, so only the moments the low channel lacks are missing.
+If channel 0 has nothing for a piece, the low channel is tried before the piece is left out.
 
 Pieces can still differ in size: one recorded only in low resolution (640x480 at 7 fps on the camera
 tested) sits next to combined or high-resolution ones, and a player resizes its picture at every change. With
@@ -679,7 +721,13 @@ zone, so a day is 23, 24 or 25 hours long around daylight-saving changes.
   that has never given one after three misses, for 30 minutes, and the player then shows only the time.
 - Recorded video, historical events and thumbnails use Protect's private HTTP API, which the
   `unifi-protect` library does not cover and Ubiquiti does not document. They may change between
-  Protect releases.
+  Protect releases. Adaptive playback also relies on `playback-history` (each channel's recorded
+  segments); without it, the files alone decide which channels to export, and wall-clock times run on
+  from the lead, so time missing inside a window is not skipped on the timeline.
+- Placing an adaptive recording's high-resolution GOPs depends on their pictures. In a still scene,
+  where every moment looks alike, GOPs stay unplaced and play as inserts where their recorder times
+  point, which can show a moment a few seconds out of order (never leave one out). See
+  `docs/verification.md` for measured rates.
 - No endpoint for recording gaps is known. On a real UNVR the timeline shows the overall recorded
   period, and a gap shows up as "Nothing recorded" when you seek into it.
 - Live video needs an RTSP stream already enabled on the camera in Protect. Enabling one would be a

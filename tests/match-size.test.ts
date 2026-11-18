@@ -6,7 +6,8 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig, setConfigForTests } from "@/server/config";
 import { SizeMatcher } from "@/server/media/match-size";
 import { encoderFor } from "@/server/protect/encoders";
-import { ffmpeg, joinParts, overlayStretches, probe, videoSizes } from "@/server/protect/ffmpeg";
+import { ffmpeg, joinParts, probe, renderEntries, videoSizes } from "@/server/protect/ffmpeg";
+import type { Entry } from "@/server/media/timeline";
 import { TEST_ENV } from "@/server/testing/fixture";
 
 const hasFfmpeg = spawnSync("ffprobe", ["-version"]).status === 0;
@@ -98,26 +99,34 @@ describe.skipIf(!hasFfmpeg)("matching picture sizes across a clip's pieces", () 
   }, 60_000);
 });
 
-describe.skipIf(!hasFfmpeg)("combining an adaptive recording's two exports", () => {
+describe.skipIf(!hasFfmpeg)("rendering an adaptive recording's two exports in playback order", () => {
   /** Average colour of the frame shown at `t` seconds. */
   const colour = (path: string, t: number) => [...execFileSync("ffmpeg", ["-v", "error", "-ss", String(t), "-i", path, "-frames:v", "1", "-vf", "scale=1:1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])];
-  const isRed = (c: number[]) => c[0] > 150 && c[2] < 80, isBlue = (c: number[]) => c[2] > 150 && c[0] < 80;
+  const is: Record<string, (c: number[]) => boolean> = {
+    red: ([r, g, b]) => r > 150 && g < 80 && b < 80, yellow: ([r, g, b]) => r > 150 && g > 150 && b < 80,
+    blue: ([r, , b]) => b > 150 && r < 80, green: ([r, g, b]) => g > 90 && r < 80 && b < 80,
+  };
+  /** 20 s of one colour, then 20 s (or `secs`) of another, with sound. */
+  const twoColours = async (path: string, a: string, b: string, size: string, fps: number, secs = 20) => {
+    const src = (c: string) => ["-f", "lavfi", "-i", `color=c=${c}:s=${size}:r=${fps}:d=${secs}`];
+    await ffmpeg([...src(a), ...src(b), "-f", "lavfi", "-i", `sine=d=${2 * secs}:sample_rate=16000`, "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0[v]", "-map", "[v]", "-map", "2:a", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-bf", "0", "-g", String(fps), "-c:a", "aac", "-video_track_timescale", "1000", "-f", "mp4", "-y", path]);
+  };
 
-  it("shows the high-resolution stretches at their places over the whole low-resolution recording", async () => {
+  it("plays each file's stretches in turn, at the high resolution, keeping the low file's sound", async () => {
     setConfigForTests(loadConfig({ ...TEST_ENV, VIDEO_ENCODER: "cpu" } as unknown as NodeJS.ProcessEnv));
-    // Low: 60 s of red at 640x480, 7 fps. High: two 9 s stretches of blue at 1280x720, 15 fps, joined,
-    // that belong at 12-21 s and 42-51 s.
-    const base = join(dir, "ov-base.mp4"), high = join(dir, "ov-high.mp4"), out = join(dir, "ov-out.mp4");
-    await ffmpeg(["-f", "lavfi", "-i", "color=c=red:s=640x480:r=7:d=60", "-f", "lavfi", "-i", "sine=d=60:sample_rate=16000", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-bf", "0", "-g", "14", "-c:a", "aac", "-video_track_timescale", "1000", "-f", "mp4", "-y", base]);
-    await ffmpeg(["-f", "lavfi", "-i", "color=c=blue:s=1280x720:r=15:d=18", "-f", "lavfi", "-i", "sine=d=18:sample_rate=16000", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-bf", "0", "-g", "30", "-c:a", "aac", "-video_track_timescale", "1000", "-f", "mp4", "-y", high]);
-    await overlayStretches(base, high, [{ at: 12, from: 0, len: 9 }, { at: 42, from: 9, len: 9 }], out, await encoderFor("h264"));
+    // Low: red then yellow, 640x480 at 7 fps. High: blue then green, 1280x720 at 15 fps, 10 s each.
+    const base = join(dir, "r-base.mp4"), high = join(dir, "r-high.mp4"), out = join(dir, "r-out.mp4");
+    await twoColours(base, "red", "yellow", "640x480", 7);
+    await twoColours(high, "blue", "green", "1280x720", 15, 10);
+    const e = (kind: Entry["kind"], b: number, len: number, h?: number): Entry => ({ kind, base: b, len, at: 0, span: 0, ...(h != null ? { high: h } : {}) });
+    const entries = [e("base", 0, 10), e("over", 10, 5, 0), e("insert", 15, 5, 5), e("base", 15, 10), e("over", 25, 5, 10), e("insert", 30, 5, 15), e("base", 30, 10)];
+    await renderEntries(base, high, entries, out, await encoderFor("h264"));
     expect(Object.keys(frameSizes(out))).toEqual(["1280x720"]);
-    expect(streams(out)).toEqual(streams(base)); // the low recording's sound, from the start
-    expect((await probe(out)).duration).toBeCloseTo(60, 0);
-    for (const t of [5, 11.7, 21.3, 30, 41.7, 51.3, 58]) expect(isRed(colour(out, t)), `red at ${t}`).toBe(true);
-    for (const t of [12.3, 16, 20.7, 42.3, 50.7]) expect(isBlue(colour(out, t)), `blue at ${t}`).toBe(true);
+    expect(streams(out)).toContain("audio");
+    expect((await probe(out)).duration).toBeCloseTo(50, 0);
+    const want: [number, string][] = [[5, "red"], [9.7, "red"], [10.3, "blue"], [17, "blue"], [19.7, "blue"], [20.3, "red"], [27, "yellow"], [32, "green"], [37, "green"], [39.7, "green"], [40.3, "yellow"], [48, "yellow"]];
+    for (const [t, c] of want) expect(is[c](colour(out, t)), `${c} at ${t}`).toBe(true);
     // The high stretches keep their frame rate: 15 fps, not the low recording's 7.
-    const times = frameTimes(out).filter((t) => t >= 13 && t < 20);
-    expect(times.length).toBeGreaterThanOrEqual(7 * 15 - 2);
+    expect(frameTimes(out).filter((t) => t >= 11 && t < 19).length).toBeGreaterThanOrEqual(8 * 15 - 2);
   }, 60_000);
 });

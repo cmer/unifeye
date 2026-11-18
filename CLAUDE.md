@@ -107,3 +107,7 @@ For example, "Waiting for the recorder…" is better than "Waiting for the recor
 ## Tests
 
 Vitest, all in `tests/`. `makeFixture()` in `src/server/testing/fixture.ts` builds the full service graph on an in-memory database with the mock adapter and the in-memory relay, plus a fixed cast of users, groups and views. API tests call `handleApi` directly with a constructed `Request`; there is no HTTP server. Use the fixture's `setConfigForTests` / `setServicesForTests` hooks rather than mocking modules.
+
+### Adaptive matching on real footage
+
+`scripts/adaptive-eval/` measures how well adaptive recordings are put back together (the placement module, `src/server/media/placement/`, through `placeStretch` as `fetchRecorded` calls it) on real recorder footage, scored against each camera's burned-in clock; its `README.md` explains the scripts, the baseline and how to add footage. The footage lives in the private repository `cmer/unifeye-test-footage` (clone it next to this checkout). This repository is public: never commit footage, stills, camera names or ids, capture times or clock readings here, or put them in issues or pull requests. After changing the placement, rerun `placement.mts`, `order.mts` and `clock.mts` and record the numbers in `docs/verification.md`.

@@ -53,3 +53,6 @@ next-env.d.ts
 # Local to a deployment: Compose overrides, and local edits saved by scripts/update.sh
 compose.override.yaml
 .local-changes-*.diff
+
+# Real camera footage never belongs in this public repository (see scripts/adaptive-eval/README.md)
+*.mp4
