@@ -20,6 +20,7 @@ import { Media } from "./media/gateway";
 import { startHookServer } from "./media/hook-server";
 import { commandPublishUrl, MediaMtxRelay } from "./media/mediamtx";
 import { Recordings } from "./media/recordings";
+import { smtpMailer, type Mailer } from "./mail";
 import type { Relay } from "./media/relay";
 import { MockProtectAdapter } from "./protect/mock";
 import type { ProtectAdapter } from "./protect/types";
@@ -29,7 +30,7 @@ import { log } from "./util";
 
 export interface Services {
   db: Db; policy: Policy; access: Access; views: Views; sessions: Sessions; previews: Previews; admin: Admin; oidc: Oidc; local: LocalAccounts; cloudflare: CloudflareAccess;
-  adapter: ProtectAdapter; media: Media; recordings: Recordings; events: Events;
+  adapter: ProtectAdapter; mailer: Mailer; media: Media; recordings: Recordings; events: Events;
   state: { startedAt: number; lastCameraSyncAt: number | null; lastCameraSyncError: string | null; timers: NodeJS.Timeout[] };
 }
 
@@ -41,10 +42,10 @@ export function makeAdapter(): ProtectAdapter {
 }
 
 /** Wires every server-side service around one database connection, one Protect adapter and one media relay. */
-export function buildServices(db: Db, adapter: ProtectAdapter, relay: Relay = new MediaMtxRelay()): Services {
+export function buildServices(db: Db, adapter: ProtectAdapter, relay: Relay = new MediaMtxRelay(), mailer: Mailer = smtpMailer()): Services {
   const policy = new Policy(db), views = new Views(db, policy), sessions = new Sessions(db, policy), previews = new Previews(db, policy);
   const admin = new Admin(db, policy, views, sessions), oidc = new Oidc(db, policy, sessions);
-  const local = new LocalAccounts(db, policy, sessions), cloudflare = new CloudflareAccess(db, policy, sessions);
+  const local = new LocalAccounts(db, policy, sessions, mailer), cloudflare = new CloudflareAccess(db, policy, sessions);
   const get = () => adapter;
   // Access listens to Policy, Sessions and Previews; everything that holds access listens to Access.
   // Events subscribes per open feed (Events.subscribe); the two process-wide holders are wired here.
@@ -52,7 +53,7 @@ export function buildServices(db: Db, adapter: ProtectAdapter, relay: Relay = ne
   const media = new Media(policy, access, get, relay, new DirectVideo(db)), recordings = new Recordings(db, policy, access, get), events = new Events(policy, access, get);
   access.onChange(() => media.revalidate());
   access.onChange(() => { void recordings.dropDeadExports().catch((e) => log("error", "export cleanup failed", { error: e })); });
-  return { db, policy, access, views, sessions, previews, admin, oidc, local, cloudflare, adapter, media, recordings, events, state: { startedAt: Date.now(), lastCameraSyncAt: null, lastCameraSyncError: null, timers: [] } };
+  return { db, policy, access, views, sessions, previews, admin, oidc, local, cloudflare, adapter, mailer, media, recordings, events, state: { startedAt: Date.now(), lastCameraSyncAt: null, lastCameraSyncError: null, timers: [] } };
 }
 
 const g = globalThis as unknown as { __unifeye?: Services; __unifeyeStart?: Promise<void> };
@@ -106,7 +107,7 @@ export function startRuntime(): Promise<void> {
     // Backstop: time limits that passed unnoticed become access changes, and the relay is re-checked regardless.
     every(c.REVOCATION_SWEEP_SECONDS, "revocation sweep", () => { s.access.expireDue(); return s.media.sweep(); });
     every(Math.min(60, c.OIDC_RECHECK_SECONDS), "identity re-validation", () => s.oidc.reconcile());
-    every(300, "housekeeping", async () => { await s.recordings.cleanup(); s.sessions.purgeExpired(); });
+    every(300, "housekeeping", async () => { await s.recordings.cleanup(); s.sessions.purgeExpired(); s.local.purgeCodes(); });
     let lastBackupDay = "";
     every(600, "backup", async () => {
       const d = new Date(), day = d.toISOString().slice(0, 10);

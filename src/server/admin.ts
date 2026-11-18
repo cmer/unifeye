@@ -2,12 +2,12 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { audit } from "./audit";
 import { applyProviderGroups } from "./auth/claims";
-import { insertLocalUser, issuePasswordLink, usernameSchema } from "./auth/local";
+import { codeEmailsSchema, insertLocalUser, issuePasswordLink, usernameSchema } from "./auth/local";
 import type { Sessions } from "./auth/session";
 import { subjectOf, type Actor } from "./authz/actor";
 import type { Policy } from "./authz/policy";
 import type { Views, ViewRow } from "./authz/views";
-import { config, groupsClaim, signInMethods } from "./config";
+import { config, emailCodesOn, groupsClaim, signInMethods } from "./config";
 import { schema, type Db } from "./db";
 import { badRequest, conflict, encrypt, forbidden, newId, notFound } from "./util";
 
@@ -193,27 +193,63 @@ export class Admin {
 
   // ---- password accounts --------------------------------------------------
   /**
-   * Adds a person who signs in with a username and password. The account has no password until the
-   * person opens the returned one-time link and chooses one; the administrator never sees it.
+   * How a password account signs in: with a password, with codes emailed to `codeEmails`, or both.
+   * At least one; email codes only while outgoing mail is set up.
    */
-  createPasswordUser(a: Actor, input: { name?: unknown; username?: unknown; role?: unknown }) {
+  private signInOptions(input: { password?: unknown; codeEmails?: unknown }) {
+    const o = z.object({ password: z.boolean().default(true), codeEmails: codeEmailsSchema.default([]) }).parse({ password: input.password, codeEmails: input.codeEmails });
+    if (!o.password && !o.codeEmails.length) throw badRequest("Choose at least one way to sign in.");
+    if (o.codeEmails.length && !emailCodesOn()) throw badRequest("Email isn't set up on the server yet.");
+    return o;
+  }
+  /**
+   * Adds a person who signs in with a username, and a password, email codes or both. With a password,
+   * the account has none until the person opens the returned one-time link and chooses one; the
+   * administrator never sees it. With email codes only, there is no link and they can sign in at once.
+   */
+  createPasswordUser(a: Actor, input: { name?: unknown; username?: unknown; role?: unknown; password?: unknown; codeEmails?: unknown }) {
     this.admin(a, "user.create");
     if (!signInMethods().local) throw badRequest("Passwords are turned off.");
     const p = z.object({ name, username: usernameSchema, role: z.enum(["admin", "staff"]).default("staff") }).parse(input);
+    const o = this.signInOptions(input);
     const out = this.db.transaction((tx) => {
-      const id = insertLocalUser(tx, p);
-      return { id, link: issuePasswordLink(tx, id, a.userId) };
+      const id = insertLocalUser(tx, { ...p, passwordAllowed: o.password, codeEmails: o.codeEmails });
+      return { id, link: o.password ? issuePasswordLink(tx, id, a.userId) : null };
     }, { behavior: "immediate" });
-    this.log(a, "user.create", "user", out.id, { username: p.username, role: p.role });
+    this.log(a, "user.create", "user", out.id, { username: p.username, role: p.role, password: o.password, codeEmails: o.codeEmails.length });
     this.done();
     return out;
+  }
+  /**
+   * Changes how a password account signs in. Turning the password off removes it and any unused link;
+   * taking away a way in (the password, or an address) ends the person's sessions. Pending codes are
+   * always cancelled, so a code already on its way to a removed address can't be used.
+   */
+  setSignIn(a: Actor, userId: string, input: { password?: unknown; codeEmails?: unknown }) {
+    this.admin(a, "user.sign_in");
+    if (!signInMethods().local) throw badRequest("Passwords are turned off.");
+    const cur = this.db.select().from(S.localCredentials).where(eq(S.localCredentials.userId, userId)).get();
+    if (!cur) throw notFound();
+    const o = this.signInOptions(input);
+    const removed = (cur.passwordAllowed && !o.password) || cur.codeEmails.some((e) => !o.codeEmails.includes(e));
+    this.db.transaction((tx) => {
+      tx.update(S.localCredentials).set({ passwordAllowed: o.password, codeEmails: o.codeEmails, ...(o.password ? {} : { passwordHash: null, passwordSetAt: null }) }).where(eq(S.localCredentials.userId, userId)).run();
+      if (!o.password) tx.delete(S.passwordLinks).where(eq(S.passwordLinks.userId, userId)).run();
+      tx.delete(S.emailCodes).where(eq(S.emailCodes.userId, userId)).run();
+    }, { behavior: "immediate" });
+    this.log(a, "user.sign_in", "user", userId, { password: o.password, codeEmails: o.codeEmails.length });
+    if (removed) this.sessions.revokeUser(userId, "sign_in_changed");
+    this.done();
+    return { link: o.password && !cur.passwordAllowed ? this.passwordLink(a, userId).link : null };
   }
   /** A new one-time password link. The current password keeps working until the link is used. */
   passwordLink(a: Actor, userId: string) {
     this.admin(a, "user.password_link");
     if (!signInMethods().local) throw badRequest("Passwords are turned off.");
     const out = this.db.transaction((tx) => {
-      if (!tx.select().from(S.localCredentials).where(eq(S.localCredentials.userId, userId)).get()) throw notFound();
+      const c = tx.select().from(S.localCredentials).where(eq(S.localCredentials.userId, userId)).get();
+      if (!c) throw notFound();
+      if (!c.passwordAllowed) throw badRequest("This person doesn't sign in with a password. Turn passwords on for them first.");
       return issuePasswordLink(tx, userId, a.userId);
     }, { behavior: "immediate" });
     this.log(a, "user.password_link", "user", userId);

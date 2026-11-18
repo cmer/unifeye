@@ -6,7 +6,7 @@
  *   restore <file> [--force]   restore a backup into DATABASE_PATH (stop the app first)
  *   users              list people, with how they sign in and the issuer and subject that identify them
  *   create-admin <username> [name]   add an administrator who signs in with a password; prints a one-time link
- *   password-link <username>         print a new one-time password link for a password account
+ *   password-link <username>         print a new one-time password link for a password account (turns password sign-in on if it was off)
  * The last two need SIGN_IN_METHODS to include `local`. Links last 24 hours and are shown once.
  */
 import { eq } from "drizzle-orm";
@@ -46,7 +46,9 @@ const main = async () => {
         const cred = tx.select().from(schema.localCredentials).where(eq(schema.localCredentials.username, username)).get();
         if (!cred) throw new Error(`No password account named ${username}.`);
         userId = cred.userId;
-        audit(db, { action: "user.password_link", targetType: "user", targetId: userId, detail: { via: "cli" } });
+        // The operator's way back in, so it also turns password sign-in on for an email-code-only account.
+        if (!cred.passwordAllowed) tx.update(schema.localCredentials).set({ passwordAllowed: true }).where(eq(schema.localCredentials.userId, userId)).run();
+        audit(db, { action: "user.password_link", targetType: "user", targetId: userId, detail: { via: "cli", ...(cred.passwordAllowed ? {} : { passwordTurnedOn: true }) } });
       }
       return issuePasswordLink(tx, userId, null);
     }, { behavior: "immediate" });

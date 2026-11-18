@@ -161,6 +161,16 @@ gateway) is pinned separately in
   a password change cancelling unused links and having its own lock, Origin and JSON checks, `LOCAL_APP_URL`, session rotation,
   sessions ending on a new password and on disable, changing your own password, and turning `local`
   or `oidc` off locking those people out.
+- Email codes (`tests/email-codes.test.ts`, with an in-memory mailer): accounts with codes only get
+  no password or link, at least one way in, address validation and the three-address limit, codes
+  refused without outgoing mail, codes sent to every address and kept out of the subject, a code
+  working only with the asking browser's cookie and only once, identical answers (and no email) for
+  unknown, password-only and disabled accounts, five tries per code for real and unknown usernames
+  alike, the send cooldown, a new code replacing the old one, expiry, a disabled account refused
+  after a right code, failed mail audited and flagged to administrators, turning the password off
+  (hash removed, sessions ended, password sign-in refused), removing an address cancelling pending
+  codes and ending sessions, and code-only people unable to set a password. The two-step page: only code-only accounts go to a code (unknown, disabled, password and both get an identical password answer), a held code reused instead of a second email, and no code step without outgoing mail. Not yet checked against
+  a real mail server.
 - Cloudflare Access against a stubbed key endpoint (`tests/cloudflare.test.ts`): sign-in from a
   valid token, refusal of forged, foreign-issuer, foreign-audience, expired, unknown-key and
   subject-less tokens, the token re-checked on every request and bound to the session's identity,

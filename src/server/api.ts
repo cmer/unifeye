@@ -3,11 +3,12 @@ import { ZodError } from "zod";
 import { stat } from "node:fs/promises";
 import { audit } from "./audit";
 
+import { CODE_COOKIE, CODE_TTL_MS } from "./auth/local";
 import { LOGIN_TXN_COOKIE, safeReturnTo } from "./auth/oidc";
 import { SESSION_COOKIE, type SessionRow } from "./auth/session";
 import { subjectOf, type Actor } from "./authz/actor";
 import type { CameraInfo, UserRow } from "./authz/policy";
-import { allowedOrigins, config, groupsClaim, signInMethods } from "./config";
+import { allowedOrigins, config, emailCodesOn, groupsClaim, signInMethods } from "./config";
 import { schema } from "./db";
 import { backupStatus } from "./db/backup";
 import { DIRECT_PROBLEM } from "./media/direct";
@@ -239,6 +240,34 @@ route("POST", "/auth/password-link", { public: true, rate: "auth" }, async ({ s,
   const r = await s.local.useLink(b.token, b.password, { ip, userAgent: req.headers.get("user-agent") ?? undefined, previousSessionToken: readCookie(req, SESSION_COOKIE) });
   return signedIn(r.token, "/");
 });
+/**
+ * Email codes. The browser that asks keeps a secret in a cookie that only the sign-in routes see
+ * (SameSite=Strict); the code works only together with it. Asking always gives the same answer,
+ * and the email goes out after the answer is sent.
+ */
+const CODE_PATH = "/api/auth";
+const codeCookie = (value: string, maxAgeSec: number) => `${CODE_COOKIE}=${value}; Path=${CODE_PATH}; HttpOnly; SameSite=Strict; Max-Age=${maxAgeSec}${secure() ? "; Secure" : ""}`;
+route("POST", "/auth/email", { public: true, rate: "auth" }, async ({ s, req, ip }) => {
+  const b = await passwordRequest(req, s);
+  if (!emailCodesOn()) throw notFound();
+  const r = s.local.requestCode(b.username, { ip, userAgent: req.headers.get("user-agent") ?? undefined, timeZone: typeof b.timeZone === "string" ? b.timeZone : undefined });
+  void r.sent; // not awaited: a slow mail server must not reveal that the account exists
+  return json({ ok: true, expiresInSeconds: CODE_TTL_MS / 1000 }, 200, { "set-cookie": codeCookie(r.secret, CODE_TTL_MS / 1000) });
+});
+route("POST", "/auth/start", { public: true, rate: "auth" }, async ({ s, req, ip }) => {
+  const b = await passwordRequest(req, s);
+  const r = s.local.start(b.username, readCookie(req, CODE_COOKIE), { ip, userAgent: req.headers.get("user-agent") ?? undefined, timeZone: typeof b.timeZone === "string" ? b.timeZone : undefined });
+  return "secret" in r && r.secret ? json({ next: r.next }, 200, { "set-cookie": codeCookie(r.secret, CODE_TTL_MS / 1000) }) : json({ next: r.next });
+});
+route("POST", "/auth/email/verify", { public: true, rate: "auth" }, async ({ s, req, ip }) => {
+  const b = await passwordRequest(req, s);
+  if (!emailCodesOn()) throw notFound();
+  const r = s.local.verifyCode(readCookie(req, CODE_COOKIE), b.code, { ip, userAgent: req.headers.get("user-agent") ?? undefined, previousSessionToken: readCookie(req, SESSION_COOKIE) });
+  maybeSeedDemo(s);
+  const res = signedIn(r.token, b.returnTo);
+  res.headers.append("set-cookie", codeCookie("", 0));
+  return res;
+});
 route("POST", "/me/password", { rate: "auth" }, async ({ s, actor, user, session, ip, json: body }) => {
   if (actor.preview) throw forbidden("preview_read_only");
   if (user.authMethod !== "local") throw notFound();
@@ -256,7 +285,7 @@ route("POST", "/auth/backchannel-logout", { public: true, rate: "auth" }, async 
 route("GET", "/me", {}, ({ s, actor, user, session }) => {
   const subject = subjectOf(actor), su = s.policy.activeUser(subject)!, c = config(), landing = s.views.landing(subject);
   return {
-    user: { id: user.id, name: user.name || user.email || "You", role: user.role, signsInWith: user.authMethod },
+    user: { id: user.id, name: user.name || user.email || "You", role: user.role, signsInWith: user.authMethod, hasPassword: user.authMethod === "local" && s.local.hasPassword(user.id) },
     csrf: session.csrfSecret,
     preview: actor.preview ? { subject: { id: su.id, name: su.name } } : null,
     subject: { id: su.id, name: su.name, role: su.role, canCreateViews: su.role === "admin" || su.allowPrivateViews, canExportClips: s.policy.canExportClips(subject) },
@@ -377,10 +406,12 @@ route("GET", "/admin/overview", { admin: true }, ({ s }) => {
   const creds = new Map(s.db.select().from(schema.localCredentials).all().map((x) => [x.userId, x])), methods = signInMethods();
   const viewName = new Map(s.db.select().from(schema.views).all().map((v) => [v.id, v.name]));
   return {
-    users: users.map((u) => { const l = s.views.landing(u.id); return { id: u.id, name: u.name, email: u.email, username: creds.get(u.id)?.username ?? null, passwordSet: !!creds.get(u.id)?.passwordHash, signsInWith: u.authMethod, methodOn: methods[u.authMethod], role: u.role, status: u.status, allowPrivateViews: u.allowPrivateViews, canExportClips: s.policy.canExportClips(u.id), lastLoginAt: u.lastLoginAt, providerGroups: u.providerGroups, groupIds: members.filter((m) => m.userId === u.id).map((m) => m.groupId), cameraCount: s.policy.cameraIds(u.id).size, landing: { ...l, viewName: l.viewId ? viewName.get(l.viewId) : null, groupName: groups.find((g) => g.id === l.groupId)?.name ?? null } }; }),
+    users: users.map((u) => { const l = s.views.landing(u.id); return { id: u.id, name: u.name, email: u.email, username: creds.get(u.id)?.username ?? null, passwordSet: !!creds.get(u.id)?.passwordHash, passwordAllowed: creds.get(u.id)?.passwordAllowed ?? false, codeEmails: creds.get(u.id)?.codeEmails ?? [], signsInWith: u.authMethod, methodOn: methods[u.authMethod], role: u.role, status: u.status, allowPrivateViews: u.allowPrivateViews, canExportClips: s.policy.canExportClips(u.id), lastLoginAt: u.lastLoginAt, providerGroups: u.providerGroups, groupIds: members.filter((m) => m.userId === u.id).map((m) => m.groupId), cameraCount: s.policy.cameraIds(u.id).size, landing: { ...l, viewName: l.viewId ? viewName.get(l.viewId) : null, groupName: groups.find((g) => g.id === l.groupId)?.name ?? null } }; }),
     groups: groups.map((g) => ({ id: g.id, name: g.name, defaultPriority: g.defaultPriority, isAllStaff: g.isAllStaff, providerValues: g.providerValues, canExportClips: g.canExportClips, memberIds: members.filter((m) => m.groupId === g.id).map((m) => m.userId), syncedMemberIds: members.filter((m) => m.groupId === g.id && m.source === "provider").map((m) => m.userId) })),
     groupSync: { claim: groupsClaim() },
-    signIn: { ...methods, oidcName: config().OIDC_DISPLAY_NAME },
+    signIn: { ...methods, oidcName: config().OIDC_DISPLAY_NAME, email: emailCodesOn() },
+    // Only whether email is going out, for a warning: never addresses or contents.
+    mail: ((h) => ({ failing: !!h.lastErrorAt && (!h.lastOkAt || h.lastErrorAt > h.lastOkAt) }))(s.mailer.health()),
     cameras: s.policy.allCamerasUnchecked().map(camDto).sort((a, b) => a.name.localeCompare(b.name)),
     tags: s.db.select().from(schema.tags).all().map((t) => ({ id: t.id, name: t.name })).sort((a, b) => a.name.localeCompare(b.name)),
     cameraTags: s.db.select().from(schema.cameraTags).all(),
@@ -398,6 +429,7 @@ route("GET", "/admin/overview", { admin: true }, ({ s }) => {
 });
 route("POST", "/admin/users", { admin: true }, async ({ s, actor, json: body }) => s.admin.createPasswordUser(actor, await body()));
 route("POST", "/admin/users/:id/password-link", { admin: true }, ({ s, actor, p }) => s.admin.passwordLink(actor, p.id));
+route("PUT", "/admin/users/:id/sign-in", { admin: true }, async ({ s, actor, p, json: body }) => s.admin.setSignIn(actor, p.id, await body()));
 route("PATCH", "/admin/users/:id", { admin: true }, async ({ s, actor, p, json: body }) => { s.admin.updateUser(actor, p.id, await body()); });
 route("POST", "/admin/groups", { admin: true }, async ({ s, actor, json: body }) => s.admin.createGroup(actor, String((await body()).name ?? "")));
 route("PATCH", "/admin/groups/:id", { admin: true }, async ({ s, actor, p, json: body }) => { s.admin.updateGroup(actor, p.id, await body()); });
