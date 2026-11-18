@@ -14,7 +14,7 @@ import { fail, Page, PageHeader, Select, useApp } from "./app";
 import { Card, landingReason, Pill, Row, type Overview } from "./manage-views";
 
 const TH = "px-3 py-2.5 text-left text-xs font-medium whitespace-nowrap text-muted-foreground", TD = "border-t px-3 py-2.5 align-middle";
-const ACTION: Record<string, string> = { "auth.login": "Signed in", "auth.logout": "Signed out", "auth.password_set": "Chose a password", "auth.locked": "Too many wrong passwords", "user.create": "Added a person", "user.password_link": "Made a password link", "auth.backchannel_logout": "Signed out by the sign-in provider", "auth.provider_revoked": "Access ended by the sign-in provider", "user.provisioned": "First sign-in", "admin.bootstrap": "Became the first administrator", "user.update": "Changed a person", "group.create": "Added a group", "group.update": "Changed a group", "group.delete": "Deleted a group", "group.member.add": "Added to a group", "group.member.remove": "Removed from a group", "group.member.sync_add": "Added to a group by the sign-in provider", "group.member.sync_remove": "Removed from a group by the sign-in provider", "grant.add": "Gave camera access", "grant.revoke": "Removed camera access", "tag.create": "Added a tag", "tag.rename": "Renamed a tag", "tag.delete": "Removed a tag", "camera.tag": "Tagged a camera", "camera.untag": "Untagged a camera", "camera.direct": "Changed where a camera streams from", "view.create": "Created a view", "view.update": "Changed a view", "view.convert": "Changed a view's type", "view.delete": "Deleted a view", "view.share": "Changed sharing", "default.set": "Set a starting view", "preview.start": "Started viewing as", "preview.exit": "Stopped viewing as", "preview.end": "Viewing as ended", "preview.mutation": "Tried to make a change while viewing as", "preview.use": "Used an expired view-as session", "clip.export": "Saved a clip", "admin.access": "Tried to open Admin", "system.start": "Unifeye started" };
+const ACTION: Record<string, string> = { "auth.login": "Signed in", "auth.logout": "Signed out", "auth.password_set": "Chose a password", "auth.locked": "Too many wrong passwords", "auth.code_sent": "Was emailed a sign-in code", "auth.code_locked": "Too many wrong codes", "user.sign_in": "Changed how someone signs in", "user.create": "Added a person", "user.password_link": "Made a password link", "auth.backchannel_logout": "Signed out by the sign-in provider", "auth.provider_revoked": "Access ended by the sign-in provider", "user.provisioned": "First sign-in", "admin.bootstrap": "Became the first administrator", "user.update": "Changed a person", "group.create": "Added a group", "group.update": "Changed a group", "group.delete": "Deleted a group", "group.member.add": "Added to a group", "group.member.remove": "Removed from a group", "group.member.sync_add": "Added to a group by the sign-in provider", "group.member.sync_remove": "Removed from a group by the sign-in provider", "grant.add": "Gave camera access", "grant.revoke": "Removed camera access", "tag.create": "Added a tag", "tag.rename": "Renamed a tag", "tag.delete": "Removed a tag", "camera.tag": "Tagged a camera", "camera.untag": "Untagged a camera", "camera.direct": "Changed where a camera streams from", "view.create": "Created a view", "view.update": "Changed a view", "view.convert": "Changed a view's type", "view.delete": "Deleted a view", "view.share": "Changed sharing", "default.set": "Set a starting view", "preview.start": "Started viewing as", "preview.exit": "Stopped viewing as", "preview.end": "Viewing as ended", "preview.mutation": "Tried to make a change while viewing as", "preview.use": "Used an expired view-as session", "clip.export": "Saved a clip", "admin.access": "Tried to open Admin", "system.start": "Unifeye started" };
 
 /** Unifeye's own data only: people's access, groups, camera grants and tags. Nothing here changes the recorder or the identity provider. */
 export function Admin() {
@@ -27,6 +27,7 @@ export function Admin() {
   const [link, setLink] = useState<{ name: string; url: string; expiresAt: number } | null>(null);
   const [checking, setChecking] = useState<string | null>(null);
   const [login, setLogin] = useState<string | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
   const load = useCallback(() => api<Overview>("/admin/overview").then(setOv).catch(fail), []);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { if (tab === "history") api<{ entries: typeof log }>("/admin/audit").then((r) => setLog(r.entries)).catch(fail); }, [tab]);
@@ -54,20 +55,22 @@ export function Admin() {
       {tab === "people" && (
         <>
           <div className="mb-3 flex flex-wrap items-center gap-2">
-            <p className="flex-1 text-sm text-muted-foreground">{ov.signIn.local ? (ov.signIn.oidc || ov.signIn.cloudflare ? "People with work accounts appear here after they first sign in. Add people who sign in with a password." : "Add people here. Each one gets a link to choose a password.") : "People appear here after they first sign in. Passwords are managed by your sign-in provider."}</p>
+            <p className="flex-1 text-sm text-muted-foreground">{ov.signIn.local ? (ov.signIn.oidc || ov.signIn.cloudflare ? `People who sign in with ${ov.signIn.oidc ? "SSO" : "Cloudflare"} appear here after their first sign-in. Add people who sign in with a username${ov.signIn.email ? " and a password or emailed code" : " and password"}.` : ov.signIn.email ? "Add people here. They sign in with a username and a password or emailed code." : "Add people here. Each one gets a link to choose a password.") : "People appear here after they first sign in. Passwords are managed by your sign-in provider."}</p>
             {ov.signIn.local && <Button size="sm" onClick={() => setAdding(true)}><Plus />Add person</Button>}
           </div>
+          {ov.signIn.email && ov.mail.failing && <p role="alert" className="mb-3 rounded-lg border border-amber-500/60 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">Emails aren&apos;t going out. People who use email codes can&apos;t sign in. Check the mail settings on the server.</p>}
           <div className="overflow-auto rounded-xl border"><table className="w-full text-sm"><thead><tr><th className={TH}>Person</th><th className={TH}>Signs in with</th><th className={TH}>Role</th><th className={TH}>Groups</th><th className={TH}>Cameras</th><th className={TH}>Can create views</th><th className={TH}>Active</th><th className={TH} /></tr></thead><tbody>
             {ov.users.map((u) => (
-              <tr key={u.id}><td className={TD}>{nameOf(u)}<div className="text-xs text-muted-foreground">{u.signsInWith === "local" ? <>{u.username}{!u.passwordSet && " · hasn't chosen a password yet"}</> : u.email}</div></td>
-                <td className={TD}><span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs whitespace-nowrap ${u.methodOn ? "" : "border-amber-500/60 text-amber-700 dark:text-amber-400"}`} title={u.methodOn ? undefined : "This way of signing in is turned off, so they can't sign in."}>{METHOD[u.signsInWith]}{!u.methodOn && " · turned off"}</span></td>
+              <tr key={u.id}><td className={TD}>{nameOf(u)}<div className="text-xs text-muted-foreground">{u.signsInWith === "local" ? [u.username, u.passwordAllowed && !u.passwordSet && "hasn't chosen a password yet", u.codeEmails.length && `codes go to ${u.codeEmails.join(", ")}`].filter(Boolean).join(" · ") : u.email}</div></td>
+                <td className={TD}><span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs whitespace-nowrap ${u.methodOn ? "" : "border-amber-500/60 text-amber-700 dark:text-amber-400"}`} title={u.methodOn ? undefined : "This way of signing in is turned off, so they can't sign in."}>{methodLabel(u)}{!u.methodOn && " · turned off"}</span></td>
                 <td className={TD}><Select aria-label="Role" value={u.role} onChange={(e) => put(`/admin/users/${u.id}`, { role: e.target.value }, "PATCH")}><option value="staff">Staff</option><option value="admin">Admin</option></Select></td>
                 <td className={TD}>{ov.groups.filter((g) => !g.isAllStaff).map((g) => member(g, u.id, g.name))}</td>
                 <td className={TD}>{u.cameraCount}</td>
                 <td className={TD}><Switch checked={u.allowPrivateViews} onCheckedChange={(v) => put(`/admin/users/${u.id}`, { allowPrivateViews: v }, "PATCH")} aria-label="Can create views" /></td>
                 <td className={TD}><Switch checked={u.status === "active"} onCheckedChange={(v) => put(`/admin/users/${u.id}`, { status: v ? "active" : "disabled" }, "PATCH")} aria-label="Active" /></td>
                 <td className={`${TD} whitespace-nowrap`}>
-                  {u.signsInWith === "local" && ov.signIn.local && <Button size="sm" variant="outline" className="mr-1.5" onClick={() => act(async () => { const r = await api<{ link: { url: string; expiresAt: number } }>(`/admin/users/${u.id}/password-link`, { method: "POST" }); setLink({ name: nameOf(u), ...r.link }); })}><KeyRound />Password link</Button>}
+                  {u.signsInWith === "local" && ov.signIn.local && <Button size="sm" variant="outline" className="mr-1.5" onClick={() => setEditing(u.id)}>Sign-in</Button>}
+                  {u.signsInWith === "local" && ov.signIn.local && u.passwordAllowed && <Button size="sm" variant="outline" className="mr-1.5" onClick={() => act(async () => { const r = await api<{ link: { url: string; expiresAt: number } }>(`/admin/users/${u.id}/password-link`, { method: "POST" }); setLink({ name: nameOf(u), ...r.link }); })}><KeyRound />Password link</Button>}
                   {u.role === "staff" && u.status === "active" && u.methodOn && <Button size="sm" variant="outline" onClick={() => seeAs(u.id)}>View as</Button>}
                 </td></tr>
             ))}
@@ -150,11 +153,12 @@ export function Admin() {
       {tab === "signin" && (
         <>
           <div className="overflow-hidden rounded-xl border">
-            {([["oidc", `Work accounts (${ov.signIn.oidcName})`, "People join the first time they sign in."], ["local", "Passwords", "Only people you add here."], ["cloudflare", "Cloudflare Access", "People join the first time they open Unifeye through Cloudflare."]] as const).map(([k, title, hint]) => {
-              const n = ov.users.filter((u) => u.signsInWith === k).length, on = ov.signIn[k];
+            {([["oidc", ov.signIn.oidcName === "SSO" ? "SSO" : `SSO (${ov.signIn.oidcName})`, "People join the first time they sign in."], ["local", "Usernames", "Only people you add here."], ["email", "Email codes", "For people you add. Codes go to the addresses you choose for each one."], ["cloudflare", "Cloudflare Access", "People join the first time they open Unifeye through Cloudflare."]] as const).map(([k, title, hint]) => {
+              const n = ov.users.filter((u) => (k === "email" ? u.codeEmails.length > 0 : u.signsInWith === k)).length, on = ov.signIn[k];
+              if (k === "email" && !on && !n && !ov.signIn.local) return null;
               return (
                 <div key={k} className="flex items-center gap-3 border-t px-4 py-3 first:border-t-0">
-                  <div className="flex-1"><div className="text-sm font-medium">{title}</div><div className="text-xs text-muted-foreground">{on ? hint : n ? `${n} ${n === 1 ? "person" : "people"} can't sign in until this is turned back on.` : "Not in use."}</div></div>
+                  <div className="flex-1"><div className="text-sm font-medium">{title}</div><div className="text-xs text-muted-foreground">{on ? hint : n ? `${n} ${n === 1 ? "person" : "people"} can't ${k === "email" ? "get codes" : "sign in"} until this is turned back on.` : k === "email" ? "To use this, set up outgoing mail on the server." : "Not in use."}</div></div>
                   <span className={`flex items-center gap-1.5 text-xs ${on ? "" : "text-muted-foreground"}`}><i className={`size-1.5 rounded-full ${on ? "bg-green-500" : "bg-zinc-400"}`} />{on ? "On" : "Off"}</span>
                 </div>
               );
@@ -170,36 +174,97 @@ export function Admin() {
           {!log.length && <tr><td className={`${TD} text-muted-foreground`} colSpan={4}>Nothing yet.</td></tr>}
         </tbody></table></div>
       )}
-      {adding && <AddPerson onClose={() => setAdding(false)} onAdded={(name, l) => { setAdding(false); setLink({ name, ...l }); void load(); }} />}
+      {adding && <AddPerson email={ov.signIn.email} onClose={() => setAdding(false)} onAdded={(name, l) => { setAdding(false); if (l) setLink({ name, ...l }); else toast.success(`${name} can sign in now.`); void load(); }} />}
+      {editing && ((u) => u && <EditSignIn name={nameOf(u)} userId={u.id} email={ov.signIn.email} password={u.passwordAllowed} codeEmails={u.codeEmails} onClose={() => setEditing(null)} onSaved={(l) => { setEditing(null); if (l) setLink({ name: nameOf(u), ...l }); else toast.success("Saved"); void load(); void reload(); }} />)(ov.users.find((x) => x.id === editing))}
       {link && <LinkDialog {...link} onClose={() => setLink(null)} />}
       {login && ((c) => c && <CameraLogin name={c.name} cameraId={c.id} enabled={!!ov.direct.cameras.find((d) => d.cameraId === c.id)?.enabled} current={ov.direct.cameras.find((d) => d.cameraId === c.id)} defaultUsername={ov.direct.defaultUsername} canSavePassword={ov.direct.canSavePassword} onClose={() => setLogin(null)} onSaved={() => { setLogin(null); void load(); }} />)(ov.cameras.find((x) => x.id === login))}
     </Page>
   );
 }
 
-const METHOD = { oidc: "Work account", local: "Password", cloudflare: "Cloudflare" } as const;
+const METHOD = { oidc: "SSO", local: "Password", cloudflare: "Cloudflare" } as const;
+const methodLabel = (u: Overview["users"][number]) => u.signsInWith !== "local" || !u.codeEmails.length ? METHOD[u.signsInWith] : u.passwordAllowed ? "Password or email code" : "Email code";
+type Link = { url: string; expiresAt: number };
+/** Typed as one line; commas, semicolons or spaces between addresses. */
+const splitEmails = (v: string) => v.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
 
-function AddPerson({ onClose, onAdded }: { onClose: () => void; onAdded: (name: string, link: { url: string; expiresAt: number }) => void }) {
+/** "How they sign in": a password, codes emailed to chosen addresses, or both. */
+function SignInChoices({ email, password, setPassword, codes, setCodes, emails, setEmails }: { email: boolean; password: boolean; setPassword: (v: boolean) => void; codes: boolean; setCodes: (v: boolean) => void; emails: string; setEmails: (v: string) => void }) {
+  return (
+    <fieldset className="grid gap-2.5">
+      <legend className="mb-2 text-sm font-medium">How they sign in</legend>
+      <label className="flex items-start gap-2.5 text-sm"><Checkbox className="mt-0.5" checked={password} onCheckedChange={(v) => setPassword(!!v)} /><span>Password<span className="block text-xs text-muted-foreground">They choose one from a link you send.</span></span></label>
+      <label className={`flex items-start gap-2.5 text-sm ${email || codes ? "" : "opacity-60"}`}><Checkbox className="mt-0.5" checked={codes} disabled={!email && !codes} onCheckedChange={(v) => setCodes(!!v)} /><span>Email code<span className="block text-xs text-muted-foreground">{email ? "We email a code each time they sign in." : "Email isn't set up on the server yet."}</span></span></label>
+      {codes && (
+        <div className="ml-6.5 grid gap-1.5">
+          <Label htmlFor="si-emails">Send codes to</Label>
+          <Input id="si-emails" type="text" inputMode="email" autoCapitalize="none" spellCheck={false} placeholder="someone@example.com" value={emails} onChange={(e) => setEmails(e.currentTarget.value)} />
+          <p className="text-xs text-muted-foreground">For a shared account, enter whoever should hand out the code. Up to 3 addresses, separated by commas.</p>
+        </div>
+      )}
+    </fieldset>
+  );
+}
+const choicesBody = (password: boolean, codes: boolean, emails: string) => ({ password, codeEmails: codes ? splitEmails(emails) : [] });
+const choicesProblem = (password: boolean, codes: boolean, emails: string) => !password && !codes ? "Choose at least one way to sign in." : codes && !splitEmails(emails).length ? "Enter where codes should go." : null;
+
+function AddPerson({ email, onClose, onAdded }: { email: boolean; onClose: () => void; onAdded: (name: string, link: Link | null) => void }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [password, setPassword] = useState(true);
+  const [codes, setCodes] = useState(false);
+  const [emails, setEmails] = useState("");
   const submit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const f = new FormData(e.currentTarget), name = String(f.get("name") ?? "").trim();
+    const problem = choicesProblem(password, codes, emails);
+    if (problem) return setError(problem);
     setBusy(true); setError(null);
-    try { const r = await api<{ link: { url: string; expiresAt: number } }>("/admin/users", { method: "POST", body: { name, username: f.get("username"), role: f.get("role") } }); onAdded(name, r.link); }
+    try { const r = await api<{ link: Link | null }>("/admin/users", { method: "POST", body: { name, username: f.get("username"), role: f.get("role"), ...choicesBody(password, codes, emails) } }); onAdded(name, r.link); }
     catch (err) { setBusy(false); setError(err instanceof Error ? err.message : "Something went wrong. Try again."); }
   };
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
-        <DialogHeader><DialogTitle>Add a person</DialogTitle><DialogDescription>They&apos;ll sign in with a username and password.</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>Add a person</DialogTitle><DialogDescription>They&apos;ll sign in with a username.</DialogDescription></DialogHeader>
         <form id="add-person" className="grid gap-3" onSubmit={submit}>
           <div className="grid gap-1.5"><Label htmlFor="ap-name">Name</Label><Input id="ap-name" name="name" required maxLength={80} /></div>
           <div className="grid gap-1.5"><Label htmlFor="ap-username">Username</Label><Input id="ap-username" name="username" required autoCapitalize="none" spellCheck={false} maxLength={64} /></div>
           <div className="grid gap-1.5"><Label htmlFor="ap-role">Role</Label><Select id="ap-role" name="role" defaultValue="staff"><option value="staff">Staff</option><option value="admin">Admin</option></Select></div>
+          <SignInChoices email={email} password={password} setPassword={setPassword} codes={codes} setCodes={setCodes} emails={emails} setEmails={setEmails} />
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
         </form>
         <DialogFooter><Button variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" form="add-person" disabled={busy}>{busy ? "Adding…" : "Add"}</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Changes how an existing password account signs in. Taking a way away signs them out everywhere. */
+function EditSignIn({ name, userId, email, password: was, codeEmails, onClose, onSaved }: { name: string; userId: string; email: boolean; password: boolean; codeEmails: string[]; onClose: () => void; onSaved: (link: Link | null) => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [password, setPassword] = useState(was);
+  const [codes, setCodes] = useState(codeEmails.length > 0);
+  const [emails, setEmails] = useState(codeEmails.join(", "));
+  const submit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const problem = choicesProblem(password, codes, emails);
+    if (problem) return setError(problem);
+    if (was && !password && !confirm(`Remove ${name}'s password? They'll sign in with an email code only.`)) return;
+    setBusy(true); setError(null);
+    try { const r = await api<{ link: Link | null }>(`/admin/users/${userId}/sign-in`, { method: "PUT", body: choicesBody(password, codes, emails) }); onSaved(r.link); }
+    catch (err) { setBusy(false); setError(err instanceof Error ? err.message : "Something went wrong. Try again."); }
+  };
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>How {name} signs in</DialogTitle><DialogDescription>If you take a way away, they&apos;re signed out everywhere.</DialogDescription></DialogHeader>
+        <form id="edit-sign-in" className="grid gap-3" onSubmit={submit}>
+          <SignInChoices email={email} password={password} setPassword={setPassword} codes={codes} setCodes={setCodes} emails={emails} setEmails={setEmails} />
+          {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+        </form>
+        <DialogFooter><Button variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" form="edit-sign-in" disabled={busy}>{busy ? "Saving…" : "Save"}</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   );

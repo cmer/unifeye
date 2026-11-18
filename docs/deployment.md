@@ -54,7 +54,20 @@ they come back if it is turned on again.
 
 Add `local` to `SIGN_IN_METHODS`. Administrators then see **Add person** under Admin › People. Adding
 someone gives a one-time link (24 hours) for them to choose a password; send it however suits you.
-Unifeye sends no email. For a forgotten password, choose **Password link** next to the person.
+For a forgotten password, choose **Password link** next to the person.
+
+**Email codes.** Set `SMTP_URL` and `MAIL_FROM` and administrators can give a person addresses that
+sign-in codes go to, instead of a password or as well as one. The person types their username and
+chooses **Email a code**; a 6-digit code goes to those addresses and works for 10 minutes in that
+browser only. The addresses can be someone else's: for a shared account such as `office` at a front
+desk, send codes to the manager, who reads the code out to whoever asked. Unifeye sends no other
+email. If mail stops working, Admin › People says so; people with a password can still use it, and
+`password-link` (below) turns a password on for anyone.
+
+```sh
+SMTP_URL=smtps://user:password@smtp.example.com:465   # or smtp://...:587, upgraded with STARTTLS
+MAIL_FROM="Unifeye <cameras@example.com>"
+```
 
 With `local` as the only method there is nobody to sign in as at first. Create the first
 administrator on the server:
@@ -236,6 +249,7 @@ relay, last backup). Neither exposes configuration or secrets.
 | `UNIFEYE_MODE` | `mock` in code, `real` in `.env.example` | `mock` serves simulated cameras; sign-in works the same |
 | `SIGN_IN_METHODS` | `oidc` | Ways to sign in: `oidc`, `local`, `cloudflare` (see [section 1](#1-choose-how-people-sign-in)) |
 | `LOCAL_APP_URL` | unset | A second address for password sign-in; password links point there |
+| `SMTP_URL` / `MAIL_FROM` | unset | Outgoing mail for email sign-in codes (needs `local`); set both or neither |
 | `CF_ACCESS_TEAM_DOMAIN` / `CF_ACCESS_AUD` | unset | Cloudflare Access team and application, required with `cloudflare` |
 | `CF_ACCESS_ORIGIN_SECRET` | unset | Secret Cloudflare adds as `X-Unifeye-Origin-Secret`; required with `cloudflare,local` |
 | `CF_ACCESS_RECHECK_SECONDS` | 300 | How quickly someone Cloudflare stops letting through loses access |

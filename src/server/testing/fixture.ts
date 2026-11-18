@@ -10,6 +10,7 @@ import { MockProtectAdapter } from "../protect/mock";
 import { buildServices, setServicesForTests } from "../services";
 import { seedDemo } from "../seed";
 import { MemoryRelay } from "./relay";
+import { MemoryMailer } from "../mail";
 
 export const ISS = "https://id.test.example";
 export const TEST_ENV = { NODE_ENV: "test", UNIFEYE_MODE: "mock", TOKEN_ENC_KEY: Buffer.alloc(32, 7).toString("base64"), OIDC_ISSUER: ISS, OIDC_CLIENT_ID: "unifeye-test", OIDC_ADMIT_CLAIM: "groups", OIDC_ADMIT_VALUES: "unifeye", MEDIAMTX_HOOK_SECRET: "hook", MEDIAMTX_API_SECRET: "api" } as unknown as NodeJS.ProcessEnv;
@@ -26,7 +27,8 @@ export function makeFixture(db: Db = openDb(":memory:")) {
   const adapter = new MockProtectAdapter("default", { liveEvents: false, publishUrl: "rtsp://127.0.0.1:8554/$MTX_PATH" });
   // The relay is in memory and asks the gateway before admitting a reader, as MediaMTX does through its auth hook.
   const relay = new MemoryRelay();
-  const s = buildServices(db, adapter, relay);
+  const mailer = new MemoryMailer();
+  const s = buildServices(db, adapter, relay, mailer);
   relay.connect((r) => s.media.admit(r));
   setServicesForTests(s);
   const { policy, views, sessions, previews, admin } = s;
@@ -45,6 +47,6 @@ export function makeFixture(db: Db = openDb(":memory:")) {
   policy.invalidate();
   const actor = (userId: string, extra: Partial<Actor> = {}): Actor => ({ userId, role: db.select().from(schema.users).where(eq(schema.users.id, userId)).get()!.role, sessionId: `sess-${userId}`, ...extra });
   const names = (userId: string) => policy.cameras(userId).map((c) => c.name);
-  return { s, adapter, relay, db, policy, views, sessions, previews, admin, u, g, cam: camByName, viewByName, tagByName, actor, names };
+  return { s, adapter, relay, mailer, db, policy, views, sessions, previews, admin, u, g, cam: camByName, viewByName, tagByName, actor, names };
 }
 export type Fixture = ReturnType<typeof makeFixture>;

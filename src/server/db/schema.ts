@@ -37,9 +37,11 @@ export const users = sqliteTable(
 );
 
 /**
- * Username and password for a `local` person. The username is stored normalised (lowercase) and is
- * the sign-in key; it is unrelated to email. `passwordHash` is null until the person uses their first
- * password link. Hash format: `scrypt$N$r$p$salt$hash` (base64url).
+ * Username and sign-in options for a `local` person. The username is stored normalised (lowercase)
+ * and is the only sign-in key. `passwordHash` is null until the person uses their first password link,
+ * and always null when `passwordAllowed` is off. Hash format: `scrypt$N$r$p$salt$hash` (base64url).
+ * `codeEmails` are where sign-in codes go (empty: no email codes). They are delivery addresses only,
+ * never looked up, and may be someone else's (a manager who says yes for a shared account).
  */
 export const localCredentials = sqliteTable(
   "local_credentials",
@@ -48,9 +50,31 @@ export const localCredentials = sqliteTable(
     username: text("username").notNull(),
     passwordHash: text("password_hash"),
     passwordSetAt: ts("password_set_at"),
+    passwordAllowed: integer("password_allowed", { mode: "boolean" }).notNull().default(true),
+    codeEmails: text("code_emails", { mode: "json" }).$type<string[]>().notNull().default([]),
     createdAt: ts("created_at").notNull(),
   },
   (t) => [uniqueIndex("local_credentials_username").on(t.username)],
+);
+
+/**
+ * Pending email sign-in codes. `id` is a SHA-256 of a secret held only by the browser that asked
+ * (in a cookie), so a code works in that browser and nowhere else. `codeHash` is a SHA-256 of that
+ * secret plus the code, so the stored rows don't reveal codes. A request for an unknown username, or
+ * one that sends nothing, still gets a row (with no `userId`), so every answer looks the same.
+ */
+export const emailCodes = sqliteTable(
+  "email_codes",
+  {
+    id: id(),
+    userId: text("user_id").references(() => users.id, { onDelete: "cascade" }),
+    codeHash: text("code_hash").notNull(),
+    tries: integer("tries").notNull().default(0),
+    createdAt: ts("created_at").notNull(),
+    expiresAt: ts("expires_at").notNull(),
+    usedAt: ts("used_at"),
+  },
+  (t) => [index("email_codes_user").on(t.userId), index("email_codes_expires").on(t.expiresAt)],
 );
 
 /** One-time links for choosing a password. Only a SHA-256 of the link's secret is stored. */

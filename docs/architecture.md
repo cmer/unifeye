@@ -41,6 +41,7 @@ size- and age-bounded directory.
 | `src/server/authz/preview.ts` | "See as staff". |
 | `src/server/admin.ts` | Every change to Unifeye data: validation, transaction, audit, cache invalidation. |
 | `src/server/auth/` | Sign-in (`oidc.ts`, `local.ts`, `cloudflare.ts`, shared `provision.ts`), sessions, back-channel logout, lifecycle re-validation. |
+| `src/server/mail.ts` | Outgoing email for sign-in codes: the SMTP mailer and the in-memory one used by tests. |
 | `src/server/protect/` | Adapter contract, the real `unifi-protect` adapter, the mock adapter. |
 | `src/server/media/` | Media gateway and revocation sweep (`gateway.ts`), the relay interface (`relay.ts`) and its MediaMTX adapter (`mediamtx.ts`), playback windows, clip export. |
 | `src/server/testing/` | Test fixture and the in-memory relay used by the automated tests. |
@@ -226,9 +227,14 @@ arrives without one, so a client that reaches Unifeye directly, with no proxy, c
 ### Password accounts (`local`)
 
 - Only administrators create them (`POST /api/admin/users`, through `Admin`), plus the operator
-  from the command line (`unifeye create-admin`, `unifeye password-link`). There is no sign-up and
-  no email.
-- An account starts with no password. Creating it returns a one-time link to
+  from the command line (`unifeye create-admin`, `unifeye password-link`). There is no sign-up.
+- The administrator chooses how each account signs in (`local_credentials.password_allowed` and
+  `code_emails`): with a password, with email codes, or both, and at least one. Email codes need
+  outgoing mail (`SMTP_URL` and `MAIL_FROM`). Only an administrator changes these
+  (`PUT /api/admin/users/:id/sign-in`), so nobody at a shared code-only account can add a password
+  that would skip the code. `unifeye password-link` turns the password on, as the operator's way back
+  in when mail is down.
+- An account with password sign-in starts with no password. Creating it returns a one-time link to
   `/set-password#<secret>`, valid 24 hours. Only the SHA-256 of the secret is stored, the secret sits
   in the URL fragment so it never reaches server or proxy logs, and the page removes it from the
   address bar. Making a new link invalidates earlier unused ones. A link is consumed inside the write
@@ -259,7 +265,47 @@ arrives without one, so a client that reaches Unifeye directly, with no proxy, c
 - People change their own password with the current one (`POST /api/me/password`, CSRF as usual);
   their other sessions end and any unused password link is cancelled. Wrong guesses there have
   their own lock, so they cannot lock the person out of signing in. Not available while previewing.
+- Turning the password off removes the stored hash and any unused link. Taking a way in away (the
+  password, or an address) ends the person's sessions. Any change cancels pending email codes.
 - Password accounts have no admission claim and no group sync. Groups are manual.
+
+#### The sign-in page
+
+- Two steps. First the username (and the identity provider's button, when `oidc` is on too). Then
+  `POST /api/auth/start` says what comes next: an account that signs in only by email code gets a
+  code sent at once and the code step; every other username, real or not, password or both, gets
+  the same password step. So the answer reveals only that a username is a code-only account, which
+  gives nobody a way in: the code still goes to that account's addresses.
+- The password step offers "Email a code instead" when outgoing mail is set up. Going back and
+  continuing again in the same browser reuses a live code rather than sending another.
+- On a device where someone signed in by code, the username is remembered (in the browser only) to
+  fill in step one: the shared front-desk computer case.
+
+#### Email codes
+
+- The person types their username (never an email address; addresses are delivery targets only and
+  are never looked up) and asks for a code (`POST /api/auth/email`). The answer is always the same
+  and always sets a cookie holding a fresh random secret (`unifeye_email_code`, HttpOnly,
+  SameSite=Strict, scoped to the `/api/auth` sign-in routes, 10 minutes). A 6-digit code is emailed to every
+  address on the account only if it exists, is active and has addresses; otherwise the browser holds
+  a request no code can complete. The email goes out after the answer, so its timing reveals
+  nothing, and a failure is audited and flagged on Admin › People.
+- The stored row (`email_codes`) has the SHA-256 of the secret as its id and the SHA-256 of
+  secret plus code, so the database holds neither. A code therefore works only in the browser that
+  asked: whoever reads the email (for a shared account, often a manager) passes the code on, and it
+  signs in the asking browser, never the reader's.
+- Entering the code (`POST /api/auth/email/verify`) counts a try before checking. Five tries per
+  code, after which the request is dead; the same applies to requests for unknown usernames, so the
+  answers never reveal which exist. A right code is consumed in the same write, re-checks that the
+  account still has addresses and is active, and starts a session (`auth.login` with
+  `via: "email"`).
+- At most one code a minute and five an hour per username (real or not), in memory. Asking again
+  replaces the account's earlier code. Expired rows are removed by housekeeping.
+- The email names the account, the device and the time, and keeps the code out of the subject so
+  lock screens don't show it. It contains no link: links would point at an address the reader may
+  not be able to reach (`LOCAL_APP_URL` is often local), and mail scanners open links.
+- These routes follow the password routes' rules (JSON body, own `Origin`, refused through
+  Cloudflare) and exist only while outgoing mail is set up.
 
 ### Cloudflare Access (`cloudflare`)
 

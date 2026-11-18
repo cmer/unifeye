@@ -156,7 +156,7 @@ function AppSidebar() {
         <div className="flex items-center gap-2 px-2 py-1">
           <span className="grid size-8 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{me.user.name.split(" ").map((x) => x[0]).join("").slice(0, 2).toUpperCase()}</span>
           <span className="min-w-0 flex-1 truncate text-sm font-medium">{me.user.name}</span>
-          {me.user.signsInWith === "local" && !me.preview && <Button variant="ghost" size="icon" aria-label="Change password" title="Change password" onClick={() => setPw(true)}><KeyRound /></Button>}
+          {me.user.hasPassword && !me.preview && <Button variant="ghost" size="icon" aria-label="Change password" title="Change password" onClick={() => setPw(true)}><KeyRound /></Button>}
           <Button variant="ghost" size="icon" aria-label="Switch between light and dark" onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}>{resolvedTheme === "dark" ? <Sun /> : <Moon />}</Button>
           <Button variant="ghost" size="icon" aria-label="Sign out" title="Sign out" onClick={async () => { try { setPreviewToken(null); const r = await api<{ redirect: string }>("/auth/logout", { method: "POST" }); location.assign(r.redirect); } catch (e) { fail(e); } }}><LogOut /></Button>
         </div>

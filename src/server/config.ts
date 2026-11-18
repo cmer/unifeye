@@ -43,8 +43,8 @@ const schema = z.object({
     .optional()
     .transform((v) => [...new Set((v || "oidc").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean))])
     .pipe(z.array(z.enum(["oidc", "local", "cloudflare"])).min(1, "SIGN_IN_METHODS needs at least one method")),
-  /** Shown on the sign-in page as "Continue with …" when passwords are also on. */
-  OIDC_DISPLAY_NAME: z.string().trim().min(1).max(60).default("your work account"),
+  /** Shown on the sign-in page as "Continue with …" when passwords are also on, e.g. `Google` or `Okta`. */
+  OIDC_DISPLAY_NAME: z.string().trim().min(1).max(60).default("SSO"),
   /** Cloudflare Access team domain, for example `acme.cloudflareaccess.com`. */
   CF_ACCESS_TEAM_DOMAIN: z
     .string()
@@ -70,6 +70,14 @@ const schema = z.object({
    * when APP_URL goes through Cloudflare Access. Password links point here when it is set.
    */
   LOCAL_APP_URL: z.string().url().optional(),
+  /**
+   * Outgoing mail server for email sign-in codes, such as `smtps://user:pass@smtp.example.com:465`
+   * or `smtp://user:pass@smtp.example.com:587` (upgraded with STARTTLS). With MAIL_FROM, it lets
+   * administrators give password accounts email codes. Unset: no email is ever sent.
+   */
+  SMTP_URL: z.string().optional().transform((v) => v?.trim() || undefined).pipe(z.string().regex(/^smtps?:\/\/[^\s]+$/, "SMTP_URL must start with smtp:// or smtps://").optional()),
+  /** The From address on sign-in emails, for example `Unifeye <cameras@example.com>`. */
+  MAIL_FROM: z.string().optional().transform((v) => v?.trim() || undefined).pipe(z.string().max(200).regex(/@/, "MAIL_FROM must contain an email address").optional()),
 
   OIDC_ISSUER: z.string().url().optional(),
   OIDC_CLIENT_ID: z.string().optional(),
@@ -189,6 +197,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (m.cloudflare && m.local && !c.CF_ACCESS_ORIGIN_SECRET) problems.push("CF_ACCESS_ORIGIN_SECRET is required when SIGN_IN_METHODS combines cloudflare and local");
   if (c.CF_ACCESS_ORIGIN_SECRET && c.CF_ACCESS_ORIGIN_SECRET.length < MIN_SECRET) problems.push(`CF_ACCESS_ORIGIN_SECRET must be at least ${MIN_SECRET} characters (openssl rand -hex 24)`);
   if (c.LOCAL_APP_URL && !m.local) problems.push("LOCAL_APP_URL needs SIGN_IN_METHODS to include local");
+  if (!!c.SMTP_URL !== !!c.MAIL_FROM) problems.push("SMTP_URL and MAIL_FROM must be set together");
+  if (c.SMTP_URL && !m.local) problems.push("SMTP_URL needs SIGN_IN_METHODS to include local (email codes are for password accounts)");
   if (c.LOCAL_APP_URL && new URL(c.LOCAL_APP_URL).origin === new URL(c.APP_URL).origin) problems.push("LOCAL_APP_URL must be a different address from APP_URL");
   if (prod) {
     for (const k of ["MEDIAMTX_HOOK_SECRET", "MEDIAMTX_API_SECRET"] as const)
@@ -227,6 +237,8 @@ export function signInMethods(c: Config = config()): Record<SignInMethod, boolea
   const on = new Set(c.SIGN_IN_METHODS);
   return { oidc: on.has("oidc"), local: on.has("local"), cloudflare: on.has("cloudflare") };
 }
+/** Email sign-in codes are available: password accounts are on and outgoing mail is set up. */
+export const emailCodesOn = (c: Config = config()) => signInMethods(c).local && !!c.SMTP_URL && !!c.MAIL_FROM;
 /** The issuer Cloudflare Access puts in its tokens, which is also the issuer of a Cloudflare identity. */
 export const cloudflareIssuer = (c: Config = config()) => (c.CF_ACCESS_TEAM_DOMAIN ? `https://${c.CF_ACCESS_TEAM_DOMAIN}` : null);
 /** The origins a browser may send writes and password sign-ins from. */
