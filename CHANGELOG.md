@@ -6,6 +6,10 @@ and uses it as the GitHub release notes.
 
 ## Unreleased
 
+### Added
+- `scripts/update.sh` takes a version number: `1.1.2` for that release, `1.3` for the newest
+  1.3.x, or `2` for the newest 2.x.x.
+
 ### Fixed
 - Live video no longer shows "The server turned some requests away" after reloading the page,
   switching views or opening a second tab.

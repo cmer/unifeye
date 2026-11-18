@@ -310,6 +310,8 @@ keeps running, then restarts and waits until both containers are healthy. If the
 nothing is restarted. Local edits to tracked files (for example a changed `compose.yaml`) are carried
 over; if they conflict with the new code, the update stops before changing anything. Settings that
 only this server needs belong in `compose.override.yaml`, which the update never touches.
+To pick a release instead, pass its version: `scripts/update.sh 1.1.2` goes to that release,
+`scripts/update.sh 1.3` to the newest 1.3.x and `scripts/update.sh 2` to the newest 2.x.x.
 `scripts/update.sh --help` lists the options.
 
 The update records the commit it built in the image (the `GIT_SHA` build argument). Diagnostics
@@ -328,7 +330,7 @@ the repository's Settings > Deploy keys, then in the checkout switch to the SSH 
 1. Migrations apply at start-up after an automatic backup. `node cli.mjs migrate` runs the same step
    on its own.
 2. If a migration fails the app does not start and the database is unchanged.
-3. To roll back, run `scripts/update.sh <previous commit>`; the update prints the command when it
+3. To roll back, run `scripts/update.sh <previous version or commit>`; the update prints the command when it
    finishes. If the update included a migration (it says so before building), also restore the
    `-pre-migration` backup it took: a database newer than the running build is refused at start-up.
 
