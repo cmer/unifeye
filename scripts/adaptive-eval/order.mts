@@ -17,12 +17,11 @@ const { sets, opts } = args(), settings = settingsFrom(opts), TH = Number(proces
 let totBack = 0, totWorst = 0;
 for (const d of sets) {
   const lo = labels(d, "lo"), hi = labels(d, "hi");
-  const { entries, high, hi: hg, frames: lt, keys: ht } = await placeDataset(d, settings);
+  const { entries, high, hi: hg, frames: lt } = await placeDataset(d, settings);
   const at = high.matched;
 
   // The high clock runs apart from the low one: measure the offset at each placed GOP.
-  const keyOf = hg.gops.map((g) => ht.t.findIndex((t) => Math.abs(t - g.t) < 0.02));
-  const hiAt = (k: number) => (keyOf[k] < 0 ? null : hi[keyOf[k]]);
+  const hiAt = (k: number) => { const j = high.keys[k]; return j == null ? null : hi[j]; };
   const frameAt = (s: number) => { let k = 0; while (k + 1 < lt.t.length && lt.t[k + 1] <= s + 1e-6) k++; return k; };
   const off: (number | null)[] = hg.gops.map((_, k) => { const a = at[k], c = hiAt(k); if (a == null || c == null) return null; const l = lo[frameAt(a)]; return l == null ? null : l - c; });
   const offAt = (k: number) => { for (let r = 0; r < hg.gops.length; r++) for (const q of [k - r, k + r]) if (off[q] != null) return off[q]!; return 0; };

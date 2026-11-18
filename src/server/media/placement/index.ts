@@ -19,7 +19,7 @@
 import type { Entry, Gop, Segments } from "../timeline";
 import { clockOf, jumpsOf, keyTimes, type ClockCosts } from "./clock";
 import { buildEntries, type HoleWeights } from "./order";
-import { frameDiffs, matchGops, type MatchOptions, type Thumbs } from "./pictures";
+import { frameDiffs, matchGops, pairByTime, type MatchOptions, type Thumbs } from "./pictures";
 
 export type { Thumbs } from "./pictures";
 
@@ -65,9 +65,19 @@ export interface Trace {
   jumps: number[];
   /** Wall-clock ms of each base GOP's keyframe. */
   baseTimes: number[];
+  /** The index in `base.frames` of each base GOP's keyframe, or null (all null without base frames). */
+  baseFrames: (number | null)[];
+  /**
+   * GOPs whose keyframe has no picture (`baseGops`: none in `base.frames`; `highGops`: none in
+   * `high.keys`), and high keyframe pictures that belong to no GOP. All 0 unless the files' GOPs and
+   * pictures disagree; an unpaired GOP is placed without its picture.
+   */
+  unpaired: { baseGops: number; highGops: number; highKeys: number };
   high?: {
     /** Wall-clock ms of each high GOP's keyframe. */
     times: number[];
+    /** The index in `high.keys` of each high GOP's keyframe, or null. */
+    keys: (number | null)[];
     /** The base media time each high GOP's keyframe looks like, or null. The order never lays the lead (GOP 0) over the base, and drops a match that would play backwards. */
     matched: (number | null)[];
     /** How alike high GOP g's keyframe and the base frame at base media time s are: about 1 for the same picture. */
@@ -80,17 +90,27 @@ export interface Placed { entries: Entry[]; trace: Trace }
 /** The playback order for a stretch's base file and, with adaptive recording, its high file (see the module comment). */
 export function placeStretch(window: Window, base: BaseFile, high?: HighFile, settings: PlacementSettings = PLACEMENT): Placed {
   const { startMs, endMs } = window;
-  const jumps = base.frames ? jumpsOf(base.frames.t, frameDiffs(base.frames, settings.match.band), base.gops, settings.jumpRatio) : undefined;
+  // Each GOP's keyframe picture, paired once here; everything after works by index.
+  const baseFrames = base.frames ? pairByTime(base.gops, base.frames.t) : base.gops.map(() => null);
+  const keyOf = high ? pairByTime(high.gops, high.keys.t) : [];
+  const nulls = (xs: (number | null)[]) => xs.filter((x) => x == null).length;
+  const unpaired = {
+    baseGops: base.frames ? nulls(baseFrames) : 0,
+    highGops: nulls(keyOf),
+    highKeys: high ? high.keys.t.length - new Set(keyOf.filter((k) => k != null)).size : 0,
+  };
+  const jumps = base.frames ? jumpsOf(frameDiffs(base.frames, settings.match.band), base.gops, baseFrames, settings.jumpRatio) : undefined;
   const baseTimes = keyTimes(startMs, endMs, base.gops, base.segments, { jumps }, settings.clock);
   const baseWall = clockOf(base.gops, baseTimes), order = { slack: settings.match.slack, holes: settings.holes };
   const b = { gops: base.gops, duration: base.end, wall: baseWall, jumps };
-  if (!high) return { entries: buildEntries({ base: b }, order), trace: { jumps: jumps ?? [], baseTimes } };
+  const trace = { jumps: jumps ?? [], baseTimes, baseFrames, unpaired };
+  if (!high) return { entries: buildEntries({ base: b }, order), trace };
 
-  const { at, similar } = base.frames ? matchGops(high.keys, base.frames, high.gops, settings.match) : { at: high.gops.map(() => null), similar: () => 0 };
+  const { at, similar } = base.frames ? matchGops(high.keys, base.frames, high.gops, keyOf, settings.match) : { at: high.gops.map(() => null), similar: () => 0 };
   // A matched GOP's keyframe is at the base's time for that frame.
   const anchors = new Map<number, number>();
   at.forEach((a, g) => { if (a != null && g > 0) anchors.set(g, baseWall(a)); });
   const times = keyTimes(startMs, endMs, high.gops, high.segments, { anchors }, settings.clock);
   const entries = buildEntries({ base: b, high: { gops: high.gops, duration: high.end, wall: clockOf(high.gops, times), at, similar } }, order);
-  return { entries, trace: { jumps: jumps ?? [], baseTimes, high: { times, matched: at, similar } } };
+  return { entries, trace: { ...trace, high: { times, keys: keyOf, matched: at, similar } } };
 }
