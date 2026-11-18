@@ -10,7 +10,9 @@ playback order. `docs/architecture.md` ("Recorded playback") describes the rules
 These scripts are not part of the product or of `pnpm test`. They call the module the way the product
 does (`placeStretch`, from `placeDataset` in `dataset.mts`) on saved exports, and compare the result
 and its trace with the clock each camera draws on its picture. The product
-never reads that clock (not every camera shows one); here it is only the answer key.
+never reads that clock (not every camera shows one); here it is only the answer key. The scripts find
+each keyframe's picture, and so its clock reading, through the trace (`baseFrames`, `high.keys`), the
+pairing the placement itself made, rather than pairing GOPs and pictures again.
 
 ## The footage
 

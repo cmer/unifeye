@@ -155,7 +155,11 @@ gateway) is pinned separately in
   eight stretches, mostly by 3 to 37 s and twice by about 80 s (inserts placed in the wrong hole); one
   of the 42, a step of 354 s, came from a misread clock, not from the order. No moment of either file was
   left out. Placing took 0.2 to 0.4 s per stretch. After the placement became one module
-  (`placeStretch`), the scripts gave exactly the same numbers.
+  (`placeStretch`), the scripts gave exactly the same numbers. After keyframes were paired with their
+  pictures once inside `placeStretch` (the scripts now read that pairing from its trace instead of
+  pairing by time themselves), `placement.mts`, `order.mts`, `clock.mts` and `segments.mts` (both
+  channels) gave the same output line for line, the entries and keyframe times of all eight stretches
+  were unchanged, and no GOP or picture was left unpaired (rechecked 2026-11-18).
 - Recorded playback and clip choice in the player (`tests/player.test.ts`), with fake video
   elements, no browser: when the next window is buffered and when it may take over; where a seek
   lands (the entry showing the moment, the high file waiting where it is next needed, a moment only

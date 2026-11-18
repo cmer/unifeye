@@ -17,10 +17,10 @@ const pct = (xs: number[], p: number) => xs[Math.min(xs.length - 1, Math.floor(x
 const all: number[] = [];
 for (const d of sets) {
   const midnight = d.midnightMs, lo = labels(d, "lo"), hi = labels(d, "hi");
-  const { trace, high, lo: lg, hi: hg, frames: lt, keys: ht } = await placeDataset(d, settings);
+  const { trace, high, lo: lg, hi: hg } = await placeDataset(d, settings);
   const errs: number[] = [], line: string[] = [];
   lg.gops.forEach((g, k) => {
-    const c = lo[lt.t.findIndex((x) => Math.abs(x - g.t) < 0.002)];
+    const j = trace.baseFrames[k], c = j == null ? null : lo[j];
     if (c == null) { line.push(`${g.t.toFixed(0)}:?`); return; }
     const e = (trace.baseTimes[k] - midnight) / 1000 - c;
     errs.push(e); line.push(`${g.t.toFixed(0)}:${e.toFixed(0)}`);
@@ -30,9 +30,8 @@ for (const d of sets) {
   if (verbose) console.log("   " + line.join(" "));
   all.push(...dev);
 
-  const hiOf = (g: { t: number }) => { const k = ht.t.findIndex((t) => Math.abs(t - g.t) < 0.02); return k < 0 ? null : hi[k]; };
   const hc: number[] = [];
-  hg.gops.forEach((g, k) => { const c = hiOf(g); if (c != null && k > 0) hc.push((high.times[k] - midnight) / 1000 - c); });
+  hg.gops.forEach((_, k) => { const j = high.keys[k], c = j == null ? null : hi[j]; if (c != null && k > 0) hc.push((high.times[k] - midnight) / 1000 - c); });
   const hm = [...hc].sort((a, b) => a - b)[hc.length >> 1], hdev = hc.map((e) => Math.abs(e - hm)).sort((a, b) => a - b);
   console.log(`   high, against the high clock: median offset ${hm?.toFixed(1)} |dev| p50 ${pct(hdev, 0.5)?.toFixed(1)} p90 ${pct(hdev, 0.9)?.toFixed(1)} max ${hdev[hdev.length - 1]?.toFixed(1)}`);
 }
