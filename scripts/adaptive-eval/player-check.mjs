@@ -1,18 +1,20 @@
 /**
  * Watches adaptive playback in a real browser (headless Chrome) against a mock-mode stack and prints
  * what the player shows every half second, plus any stretch where the picture stopped moving.
- * No real footage: the simulated "Upper Lounge" camera records high resolution in seconds 12 to 21
- * of every half minute and low resolution everywhere but seconds 15 to 18.
+ * No real footage: the simulated "Upper Lounge" camera records high resolution in seconds 12.5 to
+ * 21.5 of every half minute and low resolution everywhere but seconds 15.5 to 18.5, in one-second GOPs
+ * starting half a second past each whole second.
  *
- *   MOCK_ADAPTIVE=mock-06 PLAYBACK_WINDOW_SECONDS=10 bash .claude/skills/qa-sweep/scripts/stack.sh start <slot>
+ *   MOCK_ADAPTIVE=mock-06 PLAYBACK_WINDOW_SECONDS=15 bash .claude/skills/qa-sweep/scripts/stack.sh start <slot>
  *   PLAYWRIGHT=<path to playwright's index.mjs> node scripts/adaptive-eval/player-check.mjs <app url> [seconds=42] [camera=Upper Lounge]
  *
- * Ten-second windows make motion cross window handovers. Ports are shared by every checkout on the
+ * Fifteen-second windows make motion cross window handovers, and the window at second 15 of each half
+ * minute opens inside the GOP the window before ended with. Ports are shared by every checkout on the
  * machine: pick a slot no other session is using, or the stacks stop each other.
  *
  * Each row: seconds since opening, state, base time, window (seconds into the minute), high time.
  * States: B base alone, O high over the base, I insert (base paused, high alone), P base paused,
- * - nothing yet. The sequence should read B, then O from second 12, I from 15, O from 18, B from 21.
+ * - nothing yet. The sequence should read B, then O from second 12.5, I from 15.5, O from 18.5, B from 21.5.
  */
 const { chromium } = await import(process.env.PLAYWRIGHT ?? "playwright");
 const [url, secs = "42", name = "Upper Lounge"] = process.argv.slice(2);

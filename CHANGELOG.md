@@ -20,6 +20,8 @@ and uses it as the GitHub release notes.
 ### Fixed
 - Activity shows a picture for each motion and detection event again.
 - If activity markers fail to load on a camera's timeline, the player tries again on its own.
+- Recorded video no longer sometimes jumps back a few seconds as it plays on from one
+  minute to the next.
 
 ## 1.1.1 - 2026-11-18
 

@@ -27,10 +27,10 @@ export class MockProtectAdapter implements ProtectAdapter {
   /**
    * Cameras (Protect ids) that simulate adaptive recording, also settable with MOCK_ADAPTIVE=mock-06,...
    * Like a real recorder, they keep two channels with gaps in both (see `channelParts`): high
-   * resolution ("focus") only in seconds 12 to 21 of every half minute, and low resolution ("wall")
-   * everywhere except seconds 15 to 18 of every half minute. An export of one channel holds that
-   * channel's GOPs (one second each, on whole seconds) joined, starting with the last one before the
-   * requested start. The picture and sound depend only on wall-clock time, so both channels show the
+   * resolution ("focus") only in seconds 12.5 to 21.5 of every half minute, and low resolution ("wall")
+   * everywhere except seconds 15.5 to 18.5 of every half minute. An export of one channel holds that
+   * channel's GOPs (one second each, starting half a second past each whole second, see `keys`)
+   * joined, starting with the last one before the requested start. The picture and sound depend only on wall-clock time, so both channels show the
    * same moment alike, as real ones do.
    */
   adaptive = new Set((process.env.MOCK_ADAPTIVE ?? "").split(",").filter(Boolean));
@@ -151,8 +151,12 @@ export class MockProtectAdapter implements ProtectAdapter {
   async recordedSegments(id: string, fromMs: number, toMs: number, quality: "wall" | "focus"): Promise<[number, number][] | null> {
     this.guard();
     const c = this.cam(id), r = this.ranges(c, fromMs - 30 * 60_000, toMs);
-    const parts = this.adaptive.has(id) ? MockProtectAdapter.channelParts(r, quality) : quality === "focus" ? r : [];
     // A segment runs from its first keyframe to its last.
+    if (this.adaptive.has(id)) {
+      const parts = MockProtectAdapter.channelParts(this.ranges(c, fromMs - 30 * 60_000, toMs + 1000), quality);
+      return parts.map(([a, b]) => MockProtectAdapter.keys(a, b).filter((k) => k < toMs)).filter((k) => k.length).map((k) => [k[0], k[k.length - 1]]);
+    }
+    const parts = quality === "focus" ? r : [];
     return parts.map(([a, b]) => [Math.ceil(a / 1000) * 1000, Math.max(Math.ceil(a / 1000) * 1000, Math.ceil(b / 1000) * 1000 - 1000)]);
   }
   async exportClip(id: string, startMs: number, endMs: number, destPath: string, opts: { quality?: "wall" | "focus"; signal?: AbortSignal } = {}) {
@@ -168,9 +172,9 @@ export class MockProtectAdapter implements ProtectAdapter {
     await ffmpeg([...v.input, ...audio, ...v.vf, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "10", "-movflags", "+faststart", "-y", "-f", "mp4", destPath], opts.signal);
   }
 
-  /** Motion stretches inside [a, b): seconds 12 to 21 of every half minute. */
+  /** Motion stretches inside [a, b): seconds 12.5 to 21.5 of every half minute. */
   static motion(a: number, b: number): [number, number][] {
-    return MockProtectAdapter.every(a, b, 12_000, 21_000);
+    return MockProtectAdapter.every(a, b, 12_500, 21_500);
   }
   /** [from, to) of every half minute, inside [a, b). */
   private static every(a: number, b: number, from: number, to: number): [number, number][] {
@@ -184,16 +188,26 @@ export class MockProtectAdapter implements ProtectAdapter {
     for (const [a, b] of ranges) {
       if (quality === "focus") { out.push(...MockProtectAdapter.motion(a, b)); continue; }
       let p = a;
-      for (const [s, e] of MockProtectAdapter.every(a, b, 15_000, 18_000)) { if (s > p) out.push([p, s]); p = e; }
+      for (const [s, e] of MockProtectAdapter.every(a, b, 15_500, 18_500)) { if (s > p) out.push([p, s]); p = e; }
       if (p < b) out.push([p, b]);
     }
     return out;
   }
+  /**
+   * Keyframe times of an adaptive camera's channel recorded over [a, b): one-second GOPs starting half
+   * a second past each whole second, so a playback window's first GOP starts before the window and
+   * runs into it, as a real recorder's do. The low channel's last GOP before its gap (14.5 to 15.5 s
+   * of a half minute) is one the placement can date that way too (see `tests/playback.test.ts`).
+   */
+  static keys(a: number, b: number): number[] {
+    const out: number[] = [];
+    for (let k = Math.ceil((a - 500) / 1000) * 1000 + 500; k + 1000 <= b; k += 1000) out.push(k);
+    return out;
+  }
   private async adaptiveClip(c: MockCamera, startMs: number, endMs: number, destPath: string, opts: { quality?: "wall" | "focus"; signal?: AbortSignal }) {
-    const quality = opts.quality ?? "wall", parts = MockProtectAdapter.channelParts(this.ranges(c, startMs - 10 * 60_000, endMs), quality);
-    // One-second GOPs on whole seconds: the last one starting before the start, then every one before the end.
-    const keys: number[] = [];
-    for (const [a, b] of parts) for (let k = Math.ceil(a / 1000) * 1000; k + 1000 <= b; k += 1000) keys.push(k);
+    const quality = opts.quality ?? "wall", parts = MockProtectAdapter.channelParts(this.ranges(c, startMs - 10 * 60_000, endMs + 1000), quality);
+    // The last GOP starting before the start, then every one before the end.
+    const keys = parts.flatMap(([a, b]) => MockProtectAdapter.keys(a, b));
     const first = keys.findLastIndex((k) => k < startMs), picked = keys.slice(Math.max(0, first)).filter((k) => k < endMs);
     if (!picked.length || (first < 0 && picked[0] >= endMs)) throw new NoRecordingError();
     // Like the recorder, every export holds the same GOP byte for byte. x264 numbers its keyframes 0, 1,
