@@ -18,7 +18,7 @@ function directUrls(config: unknown): { main: string; sub: string } | null {
   return { main: t.rtspUrl!, sub: ok(t.rtspUrlLQ) ? t.rtspUrlLQ! : t.rtspUrl! };
 }
 
-interface RawEvent { id: string; type: string; start: number; end?: number | null; camera?: string; cameraId?: string; smartDetectTypes?: string[]; thumbnailId?: string; modelKey?: string }
+interface RawEvent { id: string; type: string; start: number; end?: number | null; camera?: string; cameraId?: string; smartDetectTypes?: string[]; /** `e-<event id>` on current recorders; older ones sent `thumbnailId`. */ thumbnail?: string | null; thumbnailId?: string | null; modelKey?: string }
 const SMART: Record<string, EventType> = { person: "person", vehicle: "vehicle", package: "package", animal: "animal", licensePlate: "licensePlate" };
 
 /**
@@ -163,7 +163,7 @@ export class UnifiProtectAdapter implements ProtectAdapter {
     if (!r?.id || !cam || typeof r.start !== "number") return null;
     const smart = r.smartDetectTypes?.map((t) => SMART[t]).find(Boolean);
     const type: EventType = r.type === "motion" ? "motion" : r.type === "ring" ? "ring" : r.type === "smartAudioDetect" ? "audio" : r.type?.startsWith("smartDetect") ? smart ?? "other" : "other";
-    return { id: r.id, protectCameraId: cam, type, startMs: r.start, endMs: r.end ?? null, hasThumbnail: !!r.thumbnailId && r.end != null };
+    return { id: r.id, protectCameraId: cam, type, startMs: r.start, endMs: r.end ?? null, hasThumbnail: !!(r.thumbnail ?? r.thumbnailId) && r.end != null };
   }
 
   /** Realtime `isRecording` updates seen since the stream last connected, by Protect camera id. */

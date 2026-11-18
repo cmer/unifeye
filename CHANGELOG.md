@@ -15,6 +15,11 @@ and uses it as the GitHub release notes.
   so they match the clock on the video. "My time zone" and others are still in the time zone menu.
 - The People list in Admin is more compact and fits without scrolling sideways. View as, sign-in
   settings and password links are in the ⋯ menu on each row.
+- Sign out and the light or dark switch are now in the menu that opens when you click your name.
+
+### Fixed
+- Activity shows a picture for each motion and detection event again.
+- If activity markers fail to load on a camera's timeline, the player tries again on its own.
 
 ## 1.1.1 - 2026-11-18
 

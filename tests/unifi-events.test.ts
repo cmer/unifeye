@@ -36,4 +36,16 @@ describe("UniFi events", () => {
     await adapter.listEvents({ protectCameraIds: ["a"], fromMs: 0, toMs: 1e12, limit: 100 });
     expect(paths.filter((p) => p.includes("cameras=")).length).toBe(1); // remembered, not retried every time
   });
+
+  it("sees the thumbnail of a finished event in the shape the recorder sends", async () => {
+    const adapter = new UnifiProtectAdapter("nvr", { host: "nvr.test", username: "u", password: "p", verifyTls: true });
+    const rows = [
+      { id: "done", type: "motion", start: 1000, end: 2000, camera: "a", thumbnail: "e-done" },
+      { id: "open", type: "motion", start: 3000, end: null, camera: "a", thumbnail: "e-open" },
+      { id: "none", type: "motion", start: 4000, end: 5000, camera: "a", thumbnail: null },
+    ];
+    (adapter as unknown as { get: () => Promise<unknown> }).get = async () => ({ statusCode: 200, json: () => rows });
+    const out = await adapter.listEvents({ protectCameraIds: ["a"], fromMs: 0, toMs: 1e12, limit: 100 });
+    expect(Object.fromEntries(out.map((e) => [e.id, e.hasThumbnail]))).toEqual({ done: true, open: false, none: false });
+  });
 });
