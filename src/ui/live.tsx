@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, mediaUrl, previewToken } from "./api";
+import { recordProblem, recordRequestFailure, registerTile, type TileHandle } from "./diagnostics";
 import { applySound, watchAudio } from "./sound";
 
 type State = "idle" | "connecting" | "playing" | "unavailable" | "error";
@@ -28,6 +29,13 @@ const webrtcSkipped = () => {
 const skipWebrtc = () => {
   skipUntil = Date.now() + WEBRTC_SKIP_MS;
   try { sessionStorage.setItem(SKIP_KEY, String(skipUntil)); } catch { /* storage unavailable */ }
+};
+/** For the diagnostics window: when the WebRTC pause ends and how long it lasts, or null when there is none. */
+export const webrtcPause = () => (webrtcSkipped() ? { until: skipUntil, lengthMs: WEBRTC_SKIP_MS } : null);
+/** Ends the pause ("Try now"): tiles try WebRTC again on their next connection. */
+export const resumeWebrtc = () => {
+  skipUntil = 0;
+  try { sessionStorage.removeItem(SKIP_KEY); } catch { /* storage unavailable */ }
 };
 
 /**
@@ -59,6 +67,8 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
   const [still, setStill] = useState(0);
   const [via, setVia] = useState<Transport>("webrtc");
   const [source, setSource] = useState<VideoSource | null>(null);
+  /** This tile in the diagnostics registry, while it is trying to play. */
+  const diag = useRef<TileHandle | null>(null);
 
   const playingNow = active && online && raw === "playing";
   useEffect(() => {
@@ -68,11 +78,18 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
   }, [playingNow]);
 
   useEffect(() => {
+    if (!active || !online || !video.current) return;
+    const h = registerTile(cameraId, quality, video.current);
+    diag.current = h;
+    return () => { h.done(); if (diag.current === h) diag.current = null; };
+  }, [cameraId, quality, active, online]);
+
+  useEffect(() => {
     if (!active || !online) return;
     const el = video.current!;
     let closed = false, unwatch: (() => void) | undefined, pc: RTCPeerConnection | undefined, resource: string | null = null, hls: { destroy(): void } | undefined, timer: ReturnType<typeof setTimeout> | undefined, timer2: ReturnType<typeof setTimeout> | undefined;
     const retry = () => { if (closed) return; setState("connecting"); timer = setTimeout(() => setAttempt((n) => n + 1), Math.min(3000 * (attempt + 1), 15000)); };
-    const busy = () => { if (closed) return; setState("connecting"); timer = setTimeout(() => setWake((n) => n + 1), BUSY_RETRY_MS); };
+    const busy = () => { if (closed) return; diag.current?.refused(); setState("connecting"); timer = setTimeout(() => setWake((n) => n + 1), BUSY_RETRY_MS); };
     const stream = `/media/live/${cameraId}/hls/${quality}`;
     let hlsOpen = false;
     const viaHls = async () => {
@@ -85,17 +102,32 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
       try {
         if (el.canPlayType("application/vnd.apple.mpegurl")) {
           // The browser's own HLS player (Safari, recent Chrome): same retry rule as hls.js below.
-          el.onerror = () => { if (closed) return; el.onerror = null; if (attempt < 4) retry(); else setState("error"); };
+          el.onerror = () => {
+            if (closed) return; el.onerror = null;
+            // The browser's player says little: a media error code at most.
+            const me = el.error;
+            recordProblem({ kind: "hls", cameraId, title: "HLS player error", detail: me ? `MediaError ${me.code}${me.message ? `: ${me.message}` : ""}` : undefined });
+            if (attempt < 4) retry(); else setState("error");
+          };
+          diag.current?.update({ nativeHls: true, hls: null });
           el.src = src;
         }
         else {
           const { default: Hls } = await import("hls.js");
           if (closed || !Hls.isSupported()) return setState("error");
           const h = new Hls({ lowLatencyMode: true, xhrSetup: (xhr) => { const t = previewToken(); if (t) xhr.setRequestHeader("x-unifeye-preview", t); } });
-          h.on(Hls.Events.ERROR, (_e, d) => { if (d.fatal) { h.destroy(); if (d.response?.code === 429) busy(); else if (attempt < 4) retry(); else setState("error"); } });
+          h.on(Hls.Events.ERROR, (_e, d) => {
+            if (!d.fatal) return;
+            const url = d.url ?? d.context?.url;
+            if (d.response?.code === 429) recordRequestFailure({ method: "GET", path: url ? new URL(url, location.href).pathname : `/api${stream}`, status: 429, cameraId });
+            else recordProblem({ kind: "hls", cameraId, title: `HLS fatal error: ${d.details}`, detail: [d.type, d.response?.code ? `HTTP ${d.response.code}` : null, d.error?.message].filter(Boolean).join(" · ") });
+            diag.current?.update({ lastError: d.response?.code ? `HTTP ${d.response.code}` : String(d.details), hls: null });
+            h.destroy(); if (d.response?.code === 429) busy(); else if (attempt < 4) retry(); else setState("error");
+          });
           // The playlist names its codecs, so whether there is sound is known before anything plays.
           h.on(Hls.Events.MANIFEST_PARSED, (_e, d) => { if (!closed) setAudio(d.audioTracks.length > 0 || d.levels.some((l) => !!l.audioCodec)); });
           h.loadSource(src); h.attachMedia(el); hls = h;
+          diag.current?.update({ hls: h, nativeHls: false });
         }
         if (!hls) unwatch = watchAudio(el, (has) => { if (!closed) setAudio(has); });
         el.onplaying = () => { if (!closed) { setVia("hls"); setState("playing"); } };
@@ -107,10 +139,13 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
     setAudio(null);
     setSource(null);
     el.muted = true; // every connection starts muted, so autoplay is always allowed; the sound effect below unmutes once playing
+    diag.current?.update({ attempts: attempt, pc: null, hls: null, nativeHls: false });
     if (webrtcSkipped()) { void viaHls(); return cleanup; }
     // Media never arrived: this network cannot reach the WebRTC port. Switch transport and remember it.
     const unreachable = () => {
       if (closed || !pc) return;
+      recordProblem({ kind: "webrtc", cameraId, title: pc.connectionState === "failed" ? "WebRTC couldn't connect, switched to HLS" : "WebRTC timed out, switched to HLS", detail: `ICE state: ${pc.iceConnectionState} · connection: ${pc.connectionState}${answeredAt ? ` after ${((performance.now() - answeredAt) / 1000).toFixed(1)} s` : ""}` });
+      diag.current?.update({ pc: null, lastError: `WebRTC ${pc.iceConnectionState}` });
       clearTimeout(timer); pc.close(); pc = undefined;
       el.srcObject = null; // a media stream outranks `src`: left attached, it would hide the HLS video
       skipWebrtc();
@@ -119,10 +154,11 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
       if (r) void api(r.replace(/^\/api/, ""), { method: "DELETE" }).catch(() => {}).finally(() => void viaHls());
       else void viaHls();
     };
-    let connected = false;
+    let connected = false, answeredAt = 0;
     (async () => {
       try {
         pc = new RTCPeerConnection();
+        diag.current?.update({ pc });
         pc.addTransceiver("video", { direction: "recvonly" });
         pc.addTransceiver("audio", { direction: "recvonly" });
         // A camera without sound WebRTC can carry still gets an audio track: MediaMTX answers with a
@@ -155,6 +191,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
         // Release it now: otherwise the session holds one of this tab's stream slots until it times out.
         if (closed) { if (resource) void api(resource.replace(/^\/api/, ""), { method: "DELETE" }).catch(() => {}); return; }
         await pc.setRemoteDescription({ type: "answer", sdp: ans.sdp });
+        answeredAt = performance.now();
         if (!connected) timer = setTimeout(unreachable, WEBRTC_CONNECT_MS);
       } catch (e) {
         if (closed) return;
@@ -180,6 +217,11 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
 
   const state: State = active && online ? raw : "idle";
   const shown = state === "playing" ? via : null;
+  useEffect(() => {
+    diag.current?.update({ state });
+    if (state === "error") recordProblem({ kind: "tile", cameraId, title: `Gave up after ${attempt + 1} tries` });
+  }, [state]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { diag.current?.update({ transport: shown, source }); }, [shown, source]);
   useEffect(() => { onTransport?.(shown && { via: shown, source }); }, [shown, source]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => onTransport?.(null), []); // eslint-disable-line react-hooks/exhaustive-deps
   const hasAudio = state === "playing" ? audio : null;

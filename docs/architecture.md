@@ -202,7 +202,8 @@ count per client address; a valid session is never refused because of its addres
 | `auth` (sign-in routes) | 30 | address |
 | `unauth` (failed authentication) | 600 | address |
 | `read` / `write` | 1,200 / 240 | session |
-| `media` (snapshots, WebRTC set-up, playback, thumbnails, exports) | 600 | session |
+| `media` (snapshots, WebRTC set-up, playback, thumbnails, exports, the diagnostics speed test) | 600 | session |
+| `speedtest` (the diagnostics download sample, on top of `media`) | 10 | session |
 | `hls` (playlists and segments) | 120 × (`MAX_WALL_STREAMS` + 3), 1,440 by default | session |
 
 An HLS stream on Protect cameras polls a video and a sound playlist and fetches a segment of each
@@ -527,6 +528,41 @@ port cannot be opened, start-up aborts, since no video could play without it.
 Tests use an in-memory relay (`src/server/testing/relay.ts`). It admits no reader without asking
 `Media.admit`, tracks readers so listing and kicking work, and can be switched to unreachable. It
 is a model of what Unifeye can observe, not of MediaMTX itself.
+
+## Diagnostics
+
+Every signed-in person can open Diagnostics from the menu on their name in the sidebar
+(`src/ui/diagnostics-dialog.tsx`). It checks how live video reaches this browser and can copy a
+plain-text report. Two routes serve it, both signed-in only:
+
+- `GET /api/diagnostics`: the server's clock, the recorder's state (as `/me` already shows), whether
+  the media relay answers, the caller's session's open live streams (counted as the stream limit
+  counts them, split by WebRTC and HLS, against `MAX_WALL_STREAMS` + 3), the session's use of each
+  per-minute rate class with its limit and seconds to reset, and the app version from `package.json`.
+  Only the caller's own session: nothing about other people, no configuration values beyond the limits
+  that apply to the caller. The stream list names a camera only if the effective subject may see it
+  (`Media.sessionStreams`, filtered through the policy). It is a read, so it works during "See as
+  staff"; the counts are then the administrator's session's, which the preview shares, while the
+  camera list is the previewed person's view of them.
+- `GET /api/diagnostics/download?bytes=N`: random (incompressible) bytes for a download-speed sample,
+  `no-store`. The size is capped at 4 MB whatever is asked; each request counts as `media` and also
+  against `speedtest` (10 a minute per session).
+
+The window's tests use the normal media routes, so they go through the same authorization and limits
+as tiles:
+
+- WebRTC is tested twice, over UDP and over TCP, by filtering the WHEP answer's ICE candidates to one
+  transport before applying it. Each test session is released (`DELETE` on its WHEP resource) when it
+  ends, fails, or the window closes.
+- HLS fetches the top playlist, the first video playlist and its newest segment. It prefers a stream
+  the session already holds (so no extra slot is taken), and releases the stream
+  (`DELETE /api/media/live/:id/hls/:q`) only if the test opened it and no tile in the tab has started
+  it since, because that release ends every HLS reader the session has for the stream.
+- The tab keeps, in memory only (`src/ui/diagnostics.ts`), the last 50 problems (failed API requests
+  with their `x-request-id`, WebRTC timeouts and switches to HLS, HLS player errors, tiles that gave
+  up), the 429s of the last 10 minutes, and a registry of the live tiles with their peer connection or
+  HLS player for statistics. "Try now" ends the tab's 10-minute WebRTC pause (`resumeWebrtc` in
+  `src/ui/live.tsx`); tiles use WebRTC again on their next connection.
 
 ## "See as staff"
 

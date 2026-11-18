@@ -1,17 +1,19 @@
 "use client";
-import { Bell, Camera as CameraIcon, KeyRound, LayoutGrid, ListChecks, LogOut, Moon, PanelLeft, ShieldCheck, Star, Sun, Eye, WifiOff } from "lucide-react";
+import { Activity as ActivityIcon, Bell, Camera as CameraIcon, KeyRound, LayoutGrid, ListChecks, LogOut, Moon, PanelLeft, ShieldCheck, Star, Sun, Eye, WifiOff } from "lucide-react";
 import { useTheme } from "next-themes";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { BrandMark } from "@/components/brand-mark";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuBadge, SidebarMenuButton, SidebarMenuItem, SidebarProvider, useSidebar } from "@/components/ui/sidebar";
 import { Activity } from "./activity";
 import { Admin } from "./admin";
 import { api, ApiError, localZone, setCsrf, setPreviewToken, type Me } from "./api";
+import { DiagnosticsDialog } from "./diagnostics-dialog";
 import { ManageViews } from "./manage-views";
 import { Player } from "./player";
 import { Wall } from "./wall";
@@ -111,6 +113,7 @@ function AppSidebar() {
   const { theme, resolvedTheme, setTheme } = useTheme();
   const { isMobile, setOpenMobile } = useSidebar();
   const [pw, setPw] = useState(false);
+  const [diag, setDiag] = useState(false);
   const go = (to: string) => { nav(to); if (isMobile) setOpenMobile(false); };
   const at = (p: string) => loc.path === p || loc.path.startsWith(p + "/");
   void theme;
@@ -154,14 +157,22 @@ function AppSidebar() {
       </SidebarContent>
       <SidebarFooter>
         <div className="flex items-center gap-2 px-2 py-1">
-          <span className="grid size-8 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{me.user.name.split(" ").map((x) => x[0]).join("").slice(0, 2).toUpperCase()}</span>
-          <span className="min-w-0 flex-1 truncate text-sm font-medium">{me.user.name}</span>
+          <DropdownMenu>
+            <DropdownMenuTrigger className="-ml-1 flex min-w-0 flex-1 items-center gap-2 rounded-lg p-1 text-left outline-none hover:bg-sidebar-accent focus-visible:ring-3 focus-visible:ring-ring/50 aria-expanded:bg-sidebar-accent">
+              <span className="grid size-8 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold">{me.user.name.split(" ").map((x) => x[0]).join("").slice(0, 2).toUpperCase()}</span>
+              <span className="min-w-0 flex-1 truncate text-sm font-medium">{me.user.name}</span>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent side="top" align="start" className="min-w-48">
+              <DropdownMenuItem onClick={() => setDiag(true)}><ActivityIcon />Diagnostics</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           {me.user.hasPassword && !me.preview && <Button variant="ghost" size="icon" aria-label="Change password" title="Change password" onClick={() => setPw(true)}><KeyRound /></Button>}
           <Button variant="ghost" size="icon" aria-label="Switch between light and dark" onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}>{resolvedTheme === "dark" ? <Sun /> : <Moon />}</Button>
           <Button variant="ghost" size="icon" aria-label="Sign out" title="Sign out" onClick={async () => { try { setPreviewToken(null); const r = await api<{ redirect: string }>("/auth/logout", { method: "POST" }); location.assign(r.redirect); } catch (e) { fail(e); } }}><LogOut /></Button>
         </div>
       </SidebarFooter>
       {pw && <ChangePassword onClose={() => setPw(false)} />}
+      {diag && <DiagnosticsDialog onClose={() => setDiag(false)} />}
     </Sidebar>
   );
 }

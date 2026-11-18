@@ -19,7 +19,7 @@ should be assumed to work.
 
 ## Verified
 
-**Automated tests (`pnpm test`, 275 tests):**
+**Automated tests (`pnpm test`, 326 tests):**
 
 The media tests run against an in-memory relay that asks the gateway (`Media.admit`) before
 admitting a reader. They show what the gateway decides, not how MediaMTX behaves. How the MediaMTX
@@ -51,6 +51,13 @@ gateway) is pinned separately in
 - HLS fallback through the gateway: playlist then segment, the hook asked when the playlist opens a session; 401
   without a session; 404 once the grant is removed, without the relay being asked; HLS readers
   kicked on grant removal and session revocation, and the gateway's HLS state dropped with them.
+- Diagnostics: `/api/diagnostics` and the speed-test route refuse a request without a session;
+  stream counts and the stream list cover only the caller's session, and during a preview name only
+  cameras the previewed person can see; the speed-test sample is capped at 4 MB, uncached, counted as
+  `media` and refused after 10 a minute per session. The window's logic is unit-tested in Node
+  (`tests/diagnostics.test.ts`): candidate filtering, playlist parsing, 429 grouping, the verdict,
+  the report, user agents, statistics parsing and which stream the tests use. The browser side of
+  the window (peer connections, `getStats`, codec queries, clipboard) is not covered by tests.
 - Relay outage: WHEP setup, trickle, teardown and HLS answer 503 `relay_unavailable`; a sweep
   survives it; `/ready` reports the relay as down and as up again.
 - MediaMTX adapter, against a local HTTP stub that records requests: path add and replace bodies,
@@ -344,6 +351,22 @@ Read from the running stack, its audit log and its logs. Nothing was changed.
   `-fpsprobesize 0`, it was ready in 3.1 to 4.0 s over four cold starts with no failures. Not yet
   checked in the Compose stack.
 
+**Diagnostics window (2026-11-18, mock mode, real MediaMTX 1.21.4 on macOS, Chromium in the T3 preview):**
+
+- Opened from the menu on the name with the keyboard (arrow down, Enter) and with the mouse, as the
+  administrator with eight WebRTC tiles playing. Every check finished in about 7 seconds: server, recorder,
+  download sample, WebRTC over UDP and over TCP (each connected through the filtered candidates, on
+  the WebRTC port), HLS (playlist, video playlist and segment through the gateway), codecs, open streams,
+  every tile's statistics, clock and version. "Copy report" produced the plain-text report with
+  status codes, request ids and candidate pairs.
+- The WebRTC pause row appeared when the pause was set, and "Try now" cleared it. "Check again" and then
+  closing the window mid-run left the session's open stream count where it was. The window fits and
+  scrolls inside itself at 375×667, in light and dark.
+- Not checked: a network where UDP or TCP is actually blocked (only loopback, where both connect), a
+  real UNVR, Safari and Firefox (their statistics and codec reports differ), the native HLS player's
+  error reports, real 429s shown in the window (only through the unit tests), and whether fetching the
+  top playlist again through a reader a tile is using ever disturbs that tile in MediaMTX.
+
 ## Not verified
 
 | Area | Why | What could go wrong |
@@ -364,6 +387,7 @@ Read from the running stack, its audit log and its logs. Nothing was changed.
 | Long clips from a real UNVR | One 1 h 55 min clip from one camera with adaptive recording (see Verified); fourteen of its pieces joined outside Unifeye after the fix. A 2 h clip from the same camera, saved before adaptive pieces were combined, came out 1 h 17 min: the burned-in clock showed 15 fps throughout but skipped between motion stretches, and about four minutes of low-resolution night footage were missing too | How long Protect takes before sending the first byte of an hour-long export (Unifeye waits up to 15 minutes), whether it caps export length, the disk space a clip needs, whether exporting pieces in parallel is faster than one long export on your recorder, whether the joins between pieces are seamless on real camera streams, and which status a real UNVR answers when it is overloaded or has nothing recorded (a 5xx for "nothing recorded" would be retried, then reported as busy) |
 | Clip resizing on a GPU in Linux (VAAPI with Intel Quick Sync or AMD, NVENC) | No such GPU available; only "no device, so the CPU" was checked | The driver rejects the settings and every clip resizes on the CPU (logged at start-up of the first clip), or a driver encodes at a quality that looks worse |
 | Clip resizing and combining with real adaptive recordings | Synthetic files and mock mode only | Real low-resolution pieces that are not 4:3 or change size in a way the keyframe scan misses; players that still resize on a real joined file; file size; whether Protect's channel 0 export of a piece with no motion is low resolution, empty or an error (each case is handled, but only the mock was seen); how long combining takes on a small server |
+| Diagnostics on blocked or slow networks | Only loopback with the mock stack; the verdict, report, candidate filtering and statistics parsing are unit-tested | A blocked transport reported differently than expected; browsers other than Chromium report statistics or codecs differently; the download sample under-reads very fast or very slow links |
 | Activity live updates in the browser | Checked through the API tests only | UI wiring |
 | Revocation bound under load | Checked with three streams | Slower with many sessions |
 | Video straight from the camera, end to end | Only the camera check ran against real cameras | The camera refuses a second reader or drops frames under the extra connection; MediaMTX logs the camera address (without the password); door stations' swapped stream addresses |
