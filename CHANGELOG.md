@@ -6,6 +6,14 @@ and uses it as the GitHub release notes.
 
 ## Unreleased
 
+### Fixed
+- Recorded video from cameras that record in both low and high resolution now shows
+  every moment the recorder kept, in the right order, including moments recorded only
+  in high resolution.
+- High-resolution footage now lines up with the rest of the recording even when the
+  camera has no sound, instead of falling back to low resolution.
+- Clips from these cameras keep every recorded frame.
+
 ## 1.0.0 - 2026-11-18
 
 ### Added
