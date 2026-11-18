@@ -5,7 +5,7 @@ import { Agent, request, type Dispatcher } from "undici";
 import { ProtectClient } from "unifi-protect";
 import { log } from "../util";
 import { checkRtsp, withLogin } from "./rtsp-check";
-import { NoRecordingError, ProtectUnavailableError, RecorderBusyError, type AdapterHealth, type CameraLogin, type DirectCheck, type EventQuery, type EventType, type LiveSource, type ProtectAdapter, type ProtectCamera, type ProtectEvent, type RecordingRanges } from "./types";
+import { NoRecordingError, ProtectUnavailableError, RecorderBusyError, type AdapterHealth, type CameraLogin, type DirectCheck, type EventQuery, type EventType, type LiveSource, type ProtectAdapter, type ProtectCamera, type ProtectEvent, type RecordingRanges, validZone } from "./types";
 
 /**
  * The camera's own stream addresses, for cameras made by someone else (Protect adopts them over ONVIF
@@ -103,6 +103,11 @@ export class UnifiProtectAdapter implements ProtectAdapter {
   health(): AdapterHealth {
     const nvr = this.client?.nvr as unknown as { config?: { version?: string } } | undefined;
     return { mode: "real", state: this.state, lastOkAt: this.lastOkAt, lastError: this.lastError, protectVersion: nvr?.config?.version ?? null };
+  }
+
+  timeZone(): string | null {
+    const tz = (this.client?.nvr as unknown as { config?: { timezone?: unknown } } | undefined)?.config?.timezone;
+    return validZone(tz);
   }
 
   /** Realtime packets -> events. Restarts with backoff; ids are de-duplicated across reconnects. */

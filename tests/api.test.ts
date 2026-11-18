@@ -116,6 +116,7 @@ describe("a forbidden camera is indistinguishable from a missing one, on every r
     for (const leak of ["Stock Room", f.cam["Stock Room"], f.cam["Upper Lounge"], f.cam["Parking Lot North"]]) expect(r.text).not.toContain(leak);
     expect((await call(f.u.front, "GET", `/views/${f.viewByName()["Restricted Rooms"]}`)).status).toBe(404);
     const me = (await call(f.u.front, "GET", "/me")).data;
+    expect(me.recorderTimeZone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone); // the mock recorder keeps the server's zone
     expect(me.views.find((v: { name: string }) => v.name === "Building Overview").count).toBe(3);
   });
   it("event listings, counts and ids never cross the permission boundary", async () => {

@@ -12,7 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuBadge, SidebarMenuButton, SidebarMenuItem, SidebarProvider, useSidebar } from "@/components/ui/sidebar";
 import { Activity } from "./activity";
 import { Admin } from "./admin";
-import { api, ApiError, localZone, setCsrf, setPreviewToken, type Me } from "./api";
+import { api, ApiError, setCsrf, setPreviewToken, zoneFor, type Me } from "./api";
 import { DiagnosticsDialog } from "./diagnostics-dialog";
 import { ManageViews } from "./manage-views";
 import { Player } from "./player";
@@ -75,7 +75,7 @@ export function App() {
     setPrefs((p) => ({ ...p, [key]: value }));
     if (!me?.preview) api("/preferences", { method: "PUT", body: { key, value } }).catch(() => {}); // a preview never writes the subject's preferences
   }, [me?.preview]);
-  const ctx = useMemo(() => (me && loc ? { me: { ...me, preferences: prefs }, reload, loc, nav, setPref, tz: typeof prefs.tz === "string" && prefs.tz !== "local" ? prefs.tz : localZone() } : null), [me, loc, prefs, reload, nav, setPref]);
+  const ctx = useMemo(() => (me && loc ? { me: { ...me, preferences: prefs }, reload, loc, nav, setPref, tz: zoneFor(prefs.tz, me.recorderTimeZone) } : null), [me, loc, prefs, reload, nav, setPref]);
   if (!ctx) return <div className="grid h-full place-items-center text-sm text-muted-foreground">Loading…</div>;
 
   const { path } = ctx.loc, seg = path.split("/").filter(Boolean);

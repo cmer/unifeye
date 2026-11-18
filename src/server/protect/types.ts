@@ -64,6 +64,11 @@ export interface EventQuery {
   types?: EventType[];
   limit: number;
 }
+/** An IANA time zone name the runtime understands, or null. */
+export function validZone(tz: unknown): string | null {
+  if (typeof tz !== "string" || !tz || tz.length > 64) return null;
+  try { return new Intl.DateTimeFormat("en-US", { timeZone: tz }).resolvedOptions().timeZone; } catch { return null; }
+}
 export class ProtectUnavailableError extends Error {}
 export class NoRecordingError extends Error { override name = "NoRecordingError"; }
 /**
@@ -84,6 +89,8 @@ export interface ProtectAdapter {
   connect(): Promise<void>;
   close(): Promise<void>;
   health(): AdapterHealth;
+  /** The recorder's own time zone (IANA name, as on the clock it stamps on video), or null until known. */
+  timeZone(): string | null;
   listCameras(): Promise<ProtectCamera[]>;
   /** Protect ids of cameras writing video to the recorder at this moment (continuous, motion or schedule). */
   recordingNow(): Promise<string[]>;
