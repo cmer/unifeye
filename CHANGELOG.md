@@ -10,6 +10,10 @@ and uses it as the GitHub release notes.
 - `scripts/update.sh` takes a version number: `1.1.2` for that release, `1.3` for the newest
   1.3.x, or `2` for the newest 2.x.x.
 
+### Changed
+- Times in recordings, the timeline and activity now show in the recorder's time zone by default,
+  so they match the clock on the video. "My time zone" and others are still in the time zone menu.
+
 ## 1.1.1 - 2026-11-18
 
 ### Fixed
