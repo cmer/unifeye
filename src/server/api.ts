@@ -435,7 +435,13 @@ route("POST", "/admin/groups", { admin: true }, async ({ s, actor, json: body })
 route("PATCH", "/admin/groups/:id", { admin: true }, async ({ s, actor, p, json: body }) => { s.admin.updateGroup(actor, p.id, await body()); });
 route("DELETE", "/admin/groups/:id", { admin: true }, ({ s, actor, p }) => { s.admin.deleteGroup(actor, p.id); });
 route("PUT", "/admin/members", { admin: true }, async ({ s, actor, json: body }) => { const b = await body<{ groupId: string; userId: string; on: boolean }>(); s.admin.setMember(actor, String(b.groupId), String(b.userId), !!b.on); });
-route("PUT", "/admin/grants", { admin: true }, async ({ s, actor, json: body }) => { const b = await body<{ userId?: string; groupId?: string; cameraId: string; on: boolean }>(); if (!b.userId === !b.groupId) throw badRequest("Give a user or a group"); s.admin.setGrant(actor, b.userId ? { userId: b.userId } : { groupId: b.groupId! }, String(b.cameraId), !!b.on); });
+route("PUT", "/admin/grants", { admin: true }, async ({ s, actor, json: body }) => {
+  const b = await body<{ userId?: string; groupId?: string; cameraId?: string; cameraIds?: string[]; on: boolean }>();
+  if (!b.userId === !b.groupId) throw badRequest("Give a user or a group");
+  if (b.cameraIds !== undefined && !Array.isArray(b.cameraIds)) throw badRequest("cameraIds must be a list");
+  const ids = b.cameraIds ? b.cameraIds.map(String) : [String(b.cameraId)];
+  s.admin.setGrants(actor, b.userId ? { userId: b.userId } : { groupId: b.groupId! }, ids, !!b.on);
+});
 route("POST", "/admin/tags", { admin: true }, async ({ s, actor, json: body }) => s.admin.createTag(actor, String((await body()).name ?? "")));
 route("PATCH", "/admin/tags/:id", { admin: true }, async ({ s, actor, p, json: body }) => { s.admin.renameTag(actor, p.id, String((await body()).name ?? "")); });
 route("DELETE", "/admin/tags/:id", { admin: true }, ({ s, actor, p }) => { s.admin.deleteTag(actor, p.id); });
