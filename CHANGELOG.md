@@ -6,6 +6,8 @@ and uses it as the GitHub release notes.
 
 ## Unreleased
 
+## 1.1.0 - 2026-11-18
+
 ### Fixed
 - Recorded video from cameras that record in both low and high resolution now shows
   every moment the recorder kept, in the right order, including moments recorded only
