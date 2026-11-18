@@ -1,138 +1,243 @@
 import { rename } from "node:fs/promises";
 import { isCodec, timedEncode } from "../protect/encoders";
-import { audioEnvelope, overlayStretches, probe, retimeVideoToAudio, videoSizes, type MediaInfo } from "../protect/ffmpeg";
+import { gopsOf, probe, renderEntries, retimeVideoToAudio, thumbnails, videoSizes, type MediaInfo } from "../protect/ffmpeg";
 import { isNoRecording, isRecorderBusy } from "../protect/types";
 import { log } from "../util";
-import { alignSpans, type Span } from "./align";
+import { PLACEMENT, placeStretch, type Thumbs } from "./placement";
+import { skipLead, type Entry, type Gop, type Segments } from "./timeline";
 
-export type { Span } from "./align";
+export type { Entry } from "./timeline";
 
 /**
- * Recorded video for a stretch of time [startMs, endMs), as the recorder holds it.
+ * Recorded video for a stretch of time [startMs, endMs), as the recorder holds it, and the order to
+ * play it in.
  *
- * Normally that is one channel 0 ("focus") export. With adaptive recording, the recorder keeps the
- * low channel all the time and the high channel only around motion, and its exports have two quirks
- * that this module owns, so nothing else needs to know about them:
+ * Most cameras record one channel and an export of channel 0 ("focus") is all there is. With adaptive
+ * recording the recorder keeps two channels that take turns, with gaps in both: high resolution
+ * ("focus") around motion and low resolution ("wall") otherwise, overlapping in places. An export of
+ * either is a plain run of GOPs with no times inside, starting with the last keyframe before the
+ * requested start. This module owns those quirks, so nothing else needs to know about them:
  *
- * - A channel 0 export of a stretch with motion holds only the high-resolution parts, joined, with
- *   nothing saying where they belong. When it is more than a second short, the low channel ("wall")
- *   is exported too and becomes the base, and the high-resolution file becomes an overlay placed by
- *   matching both files' audio (`alignSpans`). If channel 0 has nothing at all, the low channel is
- *   used, so a stretch recorded only in low resolution is not lost.
- * - Some cameras' low channel comes out with a video clock that runs fast. Every export is retimed
- *   onto its audio clock before anything reads it (`retimeVideoToAudio`); consistent files are left alone.
- *
- * The recorder also starts an export on the keyframe before the requested time, so the base can
- * begin a few seconds early; `leadMs` says by how much.
+ * - The recorder's segment lists say which channels hold this stretch (`channelsFor`). When only one
+ *   does, its export is the whole story. When the low channel has time the high one lacks, both are
+ *   exported: the low file is the base, and every high GOP is placed on it by comparing pictures,
+ *   shown over the low moment it matches or inserted where the low file has a gap (`placement/`).
+ *   Nothing recorded in either channel is left out.
+ * - The base's video clock is repaired when it runs fast (`retimeVideoToAudio`). The high file is
+ *   never retimed: its sound is stored apart from its picture and does not line up with it.
+ * - Without segment lists (the recorder doesn't offer them), the files decide: channel 0 alone unless
+ *   it comes back short and the low channel holds more at a smaller size.
  */
 
 /** Writes the recorder's export of one channel to `dest`. The caller decides retries; errors are the adapter's. */
 export type ExportChannel = (channel: "focus" | "wall", dest: string, signal: AbortSignal) => Promise<void>;
+/** The recorder's segment list for one channel around the stretch, or null when it has none to give. */
+export type ListSegments = (channel: "focus" | "wall", signal: AbortSignal) => Promise<Segments | null>;
+
+/** The media operations this module needs. FFmpeg in production (`ffmpegOps`); tests pass fakes. */
+export interface MediaOps {
+  probe(path: string, signal: AbortSignal): Promise<MediaInfo>;
+  /** Repairs a fast video clock in place; true when the file was rewritten. */
+  retime(path: string, signal: AbortSignal): Promise<boolean>;
+  gops(path: string, signal: AbortSignal): Promise<{ gops: Gop[]; end: number }>;
+  thumbnails(path: string, o: { keyframes: boolean; w: number; h: number }, signal: AbortSignal): Promise<Thumbs>;
+  /** One file playing `entries` (`renderEntries`). Returns how long the encode took. */
+  render(base: string, high: string, entries: Entry[], dest: string, signal: AbortSignal): Promise<{ encoder: string; ms: number }>;
+}
+
+export const ffmpegOps: MediaOps = {
+  probe,
+  retime: retimeVideoToAudio,
+  gops: gopsOf,
+  thumbnails,
+  async render(base, high, entries, dest, signal) {
+    const { codec } = await videoSizes(high, signal);
+    if (!isCodec(codec)) throw new Error(`cannot encode ${codec}`);
+    return timedEncode(codec, (enc) => renderEntries(base, high, entries, dest, enc, signal), signal);
+  },
+};
+
+/** Keyframe hashes of a file's first GOP (its lead) and last GOP: neighbouring stretches share them. */
+export interface Seam { first: string; last: string }
+
+export interface Recorded {
+  /** The file every entry's `base` time refers to: `files.focus` or `files.wall`. */
+  base: string;
+  /** `files.focus` when the high channel is laid over a low-resolution base, else null. */
+  high: string | null;
+  /** The playback order (`placement/`). */
+  entries: Entry[];
+  seams: { base: Seam; high: Seam | null };
+  /** The low channel was needed but kept failing for reasons other than "nothing recorded", so time may be missing. */
+  busy: boolean;
+}
 
 export interface FetchOptions {
   /** Scratch paths for the two channels' exports. The caller deletes both afterwards. */
   files: { focus: string; wall: string };
   signal: AbortSignal;
   ops?: MediaOps;
+  /** The recorder's segment lists, when it offers them. */
+  segments?: ListSegments;
+  /**
+   * Called once the base is ready, before the high channel is placed on it (which waits for the
+   * larger high-resolution export), with entries for the base alone. Lets playback start sooner.
+   */
+  onBase?: (r: Recorded) => void;
   /** Added to log lines (a camera id, say). */
   context?: Record<string, unknown>;
 }
 
-/** The media operations this module needs. FFmpeg in production (`ffmpegOps`); tests pass a fake. */
-export interface MediaOps {
-  probe(path: string, signal: AbortSignal): Promise<MediaInfo>;
-  /** Repairs a fast video clock in place; true when the file was rewritten. */
-  retime(path: string, signal: AbortSignal): Promise<boolean>;
-  /** Loudness every 10 ms, for `alignSpans`. */
-  envelope(path: string, signal: AbortSignal): Promise<Float64Array>;
-  /** One file: `base` with `high` laid over it inside `spans`. Returns how long the encode took. */
-  combine(base: string, high: string, spans: Span[], dest: string, signal: AbortSignal): Promise<{ encoder: string; ms: number }>;
+/**
+ * Which channels to export for [startMs, endMs), from the recorder's segment lists. The high
+ * channel's list can be many seconds off, and both lists leave short gaps out, so only the clear
+ * cases take one channel: "focus" when the low channel lists nothing in the window (or neither lists
+ * anything: the export decides), "wall" when the high channel lists nothing within a minute of it.
+ * Anything else is "both": every moment either channel holds is then played. Null when either list
+ * is missing.
+ */
+export function channelsFor(high: Segments | null, low: Segments | null, startMs: number, endMs: number): "focus" | "wall" | "both" | null {
+  if (!high || !low) return null;
+  // A segment ends on its last keyframe, whose GOP (up to about 4 s) runs on past it.
+  const lowIn = low.some(([a, b]) => a < endMs && b + 5000 > startMs);
+  const highNear = high.some(([a, b]) => a < endMs + 60_000 && b + 60_000 > startMs);
+  return !lowIn ? "focus" : !highNear ? "wall" : "both";
 }
 
-export const ffmpegOps: MediaOps = {
-  probe,
-  retime: retimeVideoToAudio,
-  envelope: audioEnvelope,
-  async combine(base, high, spans, dest, signal) {
-    const { codec } = await videoSizes(high, signal);
-    if (!isCodec(codec)) throw new Error(`cannot encode ${codec}`);
-    return timedEncode(codec, (enc) => overlayStretches(base, high, spans, dest, enc, signal), signal);
-  },
-};
-
-/** How far before the requested start a file begins, from its length. Capped at 10 s. */
-export const leadOf = (durationSec: number, startMs: number, endMs: number) => Math.min(10_000, Math.max(0, Math.round(durationSec * 1000 - (endMs - startMs))));
-
-export interface Recorded {
-  /** The file that covers the whole stretch: `files.focus` or `files.wall`. */
-  base: string;
-  info: MediaInfo | null;
-  /** `files.focus` when it is an overlay over a low-resolution base, else null. */
-  high: string | null;
-  /** Where `high` sits in `base`, in seconds of media time. Empty when `high` is null. */
-  overlay: Span[];
-  leadMs: number;
-  /** The low channel was needed but kept failing for reasons other than "nothing recorded", so time may be missing. */
-  busy: boolean;
+function merge(xs: [number, number][]): [number, number][] {
+  const out: [number, number][] = [];
+  for (const [a, b] of xs.sort((x, y) => x[0] - y[0])) { const p = out[out.length - 1]; if (p && a <= p[1]) p[1] = Math.max(p[1], b); else out.push([a, b]); }
+  return out;
 }
+
+const seamOf = (g: Gop[]): Seam => ({ first: g[0]?.hash ?? "", last: g[g.length - 1]?.hash ?? "" });
 
 /**
- * Exports [startMs, endMs) into `files` (see the module comment). The caller deletes both files
- * afterwards, whichever ones `base` and `high` name. Throws NoRecordingError when neither channel has
- * anything; any other export error is thrown as is.
+ * Exports [startMs, endMs) into `files` and works out the playback order (see the module comment).
+ * The caller deletes both files afterwards, whichever ones `base` and `high` name. Throws
+ * NoRecordingError when neither channel has anything; any other export error is thrown as is.
  */
-export async function fetchRecorded(exportChannel: ExportChannel, startMs: number, endMs: number, { files, signal, ops = ffmpegOps, context }: FetchOptions): Promise<Recorded> {
-  const span = (endMs - startMs) / 1000;
-  const get = async (channel: "focus" | "wall") => {
-    const dest = files[channel];
-    await exportChannel(channel, dest, signal);
-    await ops.retime(dest, signal).catch((e) => { if (signal.aborted) throw e; log("warn", "could not retime export", { ...context, channel, error: e }); });
-    return dest;
+export async function fetchRecorded(exportChannel: ExportChannel, startMs: number, endMs: number, opts: FetchOptions): Promise<Recorded> {
+  const { files, signal, ops = ffmpegOps, context, onBase } = opts;
+  const span = (endMs - startMs) / 1000, window = { startMs, endMs };
+  const lists = opts.segments ? await Promise.all((["focus", "wall"] as const).map((c) => opts.segments!(c, signal).catch((e) => { if (signal.aborted) throw e; return null; }))) : [null, null];
+  const segs = { focus: lists[0], wall: lists[1] };
+  const get = (channel: "focus" | "wall") => exportChannel(channel, files[channel], signal).then(() => files[channel]);
+  /** A file played on its own (or as the base): clock repaired, GOPs read, entries for it alone. */
+  const asBase = async (channel: "focus" | "wall") => {
+    const path = files[channel];
+    await ops.retime(path, signal).catch((e) => { if (signal.aborted) throw e; log("warn", "could not retime export", { ...context, channel, error: e }); });
+    const g = await ops.gops(path, signal);
+    if (!g.gops.length) throw new Error("the export has no video");
+    return { path, channel, ...g };
   };
-  const done = (base: string, info: MediaInfo | null, extra: Partial<Recorded> = {}): Recorded => ({ base, info, high: null, overlay: [], busy: false, leadMs: info ? leadOf(info.duration, startMs, endMs) : 0, ...extra });
-  try {
-    await get("focus");
-  } catch (e) {
-    if (signal.aborted || !(isNoRecording(e) || isRecorderBusy(e))) throw e;
-    // Low channel failing too: "nothing recorded" keeps the first answer; anything else is the real problem.
-    await get("wall").catch((w) => { throw isNoRecording(w) ? e : w; });
-    return done(files.wall, await ops.probe(files.wall, signal).catch(() => null));
-  }
-  const f = await ops.probe(files.focus, signal).catch(() => null);
-  let busy = false;
-  if (f && f.duration < span - 1) {
-    const w = await get("wall").then(() => ops.probe(files.wall, signal)).catch((e) => { if (signal.aborted) throw e; busy = !isNoRecording(e); return null; });
-    if (w && w.duration > f.duration + 2 && w.width < f.width) {
-      const overlay = f.audio && w.audio ? alignSpans(await ops.envelope(files.focus, signal), await ops.envelope(files.wall, signal)) : [];
-      if (!overlay.length) log("info", "adaptive recording shown in low resolution: the high-resolution part could not be placed", { ...context, startMs });
-      return done(files.wall, w, overlay.length ? { high: files.focus, overlay } : {});
+  const alone = (b: Awaited<ReturnType<typeof asBase>>, busy = false, frames?: Thumbs): Recorded => {
+    const { entries } = placeStretch(window, { gops: b.gops, end: b.end, segments: segs[b.channel], frames });
+    return { base: b.path, high: null, entries, seams: { base: seamOf(b.gops), high: null }, busy };
+  };
+  /** Channel 0 first; the low channel when channel 0 has nothing or keeps failing. */
+  const single = async (first: "focus" | "wall") => {
+    try {
+      await get(first);
+      return alone(await asBase(first));
+    } catch (e) {
+      if (first === "wall" || signal.aborted || !(isNoRecording(e) || isRecorderBusy(e))) throw e;
+      // Low channel failing too: "nothing recorded" keeps the first answer; anything else is the real problem.
+      await get("wall").catch((w) => { throw isNoRecording(w) ? e : w; });
+      return alone(await asBase("wall"));
     }
+  };
+
+  const mode = channelsFor(segs.focus, segs.wall, startMs, endMs);
+  if (mode === "focus" || mode === "wall") return single(mode);
+  // Both channels: the low one is the base. Without segment lists, channel 0 decides first.
+  let focus: Promise<string | null>, wall: Promise<string | null>, busy = false, focusErr: unknown = null, wallErr: unknown = null;
+  if (mode === "both") {
+    focus = get("focus").catch((e) => { if (signal.aborted || !(isNoRecording(e) || isRecorderBusy(e))) throw e; focusErr = e; return null; });
+    wall = get("wall").catch((e) => { if (signal.aborted) throw e; wallErr = e; return null; });
+    focus.catch(() => {}); // awaited below; never left unhandled if the base fails first
+  } else {
+    try { await get("focus"); } catch (e) {
+      if (signal.aborted || !(isNoRecording(e) || isRecorderBusy(e))) throw e;
+      await get("wall").catch((w) => { throw isNoRecording(w) ? e : w; });
+      return alone(await asBase("wall"));
+    }
+    const f = await ops.probe(files.focus, signal).catch(() => null);
+    if (!f || f.duration >= span - 1) return alone(await asBase("focus"));
+    const w = await get("wall").then(() => ops.probe(files.wall, signal)).catch((e) => { if (signal.aborted) throw e; busy = !isNoRecording(e); return null; });
+    if (!w || !(w.duration > f.duration + 2 && w.width < f.width)) return alone(await asBase("focus"), busy);
+    focus = Promise.resolve(files.focus); wall = Promise.resolve(files.wall);
   }
-  return done(files.focus, f, { busy });
+  if (!(await wall)) {
+    // The low channel has nothing or kept failing: channel 0 alone, which then may miss time.
+    busy = !isNoRecording(wallErr);
+    if (!(await focus)) throw busy ? wallErr : focusErr;
+    return alone(await asBase("focus"), busy);
+  }
+  const b = await asBase("wall");
+  const frames = await ops.thumbnails(b.path, { keyframes: false, ...PLACEMENT.thumb }, signal);
+  const early = alone(b, busy, frames);
+  onBase?.(early);
+  const f = await focus;
+  if (!f) return { ...early, busy: busy || isRecorderBusy(focusErr) };
+  const h = await ops.gops(f, signal);
+  // Channel 0 hands back the low picture where it has no high one: nothing to place.
+  const lowHashes = new Set(b.gops.map((g) => g.hash));
+  if (h.gops.length < 2 || h.gops.every((g) => lowHashes.has(g.hash))) return early;
+  const keys = await ops.thumbnails(f, { keyframes: true, ...PLACEMENT.thumb }, signal);
+  const { entries, trace } = placeStretch(window, { gops: b.gops, end: b.end, segments: segs.wall, frames }, { gops: h.gops, end: h.end, segments: segs.focus, keys });
+  const matched = trace.high!.matched.filter((a, g) => a != null && g > 0).length;
+  log("info", "adaptive recording placed", { ...context, startMs, lowGops: b.gops.length, highGops: h.gops.length, matched });
+  return { base: b.path, high: f, entries, seams: { base: seamOf(b.gops), high: seamOf(h.gops) }, busy };
 }
 
 /**
- * Exports [startMs, endMs) to `path` as one file covering the whole stretch, for a saved clip. When
- * adaptive recording split it into a low-resolution base and high-resolution stretches, they are
- * combined at the high resolution (`MediaOps.combine`). If that fails, the stretch is saved in low
- * resolution, so no time is missing.
+ * Wall-clock time covered by `entries` inside [startMs, endMs), in ms: what a clip of that stretch
+ * holds, whatever the files' lengths.
  */
-export async function fetchRecordedFile(exportChannel: ExportChannel, startMs: number, endMs: number, path: string, opts: FetchOptions): Promise<{ info: MediaInfo; leadMs: number; busy: boolean; combineMs: number }> {
+export function coveredMs(entries: Entry[], startMs: number, endMs: number): number {
+  return merge(entries.map((e) => [Math.max(startMs, e.at), Math.min(endMs, e.at + Math.max(e.span, e.len * 1000))] as [number, number]).filter(([a, b]) => b > a)).reduce((n, [a, b]) => n + b - a, 0);
+}
+
+export interface Piece {
+  info: MediaInfo;
+  /** Seconds at the start of the file that repeat the piece before (its lead), when kept; see `joinParts`. */
+  leadSec: number;
+  /** The piece was rendered (adaptive recording), with its lead already left out when asked. */
+  rendered: boolean;
+  seams: Recorded["seams"];
+  busy: boolean;
+  /** Wall-clock time the file covers inside [startMs, endMs), in ms. */
+  coveredMs: number;
+  combineMs: number;
+}
+
+/**
+ * Exports [startMs, endMs) to `path` as one file, for a saved clip. An adaptive recording is rendered
+ * in playback order at the high resolution (`MediaOps.render`), without its high lead, and without
+ * either lead when `dropLead` (the piece before holds them). If rendering fails, the piece is saved in low resolution, so little time
+ * is missing. A plain export is kept as it is, lead included (`leadSec`).
+ */
+export async function fetchRecordedFile(exportChannel: ExportChannel, startMs: number, endMs: number, path: string, opts: FetchOptions & { dropLead?: boolean }): Promise<Piece> {
   const { signal, ops = ffmpegOps, context } = opts;
   const t = Date.now(), r = await fetchRecorded(exportChannel, startMs, endMs, opts), fetchMs = Date.now() - t;
   if (r.high) {
     try {
-      const { encoder, ms } = await ops.combine(r.base, r.high, r.overlay, path, signal);
+      // The high lead is the last high GOP before the start, which may be from well before it: a clip
+      // starts on the base lead (or past both leads, when the piece before holds them).
+      const entries = opts.dropLead ? r.entries.slice(skipLead(r.entries)) : r.entries.filter((e) => !(e.lead && e.kind === "insert"));
+      const { encoder, ms } = await ops.render(r.base, r.high, entries, path, signal);
       const info = await ops.probe(path, signal);
       log("info", "clip piece ready", { ...context, startMs, fetchMs, combined: true, combineMs: ms, encoder, width: info.width });
-      return { info, leadMs: leadOf(info.duration, startMs, endMs), busy: false, combineMs: ms };
+      return { info, leadSec: 0, rendered: true, seams: r.seams, busy: r.busy, coveredMs: coveredMs(r.entries, startMs, endMs), combineMs: ms };
     } catch (e) {
       if (signal.aborted) throw e;
       log("warn", "a clip piece is saved in low resolution: its high-resolution parts could not be combined with it", { ...context, startMs, error: e });
     }
   }
   await rename(r.base, path);
-  const info = r.info ?? (await ops.probe(path, signal));
+  const info = await ops.probe(path, signal), base = r.entries.filter((e) => e.kind !== "insert");
   log("info", "clip piece ready", { ...context, startMs, fetchMs, combined: false, width: info.width });
-  return { info, leadMs: leadOf(info.duration, startMs, endMs), busy: r.busy, combineMs: 0 };
+  const leadSec = base.filter((e) => e.lead).reduce((n, e) => n + e.len, 0);
+  return { info, leadSec, rendered: false, seams: { base: r.seams.base, high: null }, busy: r.busy, coveredMs: coveredMs(base, startMs, endMs), combineMs: 0 };
 }

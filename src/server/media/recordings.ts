@@ -10,19 +10,20 @@ import { subjectOf, type Actor } from "../authz/actor";
 import type { Policy } from "../authz/policy";
 import { config } from "../config";
 import { schema, type Db } from "../db";
-import { joinParts, probe, type MediaInfo } from "../protect/ffmpeg";
+import { joinParts, probe } from "../protect/ffmpeg";
 import { isNoRecording, isRecorderBusy, NoRecordingError, RecorderBusyError, type ProtectAdapter } from "../protect/types";
 import { badRequest, HttpError, log, newId, notFound } from "../util";
 import { SizeMatcher } from "./match-size";
-import { fetchRecorded, fetchRecordedFile, type ExportChannel, type Span } from "./recorded";
+import { fetchRecorded, fetchRecordedFile, type Entry, type ExportChannel, type ListSegments, type Piece, type Recorded } from "./recorded";
 
 /**
- * What the player needs to know about a window. The base file starts `leadMs` before the window. With
- * adaptive recording, `overlay` lists where the high-resolution file's stretches sit in the base
- * (seconds of media time: `len` seconds from overlay time `from` belong at base time `at`).
+ * What the player needs to know about a window: the order to play its files in (`timeline.ts`),
+ * whether a high-resolution file goes with the base, and the keyframes at its seams, which tell
+ * whether the next window's lead repeats this one's end. `pending`: the high-resolution file is still
+ * being placed, so these entries are for the base alone and fuller ones follow.
  * The player imports this type, so the two cannot drift apart.
  */
-export interface WindowInfo { startMs: number; endMs: number; leadMs: number; overlay: Span[] }
+export interface WindowInfo { startMs: number; endMs: number; entries: Entry[]; high: boolean; seams: Recorded["seams"]; pending?: true }
 export interface PlaybackWindow { info: WindowInfo; base: string; high: string | null }
 
 /** Clips longer than this are fetched from the recorder in pieces of this length (see `exportPieces`). */
@@ -52,15 +53,17 @@ export async function fileResponse(path: string, req: Request, type: string, ext
  *
  * Playback never downloads hours of video. Time is cut into fixed windows (PLAYBACK_WINDOW_SECONDS,
  * default 60 s, aligned to the epoch). A seek to time T fetches only the window containing T from
- * the recorder as a short MP4, caches it on disk, and the player starts at offset T - windowStart.
+ * the recorder as a short MP4, caches it on disk, and the player starts at the moment T.
  * The player buffers the next window while the current one plays and swaps it in when it ends.
- * Exports start on a keyframe, so a window's file can begin a few seconds early; `WindowInfo.leadMs`
- * says by how much, so the player can map media time to wall-clock time and hand over exactly at the
- * window's end. Adaptive recordings get a high-resolution overlay (see `recorded.ts`). The cache is bounded in size and age.
+ * Exports start on a keyframe, so a window's file begins with the last keyframe before the window
+ * (its lead, which the window before ends with). `WindowInfo.entries` say in what order to play the
+ * files and which wall-clock time each moment shows, so the player can seek to a time and hand over
+ * to the next window after its lead. Adaptive recordings also get a high-resolution file (see
+ * `recorded.ts`). The cache is bounded in size and age.
  * An obsolete seek cancels its export when nobody else is waiting for that window.
  */
 export class Recordings {
-  private inflight = new Map<string, { p: Promise<PlaybackWindow>; ac: AbortController; waiters: number }>();
+  private inflight = new Map<string, { early: Promise<PlaybackWindow>; full: Promise<PlaybackWindow>; ac: AbortController; waiters: number }>();
   private jobs = new Map<string, AbortController>();
   /** Estimated time left for running clip jobs, as of `at`. */
   private etas = new Map<string, { ms: number; at: number }>();
@@ -77,33 +80,42 @@ export class Recordings {
   }
 
   /**
-   * The playback window containing `tMs`, fetched and cached if needed: a base file that covers the
-   * window, and for adaptive recordings an overlay file with the high-resolution stretches and where
-   * they sit in the base (see `fetchRecorded`).
+   * The playback window containing `tMs`, fetched and cached if needed: a base file, for adaptive
+   * recordings a high-resolution file, and the order to play them in (see `fetchRecorded`). With
+   * `early`, an adaptive window answers as soon as its base is ready (`WindowInfo.pending`), so
+   * playback can start while the high-resolution file is still on its way.
    */
-  async window(a: Actor, cameraId: string, tMs: number, signal?: AbortSignal): Promise<PlaybackWindow> {
+  async window(a: Actor, cameraId: string, tMs: number, signal?: AbortSignal, early = false): Promise<PlaybackWindow> {
     const cam = this.policy.camera(subjectOf(a), cameraId);
     const W = config().PLAYBACK_WINDOW_SECONDS * 1000, now = Date.now();
     if (!Number.isFinite(tMs) || tMs > now - 3000 || tMs < now - 400 * 864e5) throw new HttpError(404, "no_recording", "Nothing recorded at this time");
     const startMs = Math.floor(tMs / W) * W, endMs = Math.min(startMs + W, now - 2000);
     const complete = endMs === startMs + W;
-    const key = `${cameraId}_${startMs}_${complete ? "full" : Math.floor(endMs / 10_000)}`, stem = join(this.dir("playback"), `${key}.v2`);
+    const key = `${cameraId}_${startMs}_${complete ? "full" : Math.floor(endMs / 10_000)}`, stem = join(this.dir("playback"), `${key}.v3`);
     const cached = await this.cached(stem);
     if (cached) return cached;
     let f = this.inflight.get(key);
     if (!f) {
       const ac = new AbortController();
-      const p = this.build(cam.protectId, startMs, endMs, stem, ac.signal);
-      f = { p, ac, waiters: 0 };
+      let base!: (w: PlaybackWindow) => void;
+      const first = new Promise<PlaybackWindow>((r) => (base = r));
+      const full = this.build(cam.protectId, startMs, endMs, stem, ac.signal, base);
+      // Without an early stage (one channel, or the base and high file ready together), both are the full window.
+      full.then(base, () => {});
+      f = { early: Promise.race([first, full]), full, ac, waiters: 0 };
       this.inflight.set(key, f);
-      p.catch(() => {}).finally(() => this.inflight.delete(key));
+      full.catch(() => {}).finally(() => this.inflight.delete(key));
     }
+    // The export is cancelled once every request waiting on it has been cancelled. A request that got
+    // its answer stops counting, so a finished early request doesn't keep the high file going.
     const entry = f;
     entry.waiters++;
-    const onAbort = () => { if (--entry.waiters <= 0) entry.ac.abort(); };
+    let counted = true;
+    const release = (cancel: boolean) => { if (!counted) return; counted = false; if (--entry.waiters <= 0 && cancel) entry.ac.abort(); };
+    const onAbort = () => release(true);
     signal?.addEventListener("abort", onAbort, { once: true });
     try {
-      return await entry.p;
+      return await (early ? entry.early : entry.full);
     } catch (e) {
       if (isNoRecording(e)) throw new HttpError(404, "no_recording", "Nothing recorded at this time");
       if (signal?.aborted) throw new HttpError(499, "cancelled");
@@ -111,18 +123,24 @@ export class Recordings {
       throw new HttpError(503, "nvr_unavailable");
     } finally {
       signal?.removeEventListener("abort", onAbort);
+      release(false);
     }
   }
 
   /** A complete cached window, or null. Housekeeping evicts files one by one, so every part is checked. */
   private async cached(stem: string): Promise<PlaybackWindow | null> {
     try {
-      const info = JSON.parse(await readFile(`${stem}.json`, "utf8")) as WindowInfo, high = info.overlay.length ? `${stem}.hi.mp4` : null;
+      const info = JSON.parse(await readFile(`${stem}.json`, "utf8")) as WindowInfo, high = info.high ? `${stem}.hi.mp4` : null;
       await Promise.all([stat(`${stem}.mp4`), high && stat(high)]);
       const t = new Date();
       for (const p of [`${stem}.json`, `${stem}.mp4`, high]) if (p) void utimes(p, t, t).catch(() => {});
       return { info, base: `${stem}.mp4`, high };
     } catch { return null; }
+  }
+
+  /** The recorder's segment lists around [startMs, endMs), for `fetchRecorded`. */
+  private segments(protectId: string, startMs: number, endMs: number): ListSegments {
+    return (channel, signal) => this.adapter().recordedSegments(protectId, startMs, endMs, channel, signal);
   }
 
   /**
@@ -148,30 +166,36 @@ export class Recordings {
   }
 
   /**
-   * Exports a playback window (`fetchRecorded`): a base file and, for adaptive recordings, an overlay
-   * the player shows inside its spans.
+   * Exports a playback window (`fetchRecorded`): a base file and, for adaptive recordings, a high
+   * file and the order to play them in. `onBase` gets the base alone as soon as it is ready.
    */
-  private async build(protectId: string, startMs: number, endMs: number, stem: string, signal: AbortSignal): Promise<PlaybackWindow> {
+  private async build(protectId: string, startMs: number, endMs: number, stem: string, signal: AbortSignal, onBase: (w: PlaybackWindow) => void): Promise<PlaybackWindow> {
     await mkdir(this.dir("playback"), { recursive: true, mode: 0o700 });
-    const tmp = `${stem}.${newId()}`, files = { focus: `${tmp}.f.part`, wall: `${tmp}.w.part` };
+    const tmp = `${stem}.${newId()}`, files = { focus: `${tmp}.f.part`, wall: `${tmp}.w.part` }, base = `${stem}.mp4`;
+    const window = (r: Recorded, extra: Partial<WindowInfo> = {}): WindowInfo => ({ startMs, endMs, entries: r.entries, high: !!r.high, seams: r.seams, ...extra });
+    let moved: Promise<void> | null = null;
     try {
-      const { base, high, overlay, leadMs } = await fetchRecorded(this.exporter(protectId, startMs, endMs, false), startMs, endMs, { files, signal, context: { protectId } });
-      const info: WindowInfo = { startMs, endMs, leadMs, overlay };
-      await rename(base, `${stem}.mp4`);
-      if (high) await rename(high, `${stem}.hi.mp4`);
+      const r = await fetchRecorded(this.exporter(protectId, startMs, endMs, false), startMs, endMs, {
+        files, signal, segments: this.segments(protectId, startMs, endMs), context: { protectId },
+        // The base file is final once handed over: it takes its place now, so the player can start on it.
+        onBase: (e) => { moved = rename(e.base, base).then(() => onBase({ info: window(e, { pending: true }), base, high: null })); moved.catch(() => {}); },
+      });
+      if (moved) await moved; else await rename(r.base, base);
+      const info = window(r);
+      if (r.high) await rename(r.high, `${stem}.hi.mp4`);
       await writeFile(`${tmp}.json.part`, JSON.stringify(info), { mode: 0o600 });
       await rename(`${tmp}.json.part`, `${stem}.json`);
-      return { info, base: `${stem}.mp4`, high: high && `${stem}.hi.mp4` };
+      return { info, base, high: r.high && `${stem}.hi.mp4` };
     } finally {
       await Promise.all([files.focus, files.wall, `${tmp}.json.part`].map((p) => rm(p, { force: true })));
     }
   }
 
   /** One piece of a clip, as a single file covering the whole piece (`fetchRecordedFile`). */
-  private async exportPiece(protectId: string, startMs: number, endMs: number, path: string, signal: AbortSignal) {
+  private async exportPiece(protectId: string, startMs: number, endMs: number, path: string, signal: AbortSignal, dropLead: boolean) {
     const files = { focus: `${path}.f`, wall: `${path}.w` };
     try {
-      return await fetchRecordedFile(this.exporter(protectId, startMs, endMs, true), startMs, endMs, path, { files, signal, context: { protectId } });
+      return await fetchRecordedFile(this.exporter(protectId, startMs, endMs, true), startMs, endMs, path, { files, signal, dropLead, segments: this.segments(protectId, startMs, endMs), context: { protectId } });
     } finally {
       await Promise.all([files.focus, files.wall].map((p) => rm(p, { force: true })));
     }
@@ -200,13 +224,14 @@ export class Recordings {
       try {
         await mkdir(this.dir("exports"), { recursive: true, mode: 0o700 });
         const began = Date.now();
-        const { busy, stats } = await this.exportPieces(cam.protectId, startMs, endMs, file, ac.signal, (f, ms) => { set({ progress: Math.round(f * 95) }); this.etas.set(id, { ms, at: Date.now() }); });
-        // The clip's real length tells whether time is missing, whatever the cause: a piece left out,
-        // or one that came back short. The recorder may start a few seconds early, never late.
-        const durationMs = Math.round((await probe(file, ac.signal)).duration * 1000), missing = endMs - startMs - durationMs;
+        const { busy, coveredMs, stats } = await this.exportPieces(cam.protectId, startMs, endMs, file, ac.signal, (f, ms) => { set({ progress: Math.round(f * 95) }); this.etas.set(id, { ms, at: Date.now() }); });
+        // What the pieces cover tells whether time is missing, whatever the cause: a piece left out,
+        // or time the recorder doesn't have. The file can be longer than asked (high-resolution
+        // moments the low channel lacks play on their own) or start a little early, never late.
+        const durationMs = Math.round((await probe(file, ac.signal)).duration * 1000), missing = endMs - startMs - coveredMs;
         const gap = missing >= Math.max(MISSING_MIN, (endMs - startMs) / 100) ? (busy ? "busy" : "unrecorded") : null;
-        if (gap) log("info", "a saved clip is shorter than asked", { cameraId, startMs, endMs, durationMs, gap });
-        log("info", "clip saved", { cameraId, startMs, endMs, durationMs, tookMs: Date.now() - began, ...stats });
+        if (gap) log("info", "a saved clip is missing time", { cameraId, startMs, endMs, durationMs, coveredMs, gap });
+        log("info", "clip saved", { cameraId, startMs, endMs, durationMs, coveredMs, tookMs: Date.now() - began, ...stats });
         set({ status: "ready", progress: 100, durationMs, gap, expiresAt: Date.now() + EXPORT_KEEP });
       } catch (e) {
         await rm(file, { force: true });
@@ -220,19 +245,20 @@ export class Recordings {
    * Exports a clip in pieces of up to `PIECE`, `CLIP_EXPORT_PARALLEL` at a time, then joins them
    * without re-encoding. The recorder builds a whole export before sending the first byte, so pieces
    * are what make progress measurable, and running a few at once shortens the wait. Each piece starts
-   * on the keyframe before its start (`leadMs`, as for playback windows), so the overlap is cut from
-   * the end of the piece before it. A piece with nothing recorded is left out. So is one the recorder
-   * still fails after its retries (`exporter`), and `busy` then says the clip may be missing
-   * time that was recorded; if no piece could be exported at all, the clip fails.
+   * with the last keyframe before its start (its lead), which the piece before ends with: a rendered
+   * piece leaves it out, and a plain one has it cut when joined, if their keyframes are the same. A
+   * piece with nothing recorded is left out. So is one the recorder still fails after its retries
+   * (`exporter`), and `busy` then says the clip may be missing time that was recorded; if no piece
+   * could be exported at all, the clip fails.
    *
    * With `CLIP_MATCH_RESOLUTION`, pieces with a smaller picture (adaptive recording's low stretches)
    * are re-encoded at the largest size while the rest download (`SizeMatcher`), so the clip plays at
    * one size. `onProgress` gets the fraction of the work done and a rough time left: the average piece
    * so far, times the pieces left, shared among the workers, or the resizes still queued if longer.
    */
-  private async exportPieces(protectId: string, startMs: number, endMs: number, file: string, signal: AbortSignal, onProgress: (f: number, etaMs: number) => void): Promise<{ busy: boolean; stats: { pieces: number; combined: number; combineMs: number; resized: number; resizeMs: number; joinMs: number } }> {
+  private async exportPieces(protectId: string, startMs: number, endMs: number, file: string, signal: AbortSignal, onProgress: (f: number, etaMs: number) => void): Promise<{ busy: boolean; coveredMs: number; stats: { pieces: number; combined: number; combineMs: number; resized: number; resizeMs: number; joinMs: number } }> {
     const n = Math.max(1, Math.ceil((endMs - startMs) / PIECE));
-    const parts = Array.from({ length: n }, (_, i) => ({ a: startMs + i * PIECE, b: Math.min(endMs, startMs + (i + 1) * PIECE), path: n === 1 ? `${file}.part` : `${file}.${i}.part`, info: null as MediaInfo | null, leadMs: 0 }));
+    const parts = Array.from({ length: n }, (_, i) => ({ i, a: startMs + i * PIECE, b: Math.min(endMs, startMs + (i + 1) * PIECE), path: n === 1 ? `${file}.part` : `${file}.${i}.part`, piece: null as Piece | null }));
     const local = new AbortController(), stop = () => local.abort();
     signal.addEventListener("abort", stop, { once: true });
     const width = Math.min(n, config().CLIP_EXPORT_PARALLEL);
@@ -248,8 +274,8 @@ export class Recordings {
       while (next < n && !local.signal.aborted) {
         const p = parts[next++], t = Date.now();
         try {
-          const r = await this.exportPiece(protectId, p.a, p.b, p.path, local.signal);
-          p.info = r.info; p.leadMs = r.leadMs; busy ||= r.busy;
+          const r = await this.exportPiece(protectId, p.a, p.b, p.path, local.signal, p.i > 0);
+          p.piece = r; busy ||= r.busy;
           if (r.combineMs) { combined++; combineMs += r.combineMs; }
           sizes?.add(p.path);
         } catch (e) {
@@ -265,15 +291,17 @@ export class Recordings {
       signal.throwIfAborted();
       const bad = r.find((x) => x.status === "rejected");
       if (bad) throw bad.reason;
-      const got = parts.filter((p) => p.info);
+      const got = parts.filter((p) => p.piece);
       if (!got.length) throw busy ? new RecorderBusyError(0) : new NoRecordingError();
       const fitted = sizes ? await sizes.finish() : new Map<string, string>(), joinAt = Date.now();
       if (got.length === 1) await rename(fitted.get(got[0].path) ?? got[0].path, file);
-      else await joinParts(got.map((p, i) => {
-        const nx = got[i + 1], lead = nx && nx.a === p.b ? nx.leadMs : 0;
-        return { path: fitted.get(p.path) ?? p.path, outpoint: lead > 50 ? p.info!.start + p.info!.duration - lead / 1000 : undefined };
+      else await joinParts(got.map((p, k) => {
+        const pc = p.piece!, prev = got[k - 1];
+        const repeats = !!prev && prev.b === p.a && !pc.rendered && pc.leadSec > 0.05 && prev.piece!.seams.base.last === pc.seams.base.first;
+        return { path: fitted.get(p.path) ?? p.path, inpoint: repeats ? pc.info.start + pc.leadSec : undefined };
       }), file, signal);
-      return { busy, stats: { pieces: got.length, combined, combineMs, resized: sizes?.done ?? 0, resizeMs: sizes?.spentMs ?? 0, joinMs: Date.now() - joinAt } };
+      const coveredMs = got.reduce((s, p) => s + p.piece!.coveredMs, 0);
+      return { busy, coveredMs, stats: { pieces: got.length, combined, combineMs, resized: sizes?.done ?? 0, resizeMs: sizes?.spentMs ?? 0, joinMs: Date.now() - joinAt } };
     } finally {
       signal.removeEventListener("abort", stop);
       local.abort();

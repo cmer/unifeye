@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { rm, writeFile } from "node:fs/promises";
+import { basename, resolve } from "node:path";
 import { ffmpeg } from "./ffmpeg";
 import { MOCK_CAMERAS, MOCK_DIRECT, type MockCamera } from "./mock-data";
 import { NoRecordingError, type AdapterHealth, type CameraLogin, type DirectCheck, type EventQuery, type EventType, type LiveSource, type ProtectAdapter, type ProtectCamera, type ProtectEvent, type RecordingRanges } from "./types";
@@ -25,10 +26,12 @@ export class MockProtectAdapter implements ProtectAdapter {
   down = false;
   /**
    * Cameras (Protect ids) that simulate adaptive recording, also settable with MOCK_ADAPTIVE=mock-06,...
-   * Their exports start 2 s early, like a recorder starting on a keyframe, and carry audio that
-   * depends only on wall-clock time. Seconds 12 to 21 of every half minute count as motion: a
-   * channel 0 ("focus") export containing any motion holds only those stretches, joined, as a real
-   * recorder does; otherwise it, like the low channel ("wall"), holds the whole range in low resolution.
+   * Like a real recorder, they keep two channels with gaps in both (see `channelParts`): high
+   * resolution ("focus") only in seconds 12 to 21 of every half minute, and low resolution ("wall")
+   * everywhere except seconds 15 to 18 of every half minute. An export of one channel holds that
+   * channel's GOPs (one second each, on whole seconds) joined, starting with the last one before the
+   * requested start. The picture and sound depend only on wall-clock time, so both channels show the
+   * same moment alike, as real ones do.
    */
   adaptive = new Set((process.env.MOCK_ADAPTIVE ?? "").split(",").filter(Boolean));
   cameras: MockCamera[] = MOCK_CAMERAS.map((c) => ({ ...c }));
@@ -143,11 +146,19 @@ export class MockProtectAdapter implements ProtectAdapter {
     if (login.password === "wrong") return { ok: false, reason: "login" };
     return { ok: true, video: "H264", audio: c.mic ? "MPEG4-GENERIC" : null };
   }
+  async recordedSegments(id: string, fromMs: number, toMs: number, quality: "wall" | "focus"): Promise<[number, number][] | null> {
+    this.guard();
+    const c = this.cam(id), r = this.ranges(c, fromMs - 30 * 60_000, toMs);
+    const parts = this.adaptive.has(id) ? MockProtectAdapter.channelParts(r, quality) : quality === "focus" ? r : [];
+    // A segment runs from its first keyframe to its last.
+    return parts.map(([a, b]) => [Math.ceil(a / 1000) * 1000, Math.max(Math.ceil(a / 1000) * 1000, Math.ceil(b / 1000) * 1000 - 1000)]);
+  }
   async exportClip(id: string, startMs: number, endMs: number, destPath: string, opts: { quality?: "wall" | "focus"; signal?: AbortSignal } = {}) {
     this.guard();
-    const c = this.cam(id), r = this.ranges(c, startMs, endMs);
+    const c = this.cam(id);
+    if (this.adaptive.has(id)) return this.adaptiveClip(c, startMs, endMs, destPath, opts);
+    const r = this.ranges(c, startMs, endMs);
     if (!r.length) throw new NoRecordingError();
-    if (this.adaptive.has(id)) return this.adaptiveClip(c, r[0][0] - 2000, r[r.length - 1][1], destPath, opts);
     // Like a real recorder, the clip covers what exists inside the window. Keyframe every second.
     const [a, b] = [r[0][0], r[r.length - 1][1]], [w, h] = opts.quality === "focus" ? [1280, 720] : [640, 360];
     const len = ((b - a) / 1000).toFixed(3), audio = c.mic ? ["-f", "lavfi", "-t", len, "-i", MockProtectAdapter.ROOM, "-c:a", "aac", "-b:a", "32k"] : [];
@@ -155,24 +166,71 @@ export class MockProtectAdapter implements ProtectAdapter {
     await ffmpeg([...v.input, ...audio, ...v.vf, "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "10", "-movflags", "+faststart", "-y", "-f", "mp4", destPath], opts.signal);
   }
 
-  /** Motion stretches inside [a, b) for an adaptive camera: seconds 12 to 21 of every half minute. */
+  /** Motion stretches inside [a, b): seconds 12 to 21 of every half minute. */
   static motion(a: number, b: number): [number, number][] {
+    return MockProtectAdapter.every(a, b, 12_000, 21_000);
+  }
+  /** [from, to) of every half minute, inside [a, b). */
+  private static every(a: number, b: number, from: number, to: number): [number, number][] {
     const out: [number, number][] = [];
-    for (let m = Math.floor(a / 30_000) * 30_000; m < b; m += 30_000) { const s = Math.max(a, m + 12_000), e = Math.min(b, m + 21_000); if (s < e) out.push([s, e]); }
+    for (let m = Math.floor(a / 30_000) * 30_000; m < b; m += 30_000) { const s = Math.max(a, m + from), e = Math.min(b, m + to); if (s < e) out.push([s, e]); }
     return out;
   }
-  private async adaptiveClip(c: MockCamera, a: number, b: number, destPath: string, opts: { quality?: "wall" | "focus"; signal?: AbortSignal }) {
-    const hi = opts.quality === "focus" ? MockProtectAdapter.motion(a, b) : [];
-    const parts: [number, number][] = hi.length ? hi : [[a, b]], [w, h] = hi.length ? [1280, 720] : [640, 360];
-    const dur = parts.reduce((n, [s, e]) => n + (e - s), 0) / 1000;
-    // Wall-clock seconds (within the day) at media time t, across the joined parts.
-    let clock = "", done = 0;
-    const pieces = parts.map(([s, e]) => { const p = { from: done, start: (s % 86_400_000) / 1000 }; done += (e - s) / 1000; return p; });
-    for (let i = pieces.length - 1; i >= 0; i--) { const at = `(${pieces[i].start}+t-${pieces[i].from})`; clock = clock ? `if(lt(t\\,${pieces[i + 1].from})\\,${at}\\,${clock})` : at; }
-    const amp = `mod(abs(sin(floor(${clock}*20)*12.9898)*43758.5453)\\,1)`;
-    const v = this.video(c, w, h, 10, { ms: a, len: dur.toFixed(3) });
-    await ffmpeg([...v.input, "-f", "lavfi", "-t", dur.toFixed(3), "-i", `aevalsrc=exprs=${amp}*sin(2*PI*440*t):s=8000`, ...v.vf,
-      "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "10", "-c:a", "aac", "-movflags", "+faststart", "-y", "-f", "mp4", destPath], opts.signal);
+  /** What an adaptive camera's channel holds inside recorded `ranges`: high in the motion stretches, low everywhere but their middle. */
+  static channelParts(ranges: [number, number][], quality: "wall" | "focus"): [number, number][] {
+    const out: [number, number][] = [];
+    for (const [a, b] of ranges) {
+      if (quality === "focus") { out.push(...MockProtectAdapter.motion(a, b)); continue; }
+      let p = a;
+      for (const [s, e] of MockProtectAdapter.every(a, b, 15_000, 18_000)) { if (s > p) out.push([p, s]); p = e; }
+      if (p < b) out.push([p, b]);
+    }
+    return out;
+  }
+  private async adaptiveClip(c: MockCamera, startMs: number, endMs: number, destPath: string, opts: { quality?: "wall" | "focus"; signal?: AbortSignal }) {
+    const quality = opts.quality ?? "wall", parts = MockProtectAdapter.channelParts(this.ranges(c, startMs - 10 * 60_000, endMs), quality);
+    // One-second GOPs on whole seconds: the last one starting before the start, then every one before the end.
+    const keys: number[] = [];
+    for (const [a, b] of parts) for (let k = Math.ceil(a / 1000) * 1000; k + 1000 <= b; k += 1000) keys.push(k);
+    const first = keys.findLastIndex((k) => k < startMs), picked = keys.slice(Math.max(0, first)).filter((k) => k < endMs);
+    if (!picked.length || (first < 0 && picked[0] >= endMs)) throw new NoRecordingError();
+    // Like the recorder, every export holds the same GOP byte for byte. x264 numbers its keyframes 0, 1,
+    // 0, 1… in encode order and stamps the first with its settings, so the picture is encoded with each
+    // GOP at a place of the same parity as its second (a filler GOP goes in where needed and is cut out
+    // after), without the settings; the sound is made for the GOPs kept.
+    const enc: number[] = [], kept: number[] = [];
+    for (const k of picked) { if (enc.length % 2 !== Math.floor(k / 1000) % 2) enc.push(k - 1000); kept.push(enc.length); enc.push(k); }
+    const [w, h] = quality === "focus" ? [1280, 720] : [640, 480];
+    /** Wall-clock seconds (within the day) at media time t, for GOPs starting at `ks`, one second each. */
+    const clockOf = (ks: number[]) => {
+      const runs: { from: number; start: number }[] = [];
+      ks.forEach((k, i) => { if (!i || ks[i - 1] !== k - 1000) runs.push({ from: i, start: (k % 86_400_000) / 1000 }); });
+      let clock = "";
+      for (let i = runs.length - 1; i >= 0; i--) { const at = `(${runs[i].start}+t-${runs[i].from})`; clock = clock ? `if(lt(t\\,${runs[i + 1].from})\\,${at}\\,${clock})` : at; }
+      return clock;
+    };
+    const clock = clockOf(enc);
+    // Boxes over a tinted background, placed by wall-clock time: one bouncing at a steady speed (so no
+    // two frames look alike), two jumping to new places every second (so no two seconds do).
+    const rnd = (k: number) => `mod(abs(sin(floor(${clock})*${k}.9898)*43758.5453)\\,1)`;
+    const at = (k: number, x: string, y: string) => `[v${k}][b${k}]overlay=x=(W-w)*${x}:y=(H-h)*${y}[v${k + 1}]`;
+    const sz = (fw: number, fh: number) => `s=${Math.round(w / fw / 2) * 2}x${Math.round(h / fh / 2) * 2}:r=10:d=${enc.length}`;
+    const graph = [
+      `color=c=0x${((c.hue * 0x10101) & 0x7f7f7f).toString(16).padStart(6, "0")}:${sz(1, 1)}[v0]`, `color=c=white:${sz(5, 5)}[b0]`, `color=c=black:${sz(8, 4)}[b1]`, `color=c=0xc0c0c0:${sz(6, 8)}[b2]`,
+      at(0, `abs(mod(${clock}*0.37\\,2)-1)`, `abs(mod(${clock}*0.29\\,2)-1)`), at(1, rnd(12), rnd(78)), at(2, rnd(37), rnd(53)),
+    ].join(";");
+    const sound = clockOf(picked), amp = `mod(abs(sin(floor(${sound}*20)*12.9898)*43758.5453)\\,1)`;
+    // The kept GOPs, as stretches of the encode.
+    const keep: [number, number][] = [];
+    for (const i of kept) { const r = keep[keep.length - 1]; if (r && r[1] === i) r[1] = i + 1; else keep.push([i, i + 1]); }
+    const video = `${destPath}.v.mp4`, list = `${destPath}.txt`;
+    try {
+      await ffmpeg(["-filter_complex", graph, "-map", "[v3]", "-c:v", "libx264", "-preset", "ultrafast", "-qp", "30", "-pix_fmt", "yuv420p", "-g", "10", "-sc_threshold", "0", "-bsf:v", "filter_units=remove_types=6", "-y", "-f", "mp4", video], opts.signal);
+      await writeFile(list, keep.map(([a, b]) => `file '${basename(video).replace(/'/g, "'\\''")}'\ninpoint ${a}\noutpoint ${b}\n`).join(""));
+      await ffmpeg(["-f", "concat", "-safe", "0", "-i", list, "-f", "lavfi", "-t", String(picked.length), "-i", `aevalsrc=exprs=${amp}*sin(2*PI*440*t):s=8000`, "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-movflags", "+faststart", "-y", "-f", "mp4", destPath], opts.signal);
+    } finally {
+      await Promise.all([video, list].map((p) => rm(p, { force: true })));
+    }
   }
 
   private generated(c: MockCamera, fromMs: number, toMs: number): ProtectEvent[] {

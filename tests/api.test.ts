@@ -193,10 +193,21 @@ describe("long clip exports", () => {
     cfg.MEDIA_CACHE_DIR = relative(process.cwd(), cfg.MEDIA_CACHE_DIR); // FFmpeg's join list must not depend on the working folder
     const cam = f.cam["Loading Dock"], t = Date.now() - 2 * 3600e3;
     const rec = (await call(f.u.front, "GET", `/cameras/${cam}/recordings?from=${t - 3600e3}&to=${t}`)).data.ranges as [number, number][];
-    const [a, b] = rec.find(([x, y]) => y - x >= 12 * 60_000)!, startMs = b - 11 * 60_000, endMs = b - 30_000;
-    // Like the recorder, start every export on a keyframe up to a few seconds early.
-    const real = f.adapter.exportClip.bind(f.adapter), asked: [number, number][] = [];
-    vi.spyOn(f.adapter, "exportClip").mockImplementation((id, s0, e0, dest, o) => { asked.push([s0, e0]); return real(id, Math.max(a, s0 - 2500), e0, dest, o); });
+    const [, b] = rec.find(([x, y]) => y - x >= 12 * 60_000)!, startMs = b - 11 * 60_000, endMs = b - 30_000;
+    // Like the recorder: every export is cut from the same recording, with a keyframe every second,
+    // from the last keyframe at or before its start to the end of the last GOP that starts before its
+    // end, so each piece's first GOP is, byte for byte, the last one of the piece before.
+    const { ffmpeg } = await import("@/server/protect/ffmpeg");
+    const m0 = startMs - 5500, master = join(cfg.MEDIA_CACHE_DIR, "master.mp4"), asked: [number, number][] = [];
+    await f.adapter.exportClip(f.db.select().from(schema.cameras).where(eq(schema.cameras.id, cam)).get()!.protectId, m0, endMs + 5000, master);
+    vi.spyOn(f.adapter, "exportClip").mockImplementation(async (_id, s0, e0, dest, o) => {
+      asked.push([s0, e0]);
+      // A cut takes milliseconds. The recorder takes a while and answers one export after another,
+      // so the pieces finish apart and progress shows in between.
+      await new Promise((r) => setTimeout(r, 400 * asked.length));
+      const k0 = Math.floor((s0 - m0) / 1000), k1 = Math.ceil((e0 - m0) / 1000);
+      await ffmpeg(["-ss", String(k0), "-i", master, "-t", String(k1 - k0), "-c", "copy", "-avoid_negative_ts", "make_zero", "-y", "-f", "mp4", dest], o?.signal);
+    });
     const { id } = (await call(f.u.front, "POST", "/exports", { body: { cameraId: cam, startMs, endMs } })).data;
     const seen = new Set<number>();
     let etas = 0;
@@ -209,8 +220,8 @@ describe("long clip exports", () => {
     expect(j.fileName).toMatch(/^Loading_Dock_.*\.mp4$/); expect(j.bytes).toBeGreaterThan(1024);
     const file = f.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, id)).get()!.filePath!;
     const { probe } = await import("@/server/protect/ffmpeg");
-    // Only the first piece keeps its lead; the joins drop the rest.
-    expect((await probe(file)).duration).toBeCloseTo((endMs - startMs) / 1000 + 2.5, 0);
+    // Half a second of lead before the start and half a GOP past the end; the joins drop each lead.
+    expect((await probe(file)).duration).toBeCloseTo((endMs - startMs) / 1000 + 1, 0);
   }, 90_000);
 
   it("play at one size when the recorder sends a low-resolution piece", async () => {
@@ -241,9 +252,9 @@ describe("long clip exports", () => {
     const file = f.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, id)).get()!.filePath!;
     const { probe, videoSizes } = await import("@/server/protect/ffmpeg");
     expect((await videoSizes(file)).sizes).toEqual([{ w: 1280, h: 720 }]);
-    // Six minutes, plus the 2 s the simulated recorder starts early; before, only the 108 s of
-    // high-resolution stretches came out.
-    expect((await probe(file)).duration).toBeCloseTo(6 * 60 + 2, 0);
+    // Six minutes, plus the low-resolution lead (the simulated recorder starts on the keyframe a
+    // second early); before, only the 108 s of high-resolution stretches came out.
+    expect((await probe(file)).duration).toBeCloseTo(6 * 60 + 1, 0);
     expect(readdirSync(dirname(file))).toEqual([basename(file)]);
   }, 120_000);
 

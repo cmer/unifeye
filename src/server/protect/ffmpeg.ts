@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { rename, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { Span } from "../media/align";
+import type { Thumbs } from "../media/placement";
+import type { Entry, Gop } from "../media/timeline";
 import type { Encoder } from "./encoders";
 
 function run(cmd: "ffmpeg" | "ffprobe", args: string[], signal?: AbortSignal): Promise<Buffer> {
@@ -101,57 +102,102 @@ export async function fitVideo(src: string, dest: string, size: Size, enc: Encod
 }
 
 /**
- * One file from an adaptive recording's two exports: the low-resolution `base`, which covers the
- * whole time, with the high-resolution stretches of `high` shown wherever `spans` place them. The
- * result is the high file's size and frame rate, so the base is scaled up (with bars if its shape
- * differs) and its frames repeated, and it keeps the base's sound, which has no gaps.
- *
- * Span times count from each file's first sound sample, as the audio match does, so they are moved
- * onto each file's own clock. One FFmpeg run: the high frames are picked by span and retimed onto
- * the base's clock, then laid over the base only inside their spans.
+ * The GOPs of a file's video, from its packets (nothing is decoded): keyframe times, lengths, and a
+ * hash of each keyframe. The recorder exports the same GOP byte for byte every time, so the hash
+ * tells whether two exports share a GOP. Also the video's end time.
  */
-export async function overlayStretches(base: string, high: string, spans: Span[], dest: string, enc: Encoder, signal?: AbortSignal) {
-  type S = { codec_type: string; start_time?: string; avg_frame_rate?: string; r_frame_rate?: string };
-  const streams = async (p: string) => (JSON.parse((await run("ffprobe", ["-show_entries", "stream=codec_type,start_time,avg_frame_rate,r_frame_rate", "-of", "json", p], signal)).toString()) as { streams?: S[] }).streams ?? [];
+export async function gopsOf(path: string, signal?: AbortSignal): Promise<{ gops: Gop[]; end: number }> {
+  const out = (await run("ffprobe", ["-select_streams", "v:0", "-show_data_hash", "md5", "-show_entries", "packet=pts_time,duration_time,flags,data_hash", "-of", "csv=p=0", path], signal)).toString();
+  const pk = out.split("\n").map((l) => l.trim().split(",")).filter((f) => f.length >= 4 && Number.isFinite(Number(f[0])))
+    .map(([t, d, flags, hash]) => ({ t: Number(t), d: Number(d) || 0, key: flags.startsWith("K"), hash })).sort((a, b) => a.t - b.t);
+  if (!pk.length) return { gops: [], end: 0 };
+  const last = pk[pk.length - 1], step = pk.length > 1 ? (last.t - pk[0].t) / (pk.length - 1) : 0, end = last.t + (last.d || step);
+  const keys = pk.filter((p) => p.key);
+  // A file that does not open on a keyframe still plays its first frames: count them as part of a first GOP.
+  if (!keys.length || keys[0].t > pk[0].t) keys.unshift({ ...pk[0], key: true });
+  return { gops: keys.map((k, i) => ({ t: k.t, len: (keys[i + 1]?.t ?? end) - k.t, hash: k.hash })), end };
+}
+
+/**
+ * Small grayscale pictures of a file's frames (every frame, or keyframes only, which is cheap even at
+ * high resolution because nothing else is decoded), with each picture's time. Sound is ignored.
+ */
+export function thumbnails(path: string, o: { keyframes: boolean; w: number; h: number }, signal?: AbortSignal): Promise<Thumbs> {
+  return new Promise((resolve, reject) => {
+    const args = ["-hide_banner", "-nostdin", "-loglevel", "info", "-copyts", ...(o.keyframes ? ["-skip_frame", "nokey"] : []), "-i", path, "-map", "0:v:0", "-an", "-vf", `scale=${o.w}:${o.h}:flags=area,format=gray,showinfo`, "-fps_mode", "passthrough", "-f", "rawvideo", "pipe:1"];
+    const p = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"], signal });
+    const out: Buffer[] = [], t: number[] = [];
+    let err = "", tail = "";
+    p.stdout.on("data", (d) => out.push(d));
+    p.stderr.on("data", (d) => {
+      const s = tail + d, lines = s.split("\n");
+      tail = lines.pop() ?? "";
+      for (const l of lines) { const m = /\bn:\s*\d+\s+pts:\s*-?\d+\s+pts_time:(-?[\d.]+)/.exec(l); if (m) t.push(Number(m[1])); else if (/error/i.test(l)) err += l + "\n"; }
+    });
+    p.on("error", reject);
+    p.on("close", (code) => {
+      if (code !== 0) return reject(new Error(`ffmpeg exited ${code}: ${err.slice(0, 300)}`));
+      const px = new Uint8Array(Buffer.concat(out)), n = Math.min(t.length, Math.floor(px.length / (o.w * o.h)));
+      resolve({ w: o.w, h: o.h, t: t.slice(0, n), px: px.subarray(0, n * o.w * o.h) });
+    });
+  });
+}
+
+/**
+ * One file from an adaptive recording's two exports, played in `entries` order (see `timeline.ts`):
+ * base entries from `base`, overlay and insert entries from `high`. The result has the high file's
+ * size and frame rate, so base frames are scaled up (with bars if the shape differs) and repeated.
+ * Sound comes from the base wherever the base plays; inserts are silent, because the high file's sound
+ * is stored apart from its picture and does not line up with it.
+ *
+ * One FFmpeg run: each file's frames inside its entries are picked and moved to their place in the
+ * result, then the two are merged in time order.
+ */
+export async function renderEntries(base: string, high: string, entries: Entry[], dest: string, enc: Encoder, signal?: AbortSignal) {
+  type S = { codec_type: string; avg_frame_rate?: string; r_frame_rate?: string };
+  const streams = async (p: string) => (JSON.parse((await run("ffprobe", ["-show_entries", "stream=codec_type,avg_frame_rate,r_frame_rate", "-of", "json", p], signal)).toString()) as { streams?: S[] }).streams ?? [];
   const [bs, hs, { sizes }, tb] = await Promise.all([streams(base), streams(high), videoSizes(high, signal), videoTimeBase(base, signal)]);
   const size = sizes.reduce((m, s) => (s.w * s.h > m.w * m.h ? s : m), { w: 0, h: 0 });
   if (!size.w) throw new Error("the high-resolution export has no video");
-  const audioStart = (s: S[]) => Number(s.find((x) => x.codec_type === "audio")?.start_time) || 0;
   const rate = (s: S[]) => { const v = s.find((x) => x.codec_type === "video"); for (const r of [v?.avg_frame_rate, v?.r_frame_rate]) { const [n, d] = (r ?? "").split("/").map(Number); if (n > 0 && d > 0 && n / d <= 60) return n / d; } return 15; };
-  const hb = audioStart(hs), bb = audioStart(bs), n = (x: number) => x.toFixed(3);
-  const m = spans.map((s) => ({ a: s.from + hb, b: s.from + s.len + hb, shift: s.at + bb - (s.from + hb) }));
+  const n = (x: number) => x.toFixed(3);
+  // Where each entry lands in the result, and which file and stretch it takes.
+  let o = 0;
+  const parts = entries.map((e) => { const p = { from: e.kind === "base" ? "b" : "h", src: e.kind === "base" ? e.base : e.high!, len: e.len, out: o, base: e.kind === "over" ? e.base : null }; o += e.len; return p; });
+  const total = o;
   // Commas inside an expression are escaped so the filtergraph does not split on them.
-  const within = (v: string, a: number, b: number) => `between(${v}\\,${n(a)}\\,${n(b)})`;
-  const pick = m.map((s) => within("t", s.a, s.b)).join("+");
-  const retime = m.reduceRight((rest, s) => `if(${within("T", s.a, s.b)}\\,PTS+${n(s.shift)}/TB\\,${rest})`, "PTS");
-  const show = m.map((s) => within("t", s.a + s.shift, s.b + s.shift)).join("+");
+  const within = (v: string, a: number, b: number) => `between(${v}\\,${n(a)}\\,${n(b - 0.0005)})`;
+  const pick = (ps: { src: number; len: number }[], v: string) => ps.map((p) => within(v, p.src, p.src + p.len)).join("+") || "0";
+  const retime = (ps: { src: number; len: number; out: number }[]) => ps.reduceRight((rest, p) => `if(${within("T", p.src, p.src + p.len)}\\,PTS+${n(p.out - p.src)}/TB\\,${rest})`, "PTS");
+  const bp = parts.filter((p) => p.from === "b"), hp = parts.filter((p) => p.from === "h");
+  // Sound follows the base under base and overlay entries.
+  const ap = parts.filter((p) => p.from === "b" || p.base != null).map((p) => ({ src: p.base ?? p.src, len: p.len, out: p.out }));
   const fit = `scale=${size.w}:${size.h}:force_original_aspect_ratio=decrease,pad=${size.w}:${size.h}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
-  const graph = `[0:v]fps=${rate(hs).toFixed(3)},${fit}[b];[1:v]select=${pick},setpts=${retime},${fit}[h];[b][h]overlay=eof_action=pass:enable=${show},${enc.filter}[v]`;
+  const fps = rate(hs).toFixed(3), hasAudio = bs.some((s) => s.codec_type === "audio");
+  const graph = [
+    `[0:v]select=${pick(bp, "t")},setpts=${retime(bp)},${fit}[b]`,
+    `[1:v]select=${pick(hp, "t")},setpts=${retime(hp)},${fit}[h]`,
+    `[b][h]interleave,fps=${fps}:start_time=0,trim=duration=${n(total)},${enc.filter}[v]`,
+    ...(hasAudio ? [`[0:a]aselect=${pick(ap, "t")},asetpts=${retime(ap)},aresample=async=1:first_pts=0,apad,atrim=duration=${n(total)}[a]`] : []),
+  ].join(";");
   const tmp = `${dest}.part`;
   try {
-    await run("ffmpeg", ["-copyts", ...enc.input, "-i", base, "-i", high, "-filter_complex", graph, "-map", "[v]", "-map", "0:a?", "-c:a", "copy", ...enc.output, "-bf", "0", ...keepTimescale(tb), "-movflags", "+faststart", "-f", "mp4", "-y", tmp], signal);
+    await run("ffmpeg", ["-copyts", ...enc.input, "-i", base, "-i", high, "-filter_complex", graph, "-map", "[v]", ...(hasAudio ? ["-map", "[a]", "-c:a", "aac", "-b:a", "64k"] : []), ...enc.output, "-bf", "0", ...keepTimescale(tb), "-movflags", "+faststart", "-f", "mp4", "-y", tmp], signal);
     await rename(tmp, dest);
   } catch (e) { await rm(tmp, { force: true }); throw e; }
 }
 
-/** Loudness of the first audio track every 10 ms (log energy at 8 kHz mono), for lining up two exports of the same recording. */
-export async function audioEnvelope(path: string, signal?: AbortSignal): Promise<Float64Array> {
-  const pcm = await run("ffmpeg", ["-i", path, "-map", "0:a:0", "-ac", "1", "-ar", "8000", "-f", "f32le", "pipe:1"], signal);
-  const bytes = Math.floor(pcm.length / 4) * 4, x = new Float32Array(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + bytes)), HOP = 80, n = Math.floor(x.length / HOP), e = new Float64Array(n);
-  for (let i = 0; i < n; i++) { let s = 0; for (let j = i * HOP; j < (i + 1) * HOP; j++) s += x[j] * x[j]; e[i] = Math.log(1e-9 + s / HOP); }
-  return e;
-}
-
 /**
- * Joins exports of consecutive stretches into one MP4, stream copy only. `outpoint` (seconds, on the
- * part's own clock) drops the tail of a part that the next part repeats: the recorder starts each
- * export on the keyframe before the requested time, so neighbours overlap by up to a few seconds.
+ * Joins exports of consecutive stretches into one MP4, stream copy only. The recorder starts each
+ * export on the keyframe before the requested time, so neighbours overlap: `inpoint` (seconds, on the
+ * part's own clock, on a keyframe) drops the head of a part that the part before already holds, and
+ * `outpoint` drops the tail of a part that the next part repeats.
  *
  * FFmpeg's concat reads every part on the first part's timescales, so a part with a different video
  * timescale is first rewritten (stream copy) to match. Otherwise its frames land at the wrong times
  * and every later part is squeezed together, which makes the clip far too long and unplayable.
  */
-export async function joinParts(parts: { path: string; outpoint?: number }[], dest: string, signal?: AbortSignal) {
+export async function joinParts(parts: { path: string; inpoint?: number; outpoint?: number }[], dest: string, signal?: AbortSignal) {
   const tb = await Promise.all(parts.map((p) => videoTimeBase(p.path, signal)));
   for (let i = 1; i < parts.length; i++) {
     if (!tb[0] || !tb[i] || tb[i] === tb[0]) continue;
@@ -163,7 +209,7 @@ export async function joinParts(parts: { path: string; outpoint?: number }[], de
   }
   // FFmpeg reads relative entries against the list's own folder, so every path is made absolute.
   const list = `${dest}.txt`, q = (p: string) => `'${resolve(p).replace(/'/g, "'\\''")}'`;
-  await writeFile(list, parts.map((p) => `file ${q(p.path)}\n${p.outpoint != null ? `outpoint ${p.outpoint.toFixed(3)}\n` : ""}`).join(""), { mode: 0o600 });
+  await writeFile(list, parts.map((p) => `file ${q(p.path)}\n${p.inpoint != null ? `inpoint ${p.inpoint.toFixed(3)}\n` : ""}${p.outpoint != null ? `outpoint ${p.outpoint.toFixed(3)}\n` : ""}`).join(""), { mode: 0o600 });
   try {
     await run("ffmpeg", ["-f", "concat", "-safe", "0", "-i", list, "-map", "0", "-c", "copy", "-movflags", "+faststart", "-f", "mp4", "-y", dest], signal);
   } finally { await rm(list, { force: true }); }

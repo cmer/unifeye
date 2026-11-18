@@ -320,9 +320,12 @@ route("GET", "/cameras/:id/snapshot", { rate: "media" }, async ({ s, actor, p, u
   return new Response(new Uint8Array(img), { headers: { "content-type": "image/jpeg", "cache-control": "private, no-store" } });
 });
 route("GET", "/cameras/:id/recordings", {}, ({ s, actor, p, url }) => s.recordings.ranges(actor, p.id, num(url.searchParams.get("from"), "from"), num(url.searchParams.get("to"), "to")));
-route("GET", "/cameras/:id/playback/info", { rate: "media" }, async ({ s, actor, p, url, req }) => (await s.recordings.window(actor, p.id, num(url.searchParams.get("t"), "t"), req.signal)).info);
+// `early=1`: answer once the base file is ready; an adaptive window then says `pending` and a second request gets the full order.
+route("GET", "/cameras/:id/playback/info", { rate: "media" }, async ({ s, actor, p, url, req }) => (await s.recordings.window(actor, p.id, num(url.searchParams.get("t"), "t"), req.signal, url.searchParams.get("early") === "1")).info);
 route("GET", "/cameras/:id/playback", { rate: "media" }, async ({ s, actor, p, url, req }) => {
-  const w = await s.recordings.window(actor, p.id, num(url.searchParams.get("t"), "t"), req.signal), file = url.searchParams.get("layer") === "high" ? w.high : w.base;
+  const high = url.searchParams.get("layer") === "high";
+  // The base file can be served while the high one is still being placed.
+  const w = await s.recordings.window(actor, p.id, num(url.searchParams.get("t"), "t"), req.signal, !high), file = high ? w.high : w.base;
   if (!file) throw new HttpError(404, "no_recording", "Nothing recorded at this time");
   return fileResponse(file, req, "video/mp4", { "x-window-start": String(w.info.startMs), "x-window-end": String(w.info.endMs) });
 });

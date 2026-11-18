@@ -1,12 +1,17 @@
 import type { WindowInfo } from "@/server/media/recordings";
+import { entryFor, skipLead, wallAt, type Entry } from "@/server/media/timeline";
 
 /**
- * Recorded playback, without React: where a window sits in wall-clock time, when to buffer the next
- * one, when to hand over to it, and where the high-resolution overlay of an adaptive recording sits
- * on every frame. The player wires these to its video elements; tests drive them with fake elements.
+ * Recorded playback, without React: where to start a window, when to buffer the next one and hand
+ * over to it, and which file plays on every frame. The player wires these to its video elements;
+ * tests drive them with fake elements.
  *
- * Time is cut into windows of `W` ms. A window's base file starts `leadMs` before the window (the
- * recorder began its export on an earlier keyframe), so media time 0 is wall-clock `clipStart`.
+ * Time is cut into windows of `W` ms. Each window has a base file and, for adaptive recordings, a
+ * high-resolution file, played in the order its entries give (`timeline.ts`):
+ * - `base`: the base file plays.
+ * - `over`: the base plays and the high file runs in step over it (the same moment, sharper).
+ * - `insert`: the high file plays on its own while the base waits (a moment only it has).
+ * Sound comes from the base alone, so inserts are silent.
  */
 
 /** The parts of a <video> element playback needs. */
@@ -16,34 +21,21 @@ export interface MediaPort {
   readonly readyState: number;
   readonly paused: boolean;
   readonly seeking: boolean;
+  readonly ended: boolean;
   readonly error: unknown;
   play(): Promise<void>;
   pause(): void;
 }
 
-type Ranges = { ranges: [number, number][]; precision: "exact" | "bounds" };
-
-/** How far the overlay may drift from the base before it is moved, and before it is hidden. */
+/** How far the high file may drift from the base under an `over` before it is moved, and before it is hidden. */
 const DRIFT = 0.25;
-/** How close a waiting overlay must sit to its next stretch. */
+/** How close a waiting file must sit to where it starts next. */
 const PARKED = 0.05;
+/** Seconds before an entry's end at which it counts as played. */
+const EPS = 0.02;
 const HAVE_METADATA = 1, HAVE_CURRENT_DATA = 2;
 
 export const windowStart = (ms: number, W: number) => Math.floor(ms / W) * W;
-
-/**
- * Wall-clock time at media time 0. With a lead, that is the lead before the window. Without one,
- * the file starts at the window start or, when gaps are known, at the first recorded moment inside it.
- */
-export function clipStartOf(ws: number, W: number, leadMs: number, rec: Ranges | null): number {
-  if (leadMs) return ws - leadMs;
-  if (rec?.precision !== "exact") return ws;
-  const r = rec.ranges.find(([a, b]) => b > ws && a < ws + W);
-  return r ? Math.max(ws, r[0]) : ws;
-}
-
-/** Where to start the base file so it shows wall-clock `ms`, in seconds of media time. */
-export const offsetFor = (ms: number, clipStart: number) => Math.max(0, (ms - clipStart) / 1000);
 
 /**
  * Whether to buffer the window after `ws`: only once that one is fully recorded (it ends more than
@@ -57,41 +49,125 @@ export const shouldArm = (ws: number, W: number, now: number) => ws + 2 * W < no
  */
 export const canHandOver = (buffered: MediaPort | null, nextStart: number, now: number) => !!buffered && !buffered.error && nextStart < now - 5000;
 
-/** Overlay time for base media time `t`, or null when no stretch covers it. */
-export function overlayTimeAt(overlay: WindowInfo["overlay"], t: number): number | null {
-  const sp = overlay.find((x) => t >= x.at && t < x.at + x.len);
-  return sp ? sp.from + (t - sp.at) : null;
+/**
+ * Where playback stands: the entry playing, and where each file still has to be moved to (a seek
+ * not yet carried out because the file was not ready).
+ */
+export interface Cursor { i: number; base?: number; high?: number }
+
+/**
+ * Where each file belongs to show entry `i`, `offset` seconds in. The high file goes to its place in
+ * that entry or, when the entry doesn't use it, waits at the start of the next entry that does.
+ */
+export function positionAt(entries: Entry[], i: number, offset = 0): { base: number; high?: number } {
+  const e = entries[i];
+  if (!e) return { base: 0 };
+  const base = e.kind === "insert" ? e.base : e.base + offset;
+  if (e.high != null) return { base, high: e.high + offset };
+  const next = entries.slice(i + 1).find((x) => x.high != null);
+  return next ? { base, high: next.high } : { base };
 }
 
-/** Where a buffered overlay should wait so it is ready when its base starts at the lead: the first stretch not yet over. */
-export function overlayStartFor(info: WindowInfo): number {
-  const at = info.leadMs / 1000, sp = info.overlay.find((x) => x.at + x.len > at);
-  return sp ? sp.from + Math.max(0, at - sp.at) : 0;
+/** The cursor that shows wall-clock `ms` (a seek). */
+export function cursorAt(entries: Entry[], ms: number): Cursor {
+  const { i, offset } = entryFor(entries, ms);
+  return { i, ...positionAt(entries, i, offset) };
 }
 
 /**
- * One animation frame of a playing window.
- *
- * `handOver` is true once the base has played to the window's end (`windowEnd`, wall clock). The
- * base runs on past it by the next window's lead, so this, not the file ending, is the handover point.
- *
- * With an overlay, it is kept in step with the base: moved when it drifts, matched in speed, played
- * and paused with it. Between stretches it pauses and waits at the start of the next one, so that
- * stretch can be shown the moment the base gets there. `showHigh` is true only inside a stretch once
- * the overlay has the right frame; otherwise the base shows through.
+ * The cursor for a base file already playing at media time `t`, in a new list of entries for the
+ * same window: when the high file's order arrives while the base plays on. The base stays where it is.
  */
-export function stepFrame(base: MediaPort, high: MediaPort | null, w: { overlay: WindowInfo["overlay"]; clipStart: number; windowEnd: number }): { handOver: boolean; showHigh: boolean } {
-  const handOver = !base.paused && !base.seeking && base.readyState >= HAVE_CURRENT_DATA && w.clipStart + base.currentTime * 1000 >= w.windowEnd;
-  if (!high) return { handOver, showHigh: false };
-  const m = base.currentTime, want = high.error ? null : overlayTimeAt(w.overlay, m);
-  if (want === null) {
-    if (!high.paused) high.pause();
-    const up = w.overlay.find((x) => x.at > m);
-    if (up && high.readyState >= HAVE_METADATA && !high.seeking && Math.abs(high.currentTime - up.from) > PARKED) high.currentTime = up.from;
-    return { handOver, showHigh: false };
+export function cursorAtBase(entries: Entry[], t: number): Cursor {
+  // An insert where the base waits at or after `t` has not been shown yet (a lead never: it belongs before the window).
+  let i = entries.findIndex((e) => (e.kind === "insert" ? !e.lead && e.base >= t - EPS : t < e.base + e.len - EPS));
+  if (i < 0) i = entries.length;
+  const e = entries[i], offset = e && e.kind !== "insert" ? Math.max(0, t - e.base) : 0;
+  return { i, high: positionAt(entries, i, offset).high };
+}
+
+/**
+ * Where the next window starts when playing on from `prev`. A window's first entries (its leads)
+ * repeat the end of the window before: the base lead is skipped when its keyframe is the same as the
+ * last one before, and played otherwise so nothing is left out. The high lead is always skipped: the
+ * window before showed that moment already.
+ */
+export function carryOnAt(prev: Pick<WindowInfo, "seams">, next: Pick<WindowInfo, "seams" | "entries">): number {
+  const es = next.entries, last = prev.seams.base.last;
+  if (last && last === next.seams.base.first) return skipLead(es);
+  const k = es.findIndex((e) => e.lead && e.kind === "base");
+  return k < 0 ? skipLead(es) : k;
+}
+
+export interface Step {
+  cur: Cursor;
+  /** The window has played to its last entry: time to hand over to the next one. */
+  handOver: boolean;
+  /** Whether the high file is the picture to show (an insert, or an over it has caught up with). */
+  showHigh: boolean;
+  /** The wall-clock time on screen, or null while the files are still being moved into place. */
+  wall: number | null;
+}
+
+/**
+ * One animation frame of a playing window (see the module comment).
+ *
+ * An entry is over once the file it follows (the high file for an insert, else the base) reaches its
+ * end; the next one then starts from where the files wait. Each file is played, paused and moved
+ * only as its entry needs: under an `over`, the high file is kept in step with the base (moved when
+ * it drifts, matched in speed); otherwise it waits at the start of the next entry that uses it, so
+ * that entry can be shown at once. Without a usable high file, inserts are skipped and overs play as
+ * the base alone. `start` plays a file (the player's version also handles a browser that refuses sound).
+ */
+export function stepEntries(base: MediaPort, high: MediaPort | null, entries: Entry[], cur: Cursor, o: { playing: boolean; rate: number; start?: (m: MediaPort) => void }): Step {
+  const start = o.start ?? ((m: MediaPort) => void m.play().catch(() => {}));
+  const hi = high && !high.error ? high : null;
+  let i = cur.i, pb = cur.base, ph = cur.high;
+  const move = (m: MediaPort, t: number) => { if (Math.abs(m.currentTime - t) > PARKED) m.currentTime = t; };
+  if (pb != null && base.readyState >= HAVE_METADATA) { move(base, pb); pb = undefined; }
+  if (ph != null && (!hi || hi.readyState >= HAVE_METADATA)) { if (hi) move(hi, ph); ph = undefined; }
+  // Past the entries already played (several at once after the tab was in the background).
+  for (let n = 0; n < 16 && i < entries.length; n++) {
+    const e = entries[i];
+    if (e.kind === "insert" && !hi) { i++; continue; }
+    const m = e.kind === "insert" ? hi! : base, from = e.kind === "insert" ? e.high! : e.base;
+    if ((e.kind === "insert" ? ph : pb) != null || m.readyState < HAVE_METADATA || m.seeking) break;
+    if (!m.ended && m.currentTime - from < e.len - EPS) break;
+    i++;
   }
-  if (high.readyState >= HAVE_METADATA && !high.seeking && Math.abs(high.currentTime - want) > DRIFT) high.currentTime = want;
-  if (high.playbackRate !== base.playbackRate) high.playbackRate = base.playbackRate;
-  if (base.paused || base.seeking) { if (!high.paused) high.pause(); } else if (high.paused) void high.play().catch(() => {});
-  return { handOver, showHigh: high.readyState >= HAVE_CURRENT_DATA && !high.seeking && Math.abs(high.currentTime - want) <= DRIFT };
+  const out = (showHigh: boolean, wall: number | null, handOver = false): Step => ({ cur: { i, ...(pb != null ? { base: pb } : {}), ...(ph != null ? { high: ph } : {}) }, handOver, showHigh, wall });
+  const keep = (m: MediaPort, run: boolean) => {
+    if (m.playbackRate !== o.rate) m.playbackRate = o.rate;
+    if (run) { if (m.paused && !m.ended) start(m); } else if (!m.paused) m.pause();
+  };
+  if (i >= entries.length) {
+    if (hi && !hi.paused) hi.pause();
+    if (!base.paused && !base.ended && entries.length && base.readyState >= HAVE_METADATA) base.pause();
+    return out(false, null, o.playing);
+  }
+  const e = entries[i];
+  if (e.kind === "insert") {
+    const h = hi!;
+    keep(base, false);
+    if (pb == null && base.readyState >= HAVE_METADATA && !base.seeking && base.currentTime < e.base - PARKED) base.currentTime = e.base;
+    if (ph != null || h.readyState < HAVE_METADATA) return out(false, null);
+    if (!h.seeking && h.currentTime < e.high! - PARKED) h.currentTime = e.high!;
+    keep(h, o.playing);
+    return out(h.readyState >= HAVE_CURRENT_DATA && !h.seeking, wallAt(e, h.currentTime - e.high!));
+  }
+  if (pb != null) return out(false, null);
+  if (base.readyState >= HAVE_METADATA && !base.seeking && base.currentTime < e.base - PARKED) base.currentTime = e.base;
+  keep(base, o.playing);
+  const wall = wallAt(e, base.currentTime - e.base);
+  if (!hi) return out(false, wall);
+  if (e.kind === "over") {
+    const want = e.high! + (base.currentTime - e.base);
+    if (ph == null && hi.readyState >= HAVE_METADATA && !hi.seeking && Math.abs(hi.currentTime - want) > DRIFT) hi.currentTime = want;
+    keep(hi, !base.paused && !base.seeking && o.playing);
+    return out(hi.readyState >= HAVE_CURRENT_DATA && !hi.seeking && Math.abs(hi.currentTime - want) <= DRIFT, wall);
+  }
+  keep(hi, false);
+  const up = positionAt(entries, i).high;
+  if (ph == null && up != null && hi.readyState >= HAVE_METADATA && !hi.seeking) move(hi, up);
+  return out(false, wall);
 }

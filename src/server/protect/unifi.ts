@@ -247,6 +247,24 @@ export class UnifiProtectAdapter implements ProtectAdapter {
   }
 
   /**
+   * Protect's own player asks for this list (`playback-history`); it is not part of the published
+   * API, so any failure or odd answer gives null and callers carry on without it. A narrow query only
+   * lists segments that start inside it, so this asks from 30 minutes earlier.
+   */
+  async recordedSegments(id: string, fromMs: number, toMs: number, quality: "wall" | "focus", signal?: AbortSignal): Promise<[number, number][] | null> {
+    try {
+      const r = await this.get(`/cameras/${encodeURIComponent(id)}/playback-history?start=${Math.floor(fromMs - 30 * 60_000)}&end=${Math.ceil(toMs)}&resolution=${quality === "focus" ? 0 : 2}`, { signal, timeout: 10_000 });
+      if (r.statusCode !== 200) return null;
+      const rows = r.json<{ start?: unknown; end?: unknown }[]>();
+      if (!Array.isArray(rows)) return null;
+      return rows.filter((x) => typeof x?.start === "number" && typeof x.end === "number" && x.end >= x.start).map((x) => [x.start as number, x.end as number]);
+    } catch (e) {
+      if (signal?.aborted) throw e;
+      return null;
+    }
+  }
+
+  /**
    * Streams Protect's MP4 export to `destPath` without holding it in memory. A long clip can take
    * minutes before Protect sends the first byte, so the wait for headers is generous; a stalled body
    * fails after two minutes of silence. A 401 signs in again once. A server error, timeout or "too
