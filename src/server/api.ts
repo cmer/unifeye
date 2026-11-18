@@ -259,7 +259,7 @@ route("GET", "/me", {}, ({ s, actor, user, session }) => {
     user: { id: user.id, name: user.name || user.email || "You", role: user.role, signsInWith: user.authMethod },
     csrf: session.csrfSecret,
     preview: actor.preview ? { subject: { id: su.id, name: su.name } } : null,
-    subject: { id: su.id, name: su.name, role: su.role, canCreateViews: su.role === "admin" || su.allowPrivateViews },
+    subject: { id: su.id, name: su.name, role: su.role, canCreateViews: su.role === "admin" || su.allowPrivateViews, canExportClips: s.policy.canExportClips(subject) },
     isAdmin: !actor.preview && user.role === "admin",
     landing,
     views: s.views.accessible(subject).map((v) => { const r = s.views.resolve(v, subject); return { id: v.id, name: v.name, type: v.type, visibility: v.visibility, columns: v.columns, count: r.cameras.length, editable: !actor.preview && r.editable }; }),
@@ -377,8 +377,8 @@ route("GET", "/admin/overview", { admin: true }, ({ s }) => {
   const creds = new Map(s.db.select().from(schema.localCredentials).all().map((x) => [x.userId, x])), methods = signInMethods();
   const viewName = new Map(s.db.select().from(schema.views).all().map((v) => [v.id, v.name]));
   return {
-    users: users.map((u) => { const l = s.views.landing(u.id); return { id: u.id, name: u.name, email: u.email, username: creds.get(u.id)?.username ?? null, passwordSet: !!creds.get(u.id)?.passwordHash, signsInWith: u.authMethod, methodOn: methods[u.authMethod], role: u.role, status: u.status, allowPrivateViews: u.allowPrivateViews, lastLoginAt: u.lastLoginAt, providerGroups: u.providerGroups, groupIds: members.filter((m) => m.userId === u.id).map((m) => m.groupId), cameraCount: s.policy.cameraIds(u.id).size, landing: { ...l, viewName: l.viewId ? viewName.get(l.viewId) : null, groupName: groups.find((g) => g.id === l.groupId)?.name ?? null } }; }),
-    groups: groups.map((g) => ({ id: g.id, name: g.name, defaultPriority: g.defaultPriority, isAllStaff: g.isAllStaff, providerValues: g.providerValues, memberIds: members.filter((m) => m.groupId === g.id).map((m) => m.userId), syncedMemberIds: members.filter((m) => m.groupId === g.id && m.source === "provider").map((m) => m.userId) })),
+    users: users.map((u) => { const l = s.views.landing(u.id); return { id: u.id, name: u.name, email: u.email, username: creds.get(u.id)?.username ?? null, passwordSet: !!creds.get(u.id)?.passwordHash, signsInWith: u.authMethod, methodOn: methods[u.authMethod], role: u.role, status: u.status, allowPrivateViews: u.allowPrivateViews, canExportClips: s.policy.canExportClips(u.id), lastLoginAt: u.lastLoginAt, providerGroups: u.providerGroups, groupIds: members.filter((m) => m.userId === u.id).map((m) => m.groupId), cameraCount: s.policy.cameraIds(u.id).size, landing: { ...l, viewName: l.viewId ? viewName.get(l.viewId) : null, groupName: groups.find((g) => g.id === l.groupId)?.name ?? null } }; }),
+    groups: groups.map((g) => ({ id: g.id, name: g.name, defaultPriority: g.defaultPriority, isAllStaff: g.isAllStaff, providerValues: g.providerValues, canExportClips: g.canExportClips, memberIds: members.filter((m) => m.groupId === g.id).map((m) => m.userId), syncedMemberIds: members.filter((m) => m.groupId === g.id && m.source === "provider").map((m) => m.userId) })),
     groupSync: { claim: groupsClaim() },
     signIn: { ...methods, oidcName: config().OIDC_DISPLAY_NAME },
     cameras: s.policy.allCamerasUnchecked().map(camDto).sort((a, b) => a.name.localeCompare(b.name)),

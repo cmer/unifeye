@@ -100,7 +100,7 @@ describe("OIDC login", () => {
     expect(r.returnTo).toBe("/views");
     expect(r.user).toMatchObject({ issuer, subject: "new-1", role: "staff" });
     expect(f.names(r.user.id)).toEqual([]);
-    expect(f.policy.groupIds(r.user.id)).toEqual([f.g["All Staff"]]);
+    expect(f.policy.groupIds(r.user.id)).toEqual([f.g["Everyone"]]);
     expect(f.sessions.load(r.token)?.providerSid).toBe("sid-1");
     const again = await login({ sub: "new-1", name: "Nia Renamed", email: "other@example.test" });
     expect(again.user.id).toBe(r.user.id); // same subject, changed email: same profile
@@ -335,8 +335,8 @@ describe("group sync from the provider's group claim", () => {
     f.admin.setMember(f.actor(f.u.admin), f.g["Security"], r.user.id, false); // and leftovers can be removed by hand
     expect(row(f.g["Security"], r.user.id)).toBeUndefined();
   });
-  it("refuses a mapping on the all-staff group", () => {
-    expect(() => map("All Staff", ["x"])).toThrowError(/already in this group/);
+  it("refuses a mapping on the built-in Everyone group", () => {
+    expect(() => map("Everyone", ["x"])).toThrowError(/already in this group/);
   });
 });
 

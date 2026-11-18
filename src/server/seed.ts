@@ -21,7 +21,10 @@ export function seedDemo(db: Db, ownerId: string) {
       if (cameraId) tx.insert(schema.cameraTags).values({ cameraId, tagId: tag.get(n)! }).run();
     }
     const group = (name: string, defaultPriority: number, isAllStaff = false) => { const id = newId(); tx.insert(schema.groups).values({ id, name, defaultPriority, isAllStaff, createdAt: t }).run(); return id; };
-    const all = group("All Staff", 10, true), front = group("Front Desk Team", 20), upper = group("Upper Level Team", 30), sec = group("Security", 40);
+    // Migrations create the built-in "Everyone" group; reuse it rather than making a second one.
+    const existing = tx.select().from(schema.groups).where(eq(schema.groups.isAllStaff, true)).get();
+    if (existing) tx.update(schema.groups).set({ defaultPriority: 10 }).where(eq(schema.groups.id, existing.id)).run();
+    const all = existing?.id ?? group("Everyone", 10, true), front = group("Front Desk Team", 20), upper = group("Upper Level Team", 30), sec = group("Security", 40);
     const grant = (groupId: string, nums: number[]) => nums.forEach((n) => tx.insert(schema.groupCameraGrants).values({ groupId, cameraId: cam.get(`mock-${String(n).padStart(2, "0")}`)!, createdAt: t }).run());
     grant(upper, [4, 5, 6, 7, 8]); grant(front, [1, 2, 3]); grant(sec, [7, 9, 10, 11, 12]);
     const view = (name: string, type: "dynamic" | "static", columns: number, o: { tags?: string[]; cams?: number[]; all?: boolean; groups?: string[] }) => {

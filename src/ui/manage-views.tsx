@@ -10,8 +10,8 @@ import { api, type Camera } from "./api";
 import { Empty, fail, Page, PageHeader, Select, useApp } from "./app";
 
 export interface Overview {
-  users: { id: string; name: string; email: string | null; username: string | null; passwordSet: boolean; signsInWith: "oidc" | "local" | "cloudflare"; methodOn: boolean; role: "admin" | "staff"; status: "active" | "disabled"; allowPrivateViews: boolean; lastLoginAt: number | null; providerGroups: string[]; groupIds: string[]; cameraCount: number; landing: { viewId: string | null; reason: string; viewName: string | null; groupName: string | null } }[];
-  groups: { id: string; name: string; defaultPriority: number; isAllStaff: boolean; providerValues: string[]; memberIds: string[]; syncedMemberIds: string[] }[];
+  users: { id: string; name: string; email: string | null; username: string | null; passwordSet: boolean; signsInWith: "oidc" | "local" | "cloudflare"; methodOn: boolean; role: "admin" | "staff"; status: "active" | "disabled"; allowPrivateViews: boolean; canExportClips: boolean; lastLoginAt: number | null; providerGroups: string[]; groupIds: string[]; cameraCount: number; landing: { viewId: string | null; reason: string; viewName: string | null; groupName: string | null } }[];
+  groups: { id: string; name: string; defaultPriority: number; isAllStaff: boolean; providerValues: string[]; canExportClips: boolean; memberIds: string[]; syncedMemberIds: string[] }[];
   groupSync: { claim: string | null };
   signIn: { oidc: boolean; local: boolean; cloudflare: boolean; oidcName: string };
   cameras: Camera[];
@@ -105,7 +105,7 @@ export function ManageViews() {
               : d.sharing && ov ? (
                 <>
                   <Card title="Sharing" hint="People only see cameras they already have access to.">
-                    <Row label="Everyone"><Switch checked={d.sharing.all} onCheckedChange={(all) => share({ all })} aria-label="Share with all staff" /><span className="text-sm text-muted-foreground">All staff</span></Row>
+                    <Row label="Everyone"><Switch checked={d.sharing.all} onCheckedChange={(all) => share({ all })} aria-label="Share with everyone" /><span className="text-sm text-muted-foreground">Anyone can open this view</span></Row>
                     <div className="my-2.5 flex items-start gap-2"><span className="w-28 shrink-0 pt-1.5 text-sm text-muted-foreground">Groups</span><div className="flex-1">{ov.groups.filter((g) => !g.isAllStaff).map((g) => <Pill key={g.id} on={d.sharing!.groupIds.includes(g.id)} onChange={(on) => share({ groupIds: flip(d.sharing!.groupIds, g.id, on) })}>{g.name}</Pill>)}</div></div>
                     <div className="my-2.5 flex items-start gap-2"><span className="w-28 shrink-0 pt-1.5 text-sm text-muted-foreground">People</span><div className="flex-1">{ov.users.filter((u) => u.role === "staff").map((u) => <Pill key={u.id} on={d.sharing!.userIds.includes(u.id)} onChange={(on) => share({ userIds: flip(d.sharing!.userIds, u.id, on) })}>{u.name || u.email}</Pill>)}</div></div>
                   </Card>
