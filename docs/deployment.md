@@ -312,6 +312,13 @@ over; if they conflict with the new code, the update stops before changing anyth
 only this server needs belong in `compose.override.yaml`, which the update never touches.
 `scripts/update.sh --help` lists the options.
 
+The update records the commit it built in the image (the `GIT_SHA` build argument). Diagnostics
+shows that commit and whether a newer version exists: a few times a day Unifeye asks api.github.com
+for the newest release and how the running commit compares with it, sending nothing but that commit.
+`UPDATE_CHECK=off` turns the check off. An image built by hand with plain `docker compose build`
+has no commit, so it can only compare version numbers with the newest release; to include it, run
+`GIT_SHA=$(git rev-parse HEAD) docker compose build`.
+
 The server needs read access to the repository. For a private repository, add a read-only deploy
 key: create one with `ssh-keygen -t ed25519 -f ~/.ssh/unifeye_deploy`, add the `.pub` file under
 the repository's Settings > Deploy keys, then in the checkout switch to the SSH address and use that key:

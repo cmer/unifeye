@@ -538,7 +538,13 @@ plain-text report. Two routes serve it, both signed-in only:
 - `GET /api/diagnostics`: the server's clock, the recorder's state (as `/me` already shows), whether
   the media relay answers, the caller's session's open live streams (counted as the stream limit
   counts them, split by WebRTC and HLS, against `MAX_WALL_STREAMS` + 3), the session's use of each
-  per-minute rate class with its limit and seconds to reset, and the app version from `package.json`.
+  per-minute rate class with its limit and seconds to reset, the app version from `package.json`, the
+  commit the build was made from (`GIT_SHA`, set by the image build; outside production, the
+  checkout's HEAD) and whether a newer version exists. That last answer comes from
+  `src/server/version.ts`: at start-up and every six hours it asks GitHub for the newest release
+  and how the running commit compares with it (with `main` while there are no releases; by version
+  number when the commit is unknown). The route only reads the remembered answer and never goes to
+  the network. `UPDATE_CHECK=off` turns the check off.
   Only the caller's own session: nothing about other people, no configuration values beyond the limits
   that apply to the caller. The stream list names a camera only if the effective subject may see it
   (`Media.sessionStreams`, filtered through the policy). It is a read, so it works during "See as

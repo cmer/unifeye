@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   camerasFor, cameraIdIn, fmtMbps, perStreamMbps, clearDiagnostics, clockOffset, codecName, filterCandidates, formatReport, groupRefusals, inboundVideo, mayReleaseHls, median,
   parsePlaylist, parseUserAgent, pickTestStream, problemLog, recordProblem, recordRequestFailure, refusalsSince, refusalText, REFUSAL_WINDOW_MS,
-  selectedPair, shortenPath, verdict, type Stat,
+  selectedPair, shortenPath, verdict, versionRow, type Stat,
 } from "@/ui/diagnostics";
 
 beforeEach(() => clearDiagnostics());
@@ -162,5 +162,22 @@ describe("the report", () => {
     expect(text).toContain("Front door: HLS · from recorder\n  6 s behind\n  quality wall");
     expect(text).toMatch(/Front door: HTTP 429 too_many_streams\n {2}POST \/media\/live\/cam1\/whep · request 8f3a1c00-aaaa/);
     expect(text).toContain("User agent: UA/1.0\nPage: cams.example");
+  });
+});
+
+describe("the Version row", () => {
+  const base = { version: "0.3.0", commit: "cf62c23aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" };
+  const u = (state: "current" | "behind" | "unknown" | "off", latest: string | null = null, behindBy: number | null = null) => ({ state, latest, behindBy, checkedAt: null });
+  it("is green on the newest version and shows a short commit", () => {
+    expect(versionRow({ ...base, update: u("current", "v0.3.0", 0) })).toMatchObject({ status: "ok", value: "Unifeye 0.3.0 \u00b7 cf62c23", detail: "Up to date" });
+  });
+  it("is amber when something newer exists, naming the release when there is one", () => {
+    expect(versionRow({ ...base, update: u("behind", "v0.4.0", 12) })).toMatchObject({ status: "warn", detail: "Version 0.4.0 is available \u00b7 12 changes behind" });
+    expect(versionRow({ ...base, update: u("behind", null, 1) })).toMatchObject({ status: "warn", detail: "A newer version is available \u00b7 1 change behind" });
+    expect(versionRow({ ...base, update: u("behind", "v0.4.0") })).toMatchObject({ status: "warn", detail: "Version 0.4.0 is available" });
+  });
+  it("takes no colour when nobody knows, and leaves the commit out when there is none", () => {
+    expect(versionRow({ version: "0.3.0", commit: null, update: u("unknown") })).toMatchObject({ status: "info", value: "Unifeye 0.3.0", detail: "Couldn\u2019t check for a newer version" });
+    expect(versionRow({ ...base, update: u("off") }).detail).toBeUndefined();
   });
 });

@@ -25,11 +25,12 @@ Package manager is pnpm; Node 22.20 or newer.
 | Lint | `pnpm lint` |
 | Production build (Next standalone plus the bundled CLI) | `pnpm build` |
 | Generate a migration after editing `src/server/db/schema.ts` | `pnpm db:generate` |
+| Release a version (`major`, `minor`, `patch` or `X.Y.Z`; `--dry-run` to preview) | `scripts/release.sh <version>` |
 | Ops CLI: `migrate`, `backup`, `verify <file>`, `restore <file> [--force]` | `pnpm unifeye <command>` |
 
 Local setup: `cp .env.development.example .env.development.local`, then run `pnpm dev:idp` and `pnpm dev` in separate terminals. Sign in as "Avery Chen", the bootstrap administrator; demo data is seeded on that first sign-in. Live video also needs FFmpeg and a MediaMTX 1.21.4 binary started with `docker/mediamtx.yml` (the exact command is in `README.md`).
 
-The `qa-sweep` skill in `.claude/skills/` brings up the whole stack and runs a browser test checklist.
+The `qa-sweep` skill in `.claude/skills/` brings up the whole stack and runs a browser test checklist. The `release` skill tags and publishes a version with `scripts/release.sh`.
 
 ## Architecture
 
@@ -92,6 +93,16 @@ People who use Unifeye are not technical. Write every label, message, error and 
 - If something fails, say what went wrong and what to try next, in plain words.
 
 For example, "Waiting for the recorder…" is better than "Waiting for the recorder. Time left appears once the first part arrives."
+
+## Changelog
+
+`CHANGELOG.md` lists what changed in each release, written for the people who run and use Unifeye. Keep it current as you work:
+
+- When a change affects them (a feature, a fix, changed behaviour or wording they'd notice, a new setting or requirement), add a line under `## Unreleased` in the same commit. Group lines under `### Added`, `### Changed`, `### Fixed` or `### Removed`, in that order, creating the heading if it's missing.
+- One line per change, in plain language, saying what people see, not how the code does it. "Clips can be up to two hours long", not "Raise CLIP_MAX_SECONDS".
+- Skip changes nobody can see: refactors, tests, build scripts, docs-only edits.
+- If a later change revises something already under Unreleased, edit that line instead of adding another.
+- Never add a version heading by hand. `scripts/release.sh` turns Unreleased into the version's section, and running servers compare themselves with the newest GitHub release (`src/server/version.ts`).
 
 ## Tests
 

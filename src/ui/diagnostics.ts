@@ -176,6 +176,22 @@ export type Status = "ok" | "warn" | "bad" | "info" | "pending";
 export interface CheckRow { id: string; label: string; status: Status; value: string; detail?: string; tech?: string[]; action?: { label: string; run: () => void } }
 export interface Section { title: string; rows: CheckRow[] }
 
+/** What the server says about newer versions (`src/server/version.ts`). */
+export interface UpdateInfo { state: "current" | "behind" | "unknown" | "off"; latest: string | null; behindBy: number | null; checkedAt: number | null }
+/**
+ * The Version row: green when this is the newest, amber when something newer exists, and no colour
+ * when nobody knows (the check is off or has not worked), which is not a reason for concern.
+ */
+export function versionRow(v: { version: string; commit: string | null; update: UpdateInfo }): Pick<CheckRow, "status" | "value" | "detail" | "tech"> {
+  const u = v.update, n = u.behindBy ?? 0;
+  const value = `Unifeye ${v.version}${v.commit ? ` \u00b7 ${v.commit.slice(0, 7)}` : ""}`;
+  const latest = u.latest?.replace(/^v/, "");
+  const tech = [`commit ${v.commit ?? "unknown"}`, `update check: ${u.state}${u.latest ? `, latest release ${u.latest}` : ""}${u.behindBy != null ? `, ${u.behindBy} commits behind` : ""}${u.checkedAt ? `, checked ${new Date(u.checkedAt).toISOString()}` : ""}`];
+  if (u.state === "current") return { status: "ok", value, detail: "Up to date", tech };
+  if (u.state === "behind") return { status: "warn", value, detail: [latest ? `Version ${latest} is available` : "A newer version is available", n > 0 ? `${n} ${n === 1 ? "change" : "changes"} behind` : null].filter(Boolean).join(" \u00b7 "), tech };
+  return { status: "info", value, detail: u.state === "unknown" ? "Couldn\u2019t check for a newer version" : undefined, tech };
+}
+
 /** Problems the verdict can name, most important first. */
 export const PROBLEMS = {
   server_unreachable: { title: "Can't reach Unifeye", hint: "Check this device's internet connection, then check again.", short: "the server can't be reached", severe: true },

@@ -856,7 +856,7 @@ describe("diagnostics", () => {
     const read = d.rate.find((x: { class: string }) => x.class === "read");
     expect(read).toMatchObject({ limit: 1200 }); expect(read.used).toBeGreaterThan(0);
     expect(d.rate.find((x: { class: string }) => x.class === "hls").used).toBe(1);
-    expect(Object.keys(d).sort()).toEqual(["rate", "recorder", "relay", "serverTime", "streams", "version"]);
+    expect(Object.keys(d).sort()).toEqual(["commit", "rate", "recorder", "relay", "serverTime", "streams", "update", "version"]);
     // The same person signed in elsewhere is another session, with nothing open.
     const other = (await call(f.u.front, "GET", "/diagnostics", { session: sess(f.u.front, true) })).data;
     expect(other.streams).toMatchObject({ open: 0, webrtc: 0, hls: 0, held: [] });
