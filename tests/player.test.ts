@@ -64,6 +64,8 @@ describe("recorded playback", () => {
     // Otherwise the base lead plays too, so nothing is left out; the high lead never does.
     expect(carryOnAt({ seams: { base: { first: "k0", last: "k2" }, high: null } }, next)).toBe(1);
     expect(carryOnAt({ seams: { base: { first: "", last: "" }, high: null } }, { ...next, seams: { ...next.seams, base: { first: "", last: "" } } })).toBe(1);
+    // A window whose base is the high file, after one whose high file ended on its lead.
+    expect(carryOnAt({ seams: { base: { first: "k0", last: "k2" }, high: { first: "h0", last: "k1" } } }, next)).toBe(2);
     // The next window's files wait there while this one plays.
     expect(positionAt(entries, 2)).toEqual({ base: 1, high: 1 });
   });

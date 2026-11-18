@@ -22,6 +22,8 @@ and uses it as the GitHub release notes.
 - If activity markers fail to load on a camera's timeline, the player tries again on its own.
 - Recorded video no longer sometimes jumps back a few seconds as it plays on from one
   minute to the next.
+- Saved clips no longer lose a second where part of the clip couldn't be fetched from the recorder.
+- Saved clips and playback no longer repeat a moment where the recording switches to high quality.
 
 ## 1.1.1 - 2026-11-18
 

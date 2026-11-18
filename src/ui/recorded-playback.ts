@@ -1,5 +1,5 @@
 import type { WindowInfo } from "@/server/media/recordings";
-import { entryFor, skipLead, wallAt, type Entry } from "@/server/media/timeline";
+import { entryFor, startAfter, wallAt, type Entry } from "@/server/media/timeline";
 
 /**
  * Recorded playback, without React: where to start a window, when to buffer the next one and hand
@@ -86,17 +86,9 @@ export function cursorAtBase(entries: Entry[], t: number): Cursor {
   return { i, high: positionAt(entries, i, offset).high };
 }
 
-/**
- * Where the next window starts when playing on from `prev`. A window's first entries (its leads)
- * repeat the end of the window before: the base lead is skipped when its keyframe is the same as the
- * last one before, and played otherwise so nothing is left out. The high lead is always skipped: the
- * window before showed that moment already.
- */
+/** Where the next window starts when playing on from `prev` (`startAfter`). */
 export function carryOnAt(prev: Pick<WindowInfo, "seams">, next: Pick<WindowInfo, "seams" | "entries">): number {
-  const es = next.entries, last = prev.seams.base.last;
-  if (last && last === next.seams.base.first) return skipLead(es);
-  const k = es.findIndex((e) => e.lead && e.kind === "base");
-  return k < 0 ? skipLead(es) : k;
+  return startAfter(prev.seams, next);
 }
 
 export interface Step {

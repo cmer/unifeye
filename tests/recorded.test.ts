@@ -6,7 +6,7 @@ import type { MediaInfo } from "@/server/protect/ffmpeg";
 import { NoRecordingError, RecorderBusyError } from "@/server/protect/types";
 import { channelsFor, coveredMs, fetchRecorded, fetchRecordedFile, type Entry, type ExportChannel, type ListSegments, type MediaOps, type Recorded } from "@/server/media/recorded";
 import type { Thumbs } from "@/server/media/placement";
-import type { Gop } from "@/server/media/timeline";
+import type { Gop, Seams } from "@/server/media/timeline";
 
 /**
  * The adaptive-recording decisions, driven by a fake recorder and fake media operations: no FFmpeg.
@@ -246,13 +246,21 @@ describe("fetchRecordedFile", () => {
 
   it("renders an adaptive recording in playback order, without its lead when the piece before has it", async () => {
     const f = recorder({ focus: channel("focus", HIGH, 1920), wall: channel("wall", LOW, 640) }, lists), path = join(dir, "combined.mp4");
-    const r = await fetchRecordedFile(f.exporter, A, B, path, { files: files(), signal, ops: f.ops, segments: f.segments, dropLead: true });
+    // The clip's first piece keeps the low lead only: the high one may be from well before the clip.
+    let seams: Seams | null = null;
+    const first = await fetchRecordedFile(f.exporter, A, B, join(dir, "first.mp4"), { files: files(), signal, ops: f.ops, segments: f.segments, onFetched: (s) => { seams = s; } });
+    expect(f.rendered[0].filter((e) => e.lead).map((e) => e.kind)).toEqual(["base"]);
+    expect(first.entries).toEqual(f.rendered[0]);
+    // After a piece that ended with the same low keyframe: no lead at all.
+    const ended = (last: string): Promise<Seams> => Promise.resolve({ base: { first: "", last }, high: { first: "", last: seams!.high!.first } });
+    const r = await fetchRecordedFile(f.exporter, A, B, path, { files: files(), signal, ops: f.ops, segments: f.segments, before: ended(seams!.base.first) });
     expect(readFileSync(path, "utf8")).toBe("rendered");
-    expect(f.rendered[0].some((e) => e.lead)).toBe(false);
-    // The first piece keeps the low lead only: the high one may be from well before the clip.
-    await fetchRecordedFile(f.exporter, A, B, join(dir, "first.mp4"), { files: files(), signal, ops: f.ops, segments: f.segments });
-    expect(f.rendered[1].filter((e) => e.lead).map((e) => e.kind)).toEqual(["base"]);
-    expect(r).toMatchObject({ leadSec: 0, rendered: true, busy: false, coveredMs: 60_000, combineMs: 7, info: { width: 1920 } });
+    expect(f.rendered[1].some((e) => e.lead)).toBe(false);
+    expect(r).toMatchObject({ rendered: true, busy: false, coveredMs: 60_000, combineMs: 7, info: { width: 1920 } });
+    // After a piece that ended elsewhere (only the high keyframe matching), or none: the low lead is kept.
+    await fetchRecordedFile(f.exporter, A, B, join(dir, "other.mp4"), { files: files(), signal, ops: f.ops, segments: f.segments, before: ended("elsewhere") });
+    await fetchRecordedFile(f.exporter, A, B, join(dir, "alone.mp4"), { files: files(), signal, ops: f.ops, segments: f.segments, before: Promise.resolve(null) });
+    for (const es of f.rendered.slice(2)) expect(es.filter((e) => e.lead).map((e) => e.kind)).toEqual(["base"]);
   });
 
   it("saves the low channel when rendering fails, reporting its lead", async () => {
@@ -260,12 +268,15 @@ describe("fetchRecordedFile", () => {
     const r = await fetchRecordedFile(f.exporter, A, B, path, { files: files(), signal, ops: f.ops, segments: f.segments });
     expect(readFileSync(path, "utf8")).toBe("wall");
     // The low channel's hole is missing from this file.
-    expect(r).toMatchObject({ leadSec: 1, rendered: false, combineMs: 0, coveredMs: 50_000, info: { width: 640 } });
+    expect(r).toMatchObject({ rendered: false, combineMs: 0, coveredMs: 50_000, info: { width: 640 } });
+    expect(r.entries.filter((e) => e.lead)).toMatchObject([{ kind: "base", len: 1 }]);
   });
 
   it("keeps a plain export as it is, and passes on that time may be missing", async () => {
     const f = recorder({ focus: channel("focus", HIGH, 1920), wall: new RecorderBusyError(503) }, lists), path = join(dir, "busy.mp4");
-    expect(await fetchRecordedFile(f.exporter, A, B, path, { files: files(), signal, ops: f.ops, segments: f.segments })).toMatchObject({ busy: true, rendered: false, leadSec: 1 });
+    const r = await fetchRecordedFile(f.exporter, A, B, path, { files: files(), signal, ops: f.ops, segments: f.segments });
+    expect(r).toMatchObject({ busy: true, rendered: false });
+    expect(r.entries.filter((e) => e.lead)).toMatchObject([{ kind: "base", len: 1 }]);
     expect(readFileSync(path, "utf8")).toBe("focus");
   });
 });
