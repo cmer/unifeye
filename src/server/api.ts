@@ -305,6 +305,7 @@ route("GET", "/me", {}, ({ s, actor, user, session }) => {
     preferences: s.admin.preferences(actor),
     mode: c.UNIFEYE_MODE,
     recorder: s.adapter.health().state,
+    recorderTimeZone: s.adapter.timeZone(),
     limits: { maxStreams: c.MAX_WALL_STREAMS, windowSeconds: c.PLAYBACK_WINDOW_SECONDS, prerollSeconds: c.EVENT_PREROLL_SECONDS, clipMaxSeconds: c.CLIP_MAX_SECONDS },
   };
 });

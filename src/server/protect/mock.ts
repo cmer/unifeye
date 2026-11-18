@@ -56,6 +56,8 @@ export class MockProtectAdapter implements ProtectAdapter {
   health(): AdapterHealth {
     return { mode: "mock", state: this.down ? "down" : "connected", lastOkAt: this.down ? null : Date.now(), lastError: this.down ? "simulated outage" : null, protectVersion: "mock" };
   }
+  /** Simulated: the recorder keeps the server's own time zone. */
+  timeZone(): string | null { return Intl.DateTimeFormat().resolvedOptions().timeZone; }
   private guard() { if (this.down) throw new Error("NVR unavailable (simulated)"); }
   private cam(id: string) { const c = this.cameras.find((x) => x.protectId === id); if (!c) throw new Error("unknown camera"); return c; }
   private n(c: MockCamera) { return Number(c.protectId.slice(-2)); }
