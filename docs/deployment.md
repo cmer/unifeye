@@ -56,7 +56,7 @@ Add `local` to `SIGN_IN_METHODS`. Administrators then see **Add person** under A
 someone gives a one-time link (24 hours) for them to choose a password; send it however suits you.
 For a forgotten password, choose **Password link** next to the person.
 
-**Email codes.** Set `SMTP_URL` and `MAIL_FROM` and administrators can give a person addresses that
+**Email codes.** With `local` on, set `SMTP_URL` and `MAIL_FROM` and administrators can give a person addresses that
 sign-in codes go to, instead of a password or as well as one. The person types their username and
 chooses **Email a code**; a 6-digit code goes to those addresses and works for 10 minutes in that
 browser only. The addresses can be someone else's: for a shared account such as `office` at a front
@@ -249,7 +249,7 @@ relay, last backup). Neither exposes configuration or secrets.
 | `UNIFEYE_MODE` | `mock` in code, `real` in `.env.example` | `mock` serves simulated cameras; sign-in works the same |
 | `SIGN_IN_METHODS` | `oidc` | Ways to sign in: `oidc`, `local`, `cloudflare` (see [section 1](#1-choose-how-people-sign-in)) |
 | `LOCAL_APP_URL` | unset | A second address for password sign-in; password links point there |
-| `SMTP_URL` / `MAIL_FROM` | unset | Outgoing mail for email sign-in codes (needs `local`); set both or neither |
+| `SMTP_URL` / `MAIL_FROM` | unset | Outgoing mail; set both or neither. Email sign-in codes also need `local` |
 | `CF_ACCESS_TEAM_DOMAIN` / `CF_ACCESS_AUD` | unset | Cloudflare Access team and application, required with `cloudflare` |
 | `CF_ACCESS_ORIGIN_SECRET` | unset | Secret Cloudflare adds as `X-Unifeye-Origin-Secret`; required with `cloudflare,local` |
 | `CF_ACCESS_RECHECK_SECONDS` | 300 | How quickly someone Cloudflare stops letting through loses access |

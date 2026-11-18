@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { handleApi } from "@/server/api";
 import { codeEmail, describeDevice } from "@/server/auth/local";
-import { loadConfig, setConfigForTests } from "@/server/config";
+import { emailCodesOn, loadConfig, setConfigForTests } from "@/server/config";
 import { schema } from "@/server/db";
 import { makeFixture, TEST_ENV, type Fixture } from "@/server/testing/fixture";
 
@@ -68,9 +68,11 @@ describe("email codes: setting up accounts", () => {
     const p = await office();
     expect((await as(f.u.front, "PUT", `/admin/users/${p.id}/sign-in`, { body: { password: true } })).status).toBe(403);
   });
-  it("SMTP_URL and MAIL_FROM go together and need password accounts", () => {
+  it("SMTP_URL and MAIL_FROM go together; without password accounts email codes stay off", () => {
     expect(() => loadConfig({ ...TEST_ENV, SIGN_IN_METHODS: "oidc,local", SMTP_URL: MAIL.SMTP_URL } as unknown as NodeJS.ProcessEnv)).toThrow(/together/);
-    expect(() => loadConfig({ ...TEST_ENV, ...MAIL } as unknown as NodeJS.ProcessEnv)).toThrow(/include local/);
+    const noLocal = loadConfig({ ...TEST_ENV, SIGN_IN_METHODS: "oidc", ...MAIL } as unknown as NodeJS.ProcessEnv);
+    expect(noLocal.SMTP_URL).toBe(MAIL.SMTP_URL);
+    expect(emailCodesOn(noLocal)).toBe(false);
     expect(() => loadConfig({ ...TEST_ENV, SIGN_IN_METHODS: "oidc,local", ...MAIL, SMTP_URL: "http://x" } as unknown as NodeJS.ProcessEnv)).toThrow(/smtp/);
   });
 });
