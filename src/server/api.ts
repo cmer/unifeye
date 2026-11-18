@@ -2,8 +2,8 @@ import { desc, lt } from "drizzle-orm";
 import { ZodError } from "zod";
 import { randomBytes } from "node:crypto";
 import { stat } from "node:fs/promises";
-import pkg from "../../package.json";
 import { audit } from "./audit";
+import { versionInfo } from "./version";
 
 import { CODE_COOKIE, CODE_TTL_MS } from "./auth/local";
 import { LOGIN_TXN_COOKIE, safeReturnTo } from "./auth/oidc";
@@ -486,7 +486,8 @@ route("GET", "/admin/audit", { admin: true }, ({ s, url }) => {
 // ---- diagnostics: this session only ------------------------------------------------
 /**
  * What the diagnostics window needs from the server: its clock, whether the recorder and the media
- * relay are reachable, this session's open live streams and its use of the per-minute limits. Only
+ * relay are reachable, this session's open live streams and its use of the per-minute limits, and
+ * which build this is and whether a newer one exists (`version.ts`). Only
  * the caller's own session; nothing about other people, no configuration values beyond the limits
  * that apply to the caller, and only stream cameras the effective subject can see. A read, so it
  * works during "See as staff"; the counts are the administrator's session's, which the preview shares.
@@ -495,7 +496,7 @@ route("GET", "/diagnostics", {}, async ({ s, actor, session }) => {
   const visible = s.policy.cameraIds(subjectOf(actor)), streams = s.media.sessionStreams(session.id);
   return {
     serverTime: Date.now(),
-    version: pkg.version,
+    ...versionInfo(),
     recorder: s.adapter.health().state,
     relay: await s.media.relayHealthy().catch(() => false),
     streams: {

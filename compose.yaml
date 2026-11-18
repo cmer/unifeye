@@ -3,7 +3,11 @@
 # that proxy, and the WebRTC media port (WEBRTC_PORT, 8189 by default, UDP and TCP).
 services:
   app:
-    build: .
+    build:
+      context: .
+      # Optional: shows the running commit in Diagnostics. GIT_SHA=$(git rev-parse HEAD) docker compose up -d --build
+      args:
+        GIT_SHA: ${GIT_SHA:-}
     restart: unless-stopped
     env_file: .env
     environment:

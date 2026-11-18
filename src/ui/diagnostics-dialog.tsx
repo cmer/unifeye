@@ -18,13 +18,13 @@ import { useApp } from "./app";
 import {
   camerasFor, candidateLabel, clockOffset, codecName, filterCandidates, fmtMbps, fmtMs, formatReport, groupRefusals, inboundVideo,
   liveTiles, mayReleaseHls, median, MIN_STREAM_MBPS, perStreamMbps, parsePlaylist, parseUserAgent, pickTestStream, problemLog, refusalsSince, refusalText, REFUSAL_WINDOW_MS, selectedPair, statList,
-  verdict, type CheckRow, type Pair, type ProblemEntry, type ProblemId, type Section, type Stat, type Status, type TestStream, type TileInfo,
+  verdict, versionRow, type CheckRow, type Pair, type ProblemEntry, type ProblemId, type Section, type Stat, type Status, type TestStream, type TileInfo, type UpdateInfo,
 } from "./diagnostics";
 import { resumeWebrtc, webrtcPause } from "./live";
 
 // ---- what the checks find ----------------------------------------------------------------------
 interface Info {
-  serverTime: number; version: string; recorder: "connected" | "connecting" | "down"; relay: boolean;
+  serverTime: number; version: string; commit: string | null; update: UpdateInfo; recorder: "connected" | "connecting" | "down"; relay: boolean;
   streams: { limit: number; open: number; webrtc: number; hls: number; held: { cameraId: string; quality: "wall" | "focus"; kinds: string[] }[] };
   rate: { class: string; used: number; limit: number; resetSeconds: number }[];
 }
@@ -364,7 +364,7 @@ function build(r: Results, running: boolean, tz: string, onTryNow: () => void) {
     if (off > 60) problems.add("clock_off");
     device.push({ id: "clock", label: "Clock", status: off > 60 ? "warn" : "ok", value: off < 2 ? "Matches the server" : `${off < 120 ? `${Math.round(off)} s` : `${Math.round(off / 60)} minutes`} ${r.clockMs > 0 ? "ahead of" : "behind"} the server`, detail: off < 2 ? `Off by ${off.toFixed(1)} s` : undefined, tech: [`offset ${Math.round(r.clockMs)} ms`] });
   }
-  device.push({ id: "version", label: "Version", status: "info", value: info ? `Unifeye ${info.version}` : "Unifeye" });
+  device.push(info ? { id: "version", label: "Version", ...versionRow(info) } : { id: "version", label: "Version", status: "info", value: "Unifeye" });
 
   // Tiles failing on their own
   if ((r.playing ?? []).some((x) => x.status === "bad")) problems.add("tiles_failing");

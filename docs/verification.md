@@ -56,7 +56,9 @@ gateway) is pinned separately in
   cameras the previewed person can see; the speed-test sample is capped at 4 MB, uncached, counted as
   `media` and refused after 10 a minute per session. The window's logic is unit-tested in Node
   (`tests/diagnostics.test.ts`): candidate filtering, playlist parsing, 429 grouping, the verdict,
-  the report, user agents, statistics parsing and which stream the tests use. The browser side of
+  the report, user agents, statistics parsing, the Version row and which stream the tests use. The
+  update check's decisions are tested against a stand-in for GitHub (`tests/version.test.ts`); it
+  has not been run from a built image, and never against a repository that has releases. The browser side of
   the window (peer connections, `getStats`, codec queries, clipboard) is not covered by tests.
 - Relay outage: WHEP setup, trickle, teardown and HLS answer 503 `relay_unavailable`; a sweep
   survives it; `/ready` reports the relay as down and as up again.

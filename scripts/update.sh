@@ -75,6 +75,8 @@ main() {
   fi
 
   say "Building (the current version keeps running)"
+  # The image records the commit it was built from; Diagnostics shows it and checks it for updates.
+  export GIT_SHA="$next"
   if ! docker compose build --pull; then
     git checkout --quiet -- .
     git checkout --quiet --detach "$current"

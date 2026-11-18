@@ -177,6 +177,17 @@ const schema = z.object({
   PLAYBACK_WINDOW_SECONDS: int(60, 10),
   EVENT_PREROLL_SECONDS: int(5, 0),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  /**
+   * The commit this build was made from, shown in the diagnostics window. The image build sets it
+   * (`GIT_SHA` build argument); there is no reason to set it by hand.
+   */
+  GIT_SHA: z.preprocess((v) => (v === "" ? undefined : v), z.string().regex(/^[0-9a-f]{7,40}$/).optional()),
+  /**
+   * `on`: a few times a day, ask GitHub whether a newer Unifeye exists, and say so in the diagnostics
+   * window. Two anonymous requests to api.github.com; the only thing sent is the commit this build
+   * runs. `off`: never ask.
+   */
+  UPDATE_CHECK: z.enum(["on", "off"]).default("on"),
 });
 
 export type Config = z.infer<typeof schema>;

@@ -27,6 +27,7 @@ import type { ProtectAdapter } from "./protect/types";
 import { UnifiProtectAdapter } from "./protect/unifi";
 import { seedDemo } from "./seed";
 import { log } from "./util";
+import { checkForUpdate } from "./version";
 
 export interface Services {
   db: Db; policy: Policy; access: Access; views: Views; sessions: Sessions; previews: Previews; admin: Admin; oidc: Oidc; local: LocalAccounts; cloudflare: CloudflareAccess;
@@ -108,6 +109,8 @@ export function startRuntime(): Promise<void> {
     every(c.REVOCATION_SWEEP_SECONDS, "revocation sweep", () => { s.access.expireDue(); return s.media.sweep(); });
     every(Math.min(60, c.OIDC_RECHECK_SECONDS), "identity re-validation", () => s.oidc.reconcile());
     every(300, "housekeeping", async () => { await s.recordings.cleanup(); s.sessions.purgeExpired(); s.local.purgeCodes(); });
+    void checkForUpdate();
+    every(6 * 3600, "update check", checkForUpdate);
     let lastBackupDay = "";
     every(600, "backup", async () => {
       const d = new Date(), day = d.toISOString().slice(0, 10);
