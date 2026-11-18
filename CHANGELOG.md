@@ -6,6 +6,8 @@ and uses it as the GitHub release notes.
 
 ## Unreleased
 
+## 1.1.1 - 2026-11-18
+
 ### Fixed
 - Live video no longer shows "The server turned some requests away" after reloading the page,
   switching views or opening a second tab.
