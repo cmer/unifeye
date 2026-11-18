@@ -10,7 +10,14 @@ and uses it as the GitHub release notes.
 - `scripts/update.sh` takes a version number: `1.1.2` for that release, `1.3` for the newest
   1.3.x, or `2` for the newest 2.x.x.
 
+### Changed
+- Times in recordings, the timeline and activity now show in the recorder's time zone by default,
+  so they match the clock on the video. "My time zone" and others are still in the time zone menu.
+- Sign out and the light or dark switch are now in the menu that opens when you click your name.
+
 ### Fixed
+- Activity shows a picture for each motion and detection event again.
+- If activity markers fail to load on a camera's timeline, the player tries again on its own.
 - Saved clips no longer lose a second where part of the clip couldn't be fetched from the recorder.
 - Saved clips and playback no longer repeat a moment where the recording switches to high quality.
 

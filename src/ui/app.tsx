@@ -6,13 +6,13 @@ import { toast } from "sonner";
 import { BrandMark } from "@/components/brand-mark";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuBadge, SidebarMenuButton, SidebarMenuItem, SidebarProvider, useSidebar } from "@/components/ui/sidebar";
 import { Activity } from "./activity";
 import { Admin } from "./admin";
-import { api, ApiError, localZone, setCsrf, setPreviewToken, type Me } from "./api";
+import { api, ApiError, setCsrf, setPreviewToken, zoneFor, type Me } from "./api";
 import { DiagnosticsDialog } from "./diagnostics-dialog";
 import { ManageViews } from "./manage-views";
 import { Player } from "./player";
@@ -75,7 +75,7 @@ export function App() {
     setPrefs((p) => ({ ...p, [key]: value }));
     if (!me?.preview) api("/preferences", { method: "PUT", body: { key, value } }).catch(() => {}); // a preview never writes the subject's preferences
   }, [me?.preview]);
-  const ctx = useMemo(() => (me && loc ? { me: { ...me, preferences: prefs }, reload, loc, nav, setPref, tz: typeof prefs.tz === "string" && prefs.tz !== "local" ? prefs.tz : localZone() } : null), [me, loc, prefs, reload, nav, setPref]);
+  const ctx = useMemo(() => (me && loc ? { me: { ...me, preferences: prefs }, reload, loc, nav, setPref, tz: zoneFor(prefs.tz, me.recorderTimeZone) } : null), [me, loc, prefs, reload, nav, setPref]);
   if (!ctx) return <div className="grid h-full place-items-center text-sm text-muted-foreground">Loading…</div>;
 
   const { path } = ctx.loc, seg = path.split("/").filter(Boolean);
@@ -163,12 +163,13 @@ function AppSidebar() {
               <span className="min-w-0 flex-1 truncate text-sm font-medium">{me.user.name}</span>
             </DropdownMenuTrigger>
             <DropdownMenuContent side="top" align="start" className="min-w-48">
+              <DropdownMenuItem onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}>{resolvedTheme === "dark" ? <><Sun />Light mode</> : <><Moon />Dark mode</>}</DropdownMenuItem>
               <DropdownMenuItem onClick={() => setDiag(true)}><ActivityIcon />Diagnostics</DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={async () => { try { setPreviewToken(null); const r = await api<{ redirect: string }>("/auth/logout", { method: "POST" }); location.assign(r.redirect); } catch (e) { fail(e); } }}><LogOut />Sign out</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
           {me.user.hasPassword && !me.preview && <Button variant="ghost" size="icon" aria-label="Change password" title="Change password" onClick={() => setPw(true)}><KeyRound /></Button>}
-          <Button variant="ghost" size="icon" aria-label="Switch between light and dark" onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}>{resolvedTheme === "dark" ? <Sun /> : <Moon />}</Button>
-          <Button variant="ghost" size="icon" aria-label="Sign out" title="Sign out" onClick={async () => { try { setPreviewToken(null); const r = await api<{ redirect: string }>("/auth/logout", { method: "POST" }); location.assign(r.redirect); } catch (e) { fail(e); } }}><LogOut /></Button>
         </div>
       </SidebarFooter>
       {pw && <ChangePassword onClose={() => setPw(false)} />}

@@ -15,6 +15,8 @@ export interface Me {
   preferences: Record<string, unknown>;
   mode: "mock" | "real";
   recorder: "connected" | "connecting" | "down";
+  /** The recorder's time zone, which matches the clock on its video. Null until the recorder has answered. */
+  recorderTimeZone: string | null;
   limits: { maxStreams: number; windowSeconds: number; prerollSeconds: number; clipMaxSeconds: number };
 }
 export interface ActivityEvent { id: string; cameraId: string; cameraName: string; type: string; startMs: number; endMs: number | null; hasThumbnail: boolean }
@@ -64,6 +66,13 @@ export async function api<T = unknown>(path: string, init: { method?: string; bo
 
 // ---- time helpers: UTC in transport and storage, a chosen zone on screen ----
 export const localZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
+/**
+ * The zone times are shown in. By default it is the recorder's, so times on screen match the clock
+ * stamped on its video; "local" is the browser's own zone. Falls back to the browser's zone while
+ * the recorder's is unknown.
+ */
+export const zoneFor = (pref: unknown, recorderZone: string | null) =>
+  pref === "local" ? localZone() : typeof pref === "string" && pref !== "recorder" ? pref : recorderZone ?? localZone();
 const cache = new Map<string, Intl.DateTimeFormat>();
 function parts(ms: number, tz: string) {
   let f = cache.get(tz);
