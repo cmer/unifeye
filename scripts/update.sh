@@ -3,7 +3,12 @@
 #
 #   scripts/update.sh            update to origin/main (does nothing if already there)
 #   scripts/update.sh --force    rebuild and restart even if already up to date
+#   scripts/update.sh 1.1.2      switch to release 1.1.2
+#   scripts/update.sh 1.3        switch to the newest 1.3.x release
+#   scripts/update.sh 2          switch to the newest 2.x.x release
 #   scripts/update.sh <commit>   switch to a specific commit or tag, e.g. to go back a version
+#
+# --force can be combined with a version or commit.
 #
 # Run it on the server, from the checkout that holds .env and compose.yaml. UNIFEYE_BRANCH picks
 # another branch than main.
@@ -23,16 +28,28 @@ main() {
   [[ -f compose.yaml && -d .git ]] || die "Run this from a Unifeye checkout (scripts/update.sh)."
 
   local force=0 target=""
-  case "${1:-}" in
-    --force) force=1 ;;
-    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; return 0 ;;
-    -*) die "Unknown option: $1 (see --help)" ;;
-    "") ;;
-    *) target="$1" ;;
-  esac
+  while (( $# )); do
+    case "$1" in
+      --force) force=1 ;;
+      -h|--help) sed -n '2,/^set /p' "$0" | sed '$d; s/^# \{0,1\}//'; return 0 ;;
+      -*) die "Unknown option: $1 (see --help)" ;;
+      *) [[ -z "$target" ]] || die "Only one version or commit at a time (see --help)"; target="$1" ;;
+    esac
+    shift
+  done
 
   say "Fetching"
   git fetch --quiet --tags origin
+  # A version number, full or partial, picks the newest release tag (vX.Y.Z) that matches it.
+  # Longer all-digit strings are left alone: they are more likely a commit.
+  if [[ "$target" =~ ^v?([0-9]{1,3}(\.[0-9]+){0,2})$ ]]; then
+    local version="${BASH_REMATCH[1]}" tag
+    tag=$(git tag -l "v${version}*" --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+      | grep -E "^v${version//./\\.}(\.|$)" | head -1) || true
+    [[ -n "$tag" ]] || die "No release matches $version. Releases: $(git tag -l 'v*' --sort=-v:refname | head -5 | xargs)"
+    echo "Version $version: $tag"
+    target="$tag"
+  fi
   local current next
   current=$(git rev-parse HEAD)
   next=$(git rev-parse --verify --quiet "${target:-origin/${UNIFEYE_BRANCH:-main}}^{commit}") || die "Unknown commit: ${target:-origin/${UNIFEYE_BRANCH:-main}}"
