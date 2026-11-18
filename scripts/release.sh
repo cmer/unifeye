@@ -144,7 +144,7 @@ step "Tagging $TAG"
 git add package.json "$CHANGELOG"
 git commit --quiet -m "Release $TAG"
 COMMITTED=1
-git tag -a "$TAG" -m "Unifeye $VERSION"
+git tag -a "$TAG" -m "$TAG"
 if ! git push --quiet --atomic "$REMOTE" "HEAD:refs/heads/$BRANCH" "$TAG"; then
   # Nothing reached GitHub (the push is all or nothing), so put this checkout back as it was.
   git tag -d "$TAG" >/dev/null
@@ -162,10 +162,10 @@ NOTES="$(mktemp)"
 # Servers look at "latest release" to offer updates, so only a final, published release takes that spot.
 LATEST=()
 [[ ${#DRAFT[@]} -eq 0 && ${#PRERELEASE[@]} -eq 0 ]] && LATEST=(--latest)
-if ! gh release create "$TAG" --repo "$REPO" --title "Unifeye $VERSION" --notes-file "$NOTES" --verify-tag \
+if ! gh release create "$TAG" --repo "$REPO" --title "$TAG" --notes-file "$NOTES" --verify-tag \
     ${DRAFT[@]+"${DRAFT[@]}"} ${PRERELEASE[@]+"${PRERELEASE[@]}"} ${LATEST[@]+"${LATEST[@]}"}; then
   die "$TAG is tagged and pushed, but the GitHub release wasn't created. Finish with:
-  gh release create $TAG --repo $REPO --title \"Unifeye $VERSION\" --notes-file $NOTES --verify-tag"
+  gh release create $TAG --repo $REPO --title $TAG --notes-file $NOTES --verify-tag"
 fi
 rm -f "$NOTES"
 
