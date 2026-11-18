@@ -92,6 +92,16 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
     const busy = () => { if (closed) return; diag.current?.refused(); setState("connecting"); timer = setTimeout(() => setWake((n) => n + 1), BUSY_RETRY_MS); };
     const stream = `/media/live/${cameraId}/hls/${quality}`;
     let hlsOpen = false;
+    // Free this tile's stream on the server. Without it the slot stays taken for up to a minute
+    // (HLS has no teardown of its own), and the next tiles are refused. Sent with keepalive so it
+    // still goes out when the page is closing or reloading.
+    const release = () => {
+      if (hlsOpen) { hlsOpen = false; void api(stream, { method: "DELETE", keepalive: true }).catch(() => {}); }
+      if (resource) { const r = resource; resource = null; void api(r.replace(/^\/api/, ""), { method: "DELETE", keepalive: true }).catch(() => {}); }
+    };
+    // React does not unmount on a reload or a closed tab, so release from here too.
+    const onHide = (e: PageTransitionEvent) => { if (!e.persisted) release(); };
+    addEventListener("pagehide", onHide);
     const viaHls = async () => {
       if (closed) return;
       hlsOpen = true;
@@ -203,13 +213,12 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
     })();
     function cleanup() {
       closed = true;
+      removeEventListener("pagehide", onHide);
       unwatch?.();
       clearTimeout(timer); clearTimeout(timer2);
       pc?.close();
       hls?.destroy();
-      // HLS has no teardown of its own: without this the server holds the stream's slot for up to a minute.
-      if (hlsOpen) void api(stream, { method: "DELETE", keepalive: true }).catch(() => {});
-      if (resource) void api(resource.replace(/^\/api/, ""), { method: "DELETE" }).catch(() => {});
+      release();
       el.onplaying = null; el.onerror = null; el.srcObject = null; el.removeAttribute("src"); el.load();
     }
     return cleanup;

@@ -862,7 +862,7 @@ describe("diagnostics", () => {
     const before = Date.now(), d = (await call(f.u.front, "GET", "/diagnostics")).data;
     expect(d.serverTime).toBeGreaterThanOrEqual(before);
     expect(d.recorder).toBe("connected"); expect(d.relay).toBe(true); expect(typeof d.version).toBe("string");
-    expect(d.streams).toMatchObject({ limit: config().MAX_WALL_STREAMS + 3, open: 2, webrtc: 1, hls: 1 });
+    expect(d.streams).toMatchObject({ limit: (config().MAX_WALL_STREAMS + 2) * 2, open: 2, webrtc: 1, hls: 1 });
     expect(d.streams.held.map((x: { cameraId: string }) => x.cameraId).sort()).toEqual([f.cam["Front Entrance"], f.cam["Loading Dock"]].sort());
     const read = d.rate.find((x: { class: string }) => x.class === "read");
     expect(read).toMatchObject({ limit: 1200 }); expect(read.used).toBeGreaterThan(0);

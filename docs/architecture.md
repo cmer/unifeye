@@ -204,7 +204,7 @@ count per client address; a valid session is never refused because of its addres
 | `read` / `write` | 1,200 / 240 | session |
 | `media` (snapshots, WebRTC set-up, playback, thumbnails, exports, the diagnostics speed test) | 600 | session |
 | `speedtest` (the diagnostics download sample, on top of `media`) | 10 | session |
-| `hls` (playlists and segments) | 120 × (`MAX_WALL_STREAMS` + 3), 1,440 by default | session |
+| `hls` (playlists and segments) | 120 × the stream limit, 2,640 by default | session |
 
 An HLS stream on Protect cameras polls a video and a sound playlist and fetches a segment of each
 every 4 seconds, about 60 requests a minute (measured 2026-11-17: 29 playlist requests per tile per
@@ -403,8 +403,12 @@ existing sessions are not extended, and a session that could not be re-validated
 WebRTC signalling is proxied; media flows from MediaMTX to the browser over ICE on port 8189
 (`WEBRTC_PORT` in Compose). If no media arrives within 4 seconds, the player tears the WebRTC session
 down and switches to HLS, and the tab skips WebRTC for 10 minutes (`src/ui/live.tsx`). Tearing down a WHEP session frees its slot at
-once. A tile that stops while its offer is still on its way tears the session down as soon as the
-answer arrives, and an offer that fails after the hook admitted its reader frees that slot at once. The per-session limit (`MAX_WALL_STREAMS` + 3) counts distinct streams (camera and quality),
+once, before Unifeye asks the relay to close it, so tiles opened in the same moment (changing views)
+are not refused. A tile that stops while its offer is still on its way tears the session down as soon as the
+answer arrives, and an offer that fails after the hook admitted its reader frees that slot at once. The per-session limit, 2 × (`MAX_WALL_STREAMS` + 2) (22 by default), is room for two tabs, each with a
+full wall plus the player and handovers; it also covers a reload whose old streams are still being
+released. Tiles release their streams on `pagehide` too, with `keepalive`, because React does not
+unmount on a reload or a closed tab. The limit counts distinct streams (camera and quality),
 not relay readers, because an HLS player opens a new relay session each time it loads the top playlist. HLS has no teardown of its own,
 so when a tile stops an HLS stream the player sends `DELETE /api/media/live/:id/hls/:q`; Unifeye
 kicks that session's readers for the stream and frees the slot at once. Without it the slot stays
@@ -537,7 +541,7 @@ plain-text report. Two routes serve it, both signed-in only:
 
 - `GET /api/diagnostics`: the server's clock, the recorder's state (as `/me` already shows), whether
   the media relay answers, the caller's session's open live streams (counted as the stream limit
-  counts them, split by WebRTC and HLS, against `MAX_WALL_STREAMS` + 3), the session's use of each
+  counts them, split by WebRTC and HLS, against the stream limit), the session's use of each
   per-minute rate class with its limit and seconds to reset, the app version from `package.json`, the
   commit the build was made from (`GIT_SHA`, set by the image build; outside production, the
   checkout's HEAD) and whether a newer version exists. That last answer comes from
