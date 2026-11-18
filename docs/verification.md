@@ -165,9 +165,17 @@ gateway) is pinned separately in
   drift, matched in speed, shown only with the right frame), playing alone through an insert with the
   base paused and parked, waiting for a high file still loading, inserts skipped and overs played as
   the base without a usable high file, seeks applied once each file can move, the handover at the
-  end of the entries only while playing, and pausing. A clip's ends dragged and typed within the
-  length limits and never past two seconds ago, and the timeline's zoom, pan and refitting. The React
-  wiring around them is not tested.
+  end of the entries only while playing, and pausing. Across frames (`stepPlayback`): a new window
+  starts with a seek; when the full order arrives, playback restarts from the moment asked for within
+  10 seconds of a seek (or while the seek is not yet carried out) and otherwise carries on from the
+  base; a hand-over carries on where `carryOnAt` says, past a lead that starts half a second before
+  the window, rather than where a seek to the window's start would land (inside that lead); and a
+  frame of the window handed over from, run before the player catches up, changes nothing. Before,
+  such a frame rebuilt the next window's cursor as a seek, which on a lead that crosses the window
+  start played the last moments of the window before again; that race was found by reading the code
+  and was not reproduced in a browser. A clip's ends dragged and typed within the length limits and
+  never past two seconds ago, and the timeline's zoom, pan and refitting. What remains untested is
+  the thin React wiring: refs, the animation-frame loop and the hidden elements of the next window.
 - Resize speed (synthetic 640x480 7 fps source, five minutes, Apple M5 Max, 4 threads): 8.5 s to
   2688x1512 with libx264 `veryfast`, 7.6 s with VideoToolbox. Reading the picture sizes of a
   five-minute 2688x1512 piece took about 1 s.
@@ -284,7 +292,22 @@ are now pinned by the stub tests above. Production has since run live video thro
   seams matched), and the picture never stopped except for 0.3 s at the start. This run found two
   bugs, both fixed: windows with motion at an edge were sent the high file alone, losing low-only
   seconds (`channelsFor`), and the simulated recorder's high exports did not repeat GOPs byte for byte,
-  so a handover replayed its lead. Clips, seeking by hand and slow connections were not tried.
+  so a handover replayed its lead. Clips, seeking by hand and slow connections were not tried. In
+  that run the simulated recorder's GOPs sat on whole seconds, so every lead ended exactly at its
+  window's start, and carrying on from the window before and seeking to the window's start landed on
+  the same entry: the run could not tell them apart.
+- Adaptive playback in mock mode after the simulated GOPs moved to half a second past each whole
+  second (headless Chrome through Playwright, 15-second windows, `MOCK_ADAPTIVE=mock-06`,
+  2026-11-18, twice for 50 s each): the window at second 15 of each half minute opens with the low
+  file's last GOP before its gap, which `tests/playback.test.ts` shows is dated from half a second
+  before the window to half a second into it, so a seek to that window's start lands inside the lead.
+  At every handover into such a window (four across both runs) the base carried on at 1.00 s, just
+  past its 1 s lead, with the high file playing the gap from just past its own lead; the low file
+  played alone, then under the high file from about 12.5 s, held still for the 3 s only the high
+  file has, and ran on with it to the end of motion. The picture stopped for 0.2 s at the start of
+  one run and for one 0.1 s sample in the other. The same check with the earlier player code gave
+  the same handovers: the stale-frame race it had depends on frame timing and did not occur there,
+  so only `tests/player.test.ts` covers it.
 - Adaptive playback in mock mode with the earlier overlay player (headless Chromium, 10-second
   windows, `MOCK_ADAPTIVE=mock-06`, so motion crosses window boundaries): over a minute and six handovers, wall-clock time never
   jumped or repeated. The overlay appeared within about 0.1 s of motion starting and disappeared within

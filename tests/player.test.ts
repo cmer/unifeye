@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Entry } from "@/server/media/timeline";
-import { canHandOver, carryOnAt, cursorAt, cursorAtBase, positionAt, shouldArm, stepEntries, windowStart, type MediaPort } from "@/ui/recorded-playback";
+import { canHandOver, carryOnAt, cursorAt, cursorAtBase, handOver, positionAt, seekTo, shouldArm, stepEntries, stepPlayback, windowStart, type MediaPort } from "@/ui/recorded-playback";
 import { DAY, fmtAgo, tickTimes, timelineBounds } from "@/ui/timeline";
 import { dragTrim, MIN_CLIP, nearestEnd, panTrim, startTrim, TRIM_SPAN, typeTrim, viewFor, zoomTrim, type Trim } from "@/ui/trim";
 
@@ -162,6 +162,83 @@ describe("recorded playback", () => {
     const r = stepEntries(base, high, entries, { i: 3 }, { playing: false, rate: 1 });
     expect(base.paused && high.paused).toBe(true);
     expect(r).toMatchObject({ cur: { i: 3 }, showHigh: true, wall: ws + 17_000 });
+  });
+});
+
+describe("recorded playback across frames", () => {
+  const A = { key: `${ws}:1`, info: { entries, seams: { base: { first: "k0", last: "k9" }, high: { first: "h0", last: "h9" } } } };
+  /** The base file alone for the same window, while the high file is placed. */
+  const early = { key: A.key, info: { entries: [E("base", 0, 1, ws, undefined, true), E("base", 1, 49, ws + 1000)], pending: true as const } };
+  /**
+   * The window after A, whose base lead (the keyframe A ended with) starts half a second before the
+   * window and runs a second, as the recorder's do: the window's first moment is inside it.
+   */
+  const ws2 = ws + W, B = {
+    key: `${ws2}:1`,
+    info: { entries: [E("base", 0, 1, ws2 - 500, undefined, true), E("base", 1, 59, ws2 + 500)], seams: { base: { first: "k9", last: "k20" }, high: null } },
+  };
+  const at = (target: number, shown = target) => ({ target, shown });
+
+  it("starts a window with a seek to the moment asked for", () => {
+    const r = stepPlayback(null, A, el({ currentTime: 0 }), el({ paused: true }), at(ws + 25_000), playing)!;
+    expect(r.s).toMatchObject({ key: A.key, seek: true, pending: false, cur: { i: 4 } });
+    expect(r.step).toMatchObject({ showHigh: true, wall: ws + 25_000 });
+    // A seek elsewhere (a new key) starts again, whatever was playing.
+    expect(stepPlayback(r.s, { ...A, key: `${ws}:2` }, el(), el(), at(ws + 10_000), playing)!.s).toMatchObject({ key: `${ws}:2`, seek: true, cur: { i: 2 } });
+  });
+
+  it("starts again from the moment asked for when the high file's order arrives within 10 seconds of a seek", () => {
+    const base = el({ currentTime: 0 });
+    let r = stepPlayback(null, early, base, null, at(ws + 25_000), playing)!;
+    expect(r.s).toMatchObject({ pending: true, cur: { i: 1 } });
+    expect(base.currentTime).toBe(25);
+    base.currentTime = 30; // the base played on alone for five seconds
+    r = stepPlayback(r.s, A, base, el(), at(ws + 25_000, ws + 30_000), playing)!;
+    expect(r.s).toMatchObject({ pending: false, cur: { i: 4 } }); // the moment only the high file has
+    expect(r.step.showHigh).toBe(true);
+    expect(base.paused).toBe(true);
+  });
+
+  it("carries on from the base when the order arrives 10 seconds or more after the seek, or after a hand-over", () => {
+    const base = el({ currentTime: 0 });
+    let r = stepPlayback(null, early, base, null, at(ws + 25_000), playing)!;
+    base.currentTime = 35;
+    r = stepPlayback(r.s, A, base, el({ currentTime: 0, paused: true }), at(ws + 25_000, ws + 35_000), playing)!;
+    expect(r.s).toMatchObject({ pending: false, cur: { i: 6 } });
+    expect(base.currentTime).toBe(35);
+    expect(r.step.wall).toBe(ws + 45_000); // the base file skips the 10 s the high file fills
+    // Not started by a seek: always from the base, however close to the window's first moment.
+    const handed = { ...seekTo(early, ws), seek: false, cur: { i: 1 } };
+    base.currentTime = 22;
+    const high = el({ currentTime: 0 });
+    expect(stepPlayback(handed, A, base, high, at(ws, ws + 1000), playing)!.s.cur).toEqual({ i: 5 });
+    expect(high.currentTime).toBe(18);
+    // A seek not yet carried out restarts from the moment asked for, however long ago that was.
+    const unmoved = { ...seekTo(early, ws + 25_000), cur: { i: 1, base: 25 } };
+    expect(stepPlayback(unmoved, A, el({ currentTime: 0 }), el(), at(ws + 25_000, ws + 50_000), playing)!.s.cur.i).toBe(4);
+  });
+
+  it("hands over to the next window where the window before left off, past the keyframe it ended with", () => {
+    const s = handOver(A, B);
+    expect(s).toMatchObject({ key: B.key, seek: false, pending: false, from: A.key, cur: { i: 1, base: 1 } });
+    // A seek to the window's first moment would land half a second into the lead, a moment shown already.
+    expect(cursorAt(B.info.entries, ws2)).toEqual({ i: 0, base: 0.5 });
+    const base = el({ currentTime: 1 });
+    const r = stepPlayback(s, B, base, null, at(ws2), playing)!;
+    expect(r.s).toMatchObject({ key: B.key, seek: false, cur: { i: 1 } });
+    expect(base.currentTime).toBe(1);
+    expect(r.step.wall).toBe(ws2 + 500);
+  });
+
+  it("ignores a frame of the window handed over from that runs before the player has caught up", () => {
+    const s = handOver(A, B), old = el({ currentTime: 50, ended: true, paused: true });
+    // Before, such a frame took the hand-over for a seek and restarted the next window at its first
+    // moment, inside the lead, so the last moments of the window before played twice.
+    expect(stepPlayback(s, A, old, null, at(ws + 10_000), playing)).toBeNull();
+    expect(old.calls).toEqual([]);
+    const base = el({ currentTime: 1 });
+    expect(stepPlayback(s, B, base, null, at(ws2), playing)!.s.cur).toEqual({ i: 1 });
+    expect(base.currentTime).toBe(1);
   });
 });
 

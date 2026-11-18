@@ -10,6 +10,10 @@ and uses it as the GitHub release notes.
 - `scripts/update.sh` takes a version number: `1.1.2` for that release, `1.3` for the newest
   1.3.x, or `2` for the newest 2.x.x.
 
+### Fixed
+- Recorded video no longer sometimes jumps back a few seconds as it plays on from one
+  minute to the next.
+
 ## 1.1.1 - 2026-11-18
 
 ### Fixed

@@ -609,8 +609,13 @@ playing. The description also carries `seams`, the keyframe hashes of each file'
 GOP. The recorder exports the same GOP byte for byte every time, so when a window's first base GOP is
 the window before's last, playing on skips the leads; otherwise the base lead plays too. The next
 window's files wait in hidden elements at that entry. These decisions live in
-`src/ui/recorded-playback.ts` (`stepEntries` runs on every animation frame); the player only wires
-them to its video elements. Choosing a clip's ends on the timeline follows the rules in `src/ui/trim.ts`.
+`src/ui/recorded-playback.ts`: one state object (`Playback`: the window playing, the cursor in its
+entries, whether it began with a seek, whether the high-resolution order is still to come) is stepped
+on every animation frame by `stepPlayback`, which starts a new window with a seek, swaps in the full
+order when it arrives (from the moment asked for within 10 seconds of a seek, else from where the
+base is), and plays the entries (`stepEntries`). A hand-over (`handOver`) records the window it came
+from, so a frame of that window that runs before the player catches up does nothing. The player only
+wires them to its video elements. Choosing a clip's ends on the timeline follows the rules in `src/ui/trim.ts`.
 
 Adaptive recording (Protect records the low channel, and the high channel around motion) is handled
 in one module, `src/server/media/recorded.ts` (`fetchRecorded`), which playback windows and clip

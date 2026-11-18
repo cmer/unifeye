@@ -10,7 +10,7 @@ import { api, dateInput, dayBounds, EVENT_COLOR, EVENT_LABEL, fmtDay, fmtShort, 
 import { Empty, fail, RecMark, Select, useApp, useRecording } from "./app";
 import { LiveVideo, type LiveInfo, type Transport, type VideoSource } from "./live";
 import type { WindowInfo as WinInfo } from "@/server/media/recordings";
-import { canHandOver, carryOnAt, cursorAt, cursorAtBase, positionAt, shouldArm, stepEntries, windowStart, type Cursor } from "./recorded-playback";
+import { canHandOver, carryOnAt, handOver, positionAt, shouldArm, stepPlayback, windowStart, type Playback } from "./recorded-playback";
 import { dragTrim, nearestEnd, panTrim, startTrim as newTrim, TRIM_SPAN, typeTrim as typedTrim, zoomedSpan, zoomTrim as zoomedTrim, type End, type Trim } from "./trim";
 import { applySound, claimSound, play, setSound, SoundButton, useSound, watchAudio } from "./sound";
 import { fmtAgo, tickTimes, timelineBounds } from "./timeline";
@@ -76,11 +76,8 @@ export function Player({ cameraId }: { cameraId: string }) {
   /** Window descriptions by `${window start}:${seek count}`; "none" when the window has no recording. */
   const [infos, setInfos] = useState<Record<string, WinInfo | "none">>({});
   const infoReq = useRef(new Map<string, AbortController>()), handed = useRef(""), frame = useRef<() => void>(() => {});
-  /**
-   * Where the current window stands (`stepEntries`). `seek`: it began with a seek rather than playing
-   * on from the window before. `pending`: its entries are for the base alone, fuller ones are coming.
-   */
-  const cur = useRef<{ key: string; c: Cursor; seek: boolean; pending: boolean } | null>(null);
+  /** Where recorded playback stands, stepped every animation frame (`stepPlayback`). */
+  const cur = useRef<Playback | null>(null);
   /** The wall-clock time on screen, and the last one passed to `setT` (which re-renders, so it is held back). */
   const shown = useRef(0), shownSet = useRef(0);
   const hiVideo = useRef<HTMLVideoElement>(null);
@@ -207,32 +204,23 @@ export function Player({ cameraId }: { cameraId: string }) {
     handed.current = curKey;
     const nx = ws + W;
     if (ok && nextOk && canHandOver(nextSrc ? nextVideo.current : null, nx, now())) {
-      const i = carryOnAt(ok, nextOk);
-      cur.current = { key: nextKey, c: { i, ...positionAt(nextOk.entries, i) }, seek: false, pending: !!nextOk.pending };
+      cur.current = handOver({ key: curKey, info: ok }, { key: nextKey, info: nextOk });
       setT(nx); setTarget((p) => ({ ms: nx, n: p.n }));
     } else seek(nx);
   };
-  // Every animation frame: play the window's entries in order and hand over at their end (see `stepEntries`).
+  // Every animation frame: play the window's entries in order and hand over at their end (see `stepPlayback`).
   useEffect(() => { frame.current = () => {
     const v = video.current, h = hiVideo.current;
     if (!v || live || !ok) return;
-    let c = cur.current;
-    if (c?.key !== curKey) c = cur.current = { key: curKey, c: cursorAt(ok.entries, target.ms), seek: true, pending: !!ok.pending };
-    else if (c.pending && !ok.pending) {
-      // The high-resolution order arrived. Shortly after a seek, start again from the moment asked
-      // for, which may be one only the high-resolution file has; later, carry on from the base.
-      c.pending = false;
-      const atSeek = c.c.base != null || Math.abs(shown.current - target.ms) < 10_000;
-      c.c = c.seek && atSeek ? cursorAt(ok.entries, target.ms) : cursorAtBase(ok.entries, v.currentTime);
+    const r = stepPlayback(cur.current, { key: curKey, info: ok }, v, h, { target: target.ms, shown: shown.current }, { playing, rate: speed, start: (m) => play(m as HTMLVideoElement) });
+    if (!r) return;
+    cur.current = r.s;
+    if (h) h.style.visibility = r.step.showHigh ? "visible" : "hidden";
+    if (r.step.wall != null) {
+      shown.current = r.step.wall;
+      if (Math.abs(r.step.wall - shownSet.current) >= 250) { shownSet.current = r.step.wall; setT(r.step.wall); }
     }
-    const r = stepEntries(v, h, ok.entries, c.c, { playing, rate: speed, start: (m) => play(m as HTMLVideoElement) });
-    c.c = r.cur;
-    if (h) h.style.visibility = r.showHigh ? "visible" : "hidden";
-    if (r.wall != null) {
-      shown.current = r.wall;
-      if (Math.abs(r.wall - shownSet.current) >= 250) { shownSet.current = r.wall; setT(r.wall); }
-    }
-    if (r.handOver) advance();
+    if (r.step.handOver) advance();
   }; });
   useEffect(() => { if (live) return; let id = 0; const tick = () => { frame.current(); id = requestAnimationFrame(tick); }; id = requestAnimationFrame(tick); return () => cancelAnimationFrame(id); }, [live]);
   // Pausing takes effect at once, even where animation frames are held back (a tab in the background).
