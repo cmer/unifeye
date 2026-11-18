@@ -1,4 +1,5 @@
 "use client";
+import { recordRequestFailure } from "./diagnostics";
 
 /** Thin client for the Unifeye API. The server decides everything; this only carries the session. */
 export interface Camera { id: string; name: string; tags: string[]; missing: boolean; online: boolean; eventTypes: string[]; hasLive: boolean }
@@ -18,7 +19,7 @@ export interface Me {
 }
 export interface ActivityEvent { id: string; cameraId: string; cameraName: string; type: string; startMs: number; endMs: number | null; hasThumbnail: boolean }
 export class ApiError extends Error {
-  constructor(public status: number, public code: string, message: string) { super(message); }
+  constructor(public status: number, public code: string, message: string, public requestId?: string) { super(message); }
 }
 
 let csrf = "";
@@ -30,23 +31,31 @@ export const setPreviewToken = (t: string | null) => { if (t) sessionStorage.set
 /** For <img>, <video> and EventSource, which cannot send headers. */
 export const mediaUrl = (path: string) => { const t = previewToken(); return t ? `${path}${path.includes("?") ? "&" : "?"}pv=${encodeURIComponent(t)}` : path; };
 
-/** `keepalive`: the request still goes out when the page is closing (releasing a stream on the way out). */
-export async function api<T = unknown>(path: string, init: { method?: string; body?: unknown; raw?: string; signal?: AbortSignal; keepalive?: boolean; onHeaders?: (h: Headers) => void } = {}): Promise<T> {
+/**
+ * `keepalive`: the request still goes out when the page is closing (releasing a stream on the way out).
+ * Failed requests are noted for the diagnostics window, unless `record` is false (the window's own checks).
+ */
+export async function api<T = unknown>(path: string, init: { method?: string; body?: unknown; raw?: string; signal?: AbortSignal; keepalive?: boolean; onHeaders?: (h: Headers) => void; record?: boolean } = {}): Promise<T> {
   const headers: Record<string, string> = {};
   const method = init.method ?? "GET", pv = previewToken();
   if (method !== "GET") headers["x-csrf-token"] = csrf;
   if (pv) headers["x-unifeye-preview"] = pv;
   if (init.body !== undefined) headers["content-type"] = "application/json";
   if (init.raw !== undefined) headers["content-type"] = "application/sdp";
-  const res = await fetch(`/api${path}`, { method, headers, body: init.raw ?? (init.body === undefined ? undefined : JSON.stringify(init.body)), signal: init.signal, keepalive: init.keepalive, credentials: "same-origin" });
+  const record = init.record !== false;
+  let res: Response;
+  try { res = await fetch(`/api${path}`, { method, headers, body: init.raw ?? (init.body === undefined ? undefined : JSON.stringify(init.body)), signal: init.signal, keepalive: init.keepalive, credentials: "same-origin" }); }
+  catch (e) { if (record && !init.signal?.aborted) recordRequestFailure({ method, path, status: 0 }); throw e; }
   if (res.status === 401) {
     location.assign(`/api/auth/login?returnTo=${encodeURIComponent(location.pathname + location.search)}`);
     throw new ApiError(401, "unauthenticated", "Signing in…");
   }
   if (!res.ok) {
     const j = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
+    // Releasing something that is already gone (a 404 on DELETE) is not a problem worth showing.
+    if (record && !(method === "DELETE" && res.status === 404)) recordRequestFailure({ method, path, status: res.status, code: j.error, requestId: res.headers.get("x-request-id") });
     if (res.status === 409 && j.error === "preview_ended") { setPreviewToken(null); location.assign("/admin"); }
-    throw new ApiError(res.status, j.error ?? "error", j.message ?? "Something went wrong");
+    throw new ApiError(res.status, j.error ?? "error", j.message ?? "Something went wrong", res.headers.get("x-request-id") ?? undefined);
   }
   init.onHeaders?.(res.headers);
   const type = res.headers.get("content-type") ?? "";

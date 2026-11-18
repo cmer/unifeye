@@ -1,6 +1,8 @@
 import { desc, lt } from "drizzle-orm";
 import { ZodError } from "zod";
+import { randomBytes } from "node:crypto";
 import { stat } from "node:fs/promises";
+import pkg from "../../package.json";
 import { audit } from "./audit";
 
 import { CODE_COOKIE, CODE_TTL_MS } from "./auth/local";
@@ -44,7 +46,7 @@ const quality = (v: string | null) => (v === "focus" ? "focus" : "wall") as "foc
  * `unauth`: requests to signed-in routes without a valid session, such as a wall left open after
  * signing out.
  */
-const LIMITS = { auth: 30, media: 600, write: 240, read: 1200, unauth: 600 };
+const LIMITS = { auth: 30, media: 600, write: 240, read: 1200, unauth: 600, speedtest: 10 };
 type RateClass = keyof typeof LIMITS | "hls";
 /**
  * An HLS stream polls a video and a sound playlist and fetches a segment of each every 4 s or so:
@@ -61,6 +63,14 @@ function rateLimit(key: string, cls: RateClass) {
   if (!b || t > b.reset) buckets.set(k, (b = { n: 0, reset: t + 60_000 }));
   if (buckets.size > 10_000) for (const [key, v] of buckets) if (t > v.reset) buckets.delete(key);
   if (++b.n > limitOf(cls)) throw new HttpError(429, "rate_limited", "Too many requests. Try again in a moment.");
+}
+/** One session's use of each signed-in class this minute, for the diagnostics route. */
+function rateUsage(key: string) {
+  const t = Date.now();
+  return (["read", "write", "media", "hls"] as const).map((cls) => {
+    const b = buckets.get(`${cls}:${key}`), live = !!b && t <= b.reset;
+    return { class: cls, used: live ? b!.n : 0, limit: limitOf(cls), resetSeconds: live ? Math.ceil((b!.reset - t) / 1000) : 0 };
+  });
 }
 /**
  * The client's address: the last `X-Forwarded-For` entry, which the nearest proxy (cloudflared, a
@@ -471,6 +481,43 @@ route("GET", "/admin/audit", { admin: true }, ({ s, url }) => {
   const names = new Map(s.db.select().from(schema.users).all().map((u) => [u.id, u.name || u.email || u.id]));
   const rows = s.db.select().from(schema.auditLog).where(lt(schema.auditLog.id, before)).orderBy(desc(schema.auditLog.id)).limit(100).all();
   return { entries: rows.map((r) => ({ id: r.id, at: r.at, actor: r.actorId ? names.get(r.actorId) ?? "Removed user" : "System", previewSubject: r.previewSubjectId ? names.get(r.previewSubjectId) ?? null : null, action: r.action, targetType: r.targetType, targetId: r.targetId, outcome: r.outcome, detail: r.detail }) ) };
+});
+
+// ---- diagnostics: this session only ------------------------------------------------
+/**
+ * What the diagnostics window needs from the server: its clock, whether the recorder and the media
+ * relay are reachable, this session's open live streams and its use of the per-minute limits. Only
+ * the caller's own session; nothing about other people, no configuration values beyond the limits
+ * that apply to the caller, and only stream cameras the effective subject can see. A read, so it
+ * works during "See as staff"; the counts are the administrator's session's, which the preview shares.
+ */
+route("GET", "/diagnostics", {}, async ({ s, actor, session }) => {
+  const visible = s.policy.cameraIds(subjectOf(actor)), streams = s.media.sessionStreams(session.id);
+  return {
+    serverTime: Date.now(),
+    version: pkg.version,
+    recorder: s.adapter.health().state,
+    relay: await s.media.relayHealthy().catch(() => false),
+    streams: {
+      limit: maxStreams(), open: streams.length,
+      webrtc: streams.filter((x) => x.kinds.includes("webrtc")).length, hls: streams.filter((x) => x.kinds.includes("hls")).length,
+      held: streams.filter((x) => visible.has(x.cameraId)).map((x) => ({ cameraId: x.cameraId, quality: x.quality, kinds: x.kinds })),
+    },
+    rate: rateUsage(`session:${session.id}`),
+  };
+});
+/** Largest download-speed sample, and the default. Each test also counts against `speedtest` (10 a minute). */
+export const SPEED_TEST_MAX_BYTES = 4 * 1024 * 1024;
+const SPEED_TEST_DEFAULT_BYTES = 2 * 1024 * 1024;
+/**
+ * Random bytes for the download-speed check, so no proxy can compress them. Capped at
+ * SPEED_TEST_MAX_BYTES whatever is asked, counted as media, and limited to a few a minute per session.
+ */
+route("GET", "/diagnostics/download", { rate: "media" }, ({ session, url }) => {
+  rateLimit(`session:${session.id}`, "speedtest");
+  const asked = Number(url.searchParams.get("bytes"));
+  const size = Number.isFinite(asked) && asked > 0 ? Math.min(Math.max(Math.floor(asked), 64 * 1024), SPEED_TEST_MAX_BYTES) : SPEED_TEST_DEFAULT_BYTES;
+  return new Response(new Uint8Array(randomBytes(size)), { headers: { "content-type": "application/octet-stream", "content-length": String(size), "cache-control": "no-store, no-transform" } });
 });
 
 // ---- health (no secrets, no configuration values) ----------------------------------

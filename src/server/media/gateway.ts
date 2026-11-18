@@ -211,4 +211,20 @@ export class Media {
     return { kicked };
   }
   stats() { return { liveSessions: this.live.size, lastSweepAt: this.lastSweepAt }; }
+
+  /**
+   * The live streams one session holds, as the stream limit counts them: distinct camera and quality.
+   * `kinds` says how each is being read; one stream can be read both ways during a handover. For the
+   * diagnostics route, which shows a person their own session only.
+   */
+  sessionStreams(sessionId: string): { cameraId: string; quality: Quality; kinds: ReaderKind[] }[] {
+    const byPath = new Map<string, { cameraId: string; quality: Quality; kinds: ReaderKind[] }>();
+    for (const l of this.live.values()) {
+      if (l.sessionId !== sessionId) continue;
+      let s = byPath.get(l.path);
+      if (!s) byPath.set(l.path, (s = { cameraId: l.cameraId, quality: l.path === pathFor(l.cameraId, "focus") ? "focus" : "wall", kinds: [] }));
+      if (!s.kinds.includes(l.kind)) s.kinds.push(l.kind);
+    }
+    return [...byPath.values()];
+  }
 }

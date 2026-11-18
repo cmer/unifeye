@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { handleApi } from "@/server/api";
+import { handleApi, SPEED_TEST_MAX_BYTES } from "@/server/api";
 import { config } from "@/server/config";
 import { schema } from "@/server/db";
 import { makeFixture, type Fixture } from "@/server/testing/fixture";
@@ -833,5 +833,59 @@ describe("cameras that can't send video on their own", () => {
     expect(ov.data.direct.cameras).toContainEqual(expect.objectContaining({ cameraId: f.cam["Rear Exit"], enabled: true }));
     expect((await direct("Rear Exit", { enabled: true })).status).toBe(400);
     expect((await direct("Rear Exit", { enabled: false })).status).toBe(200);
+  });
+});
+
+describe("diagnostics", () => {
+  const whep = (userId: string, camera: string, o: { preview?: string; session?: { token: string; csrf: string } } = {}) => call(userId, "POST", `/media/live/${f.cam[camera]}/whep?q=wall`, { raw: "v=0 offer", ...o });
+  const playlist = (userId: string, camera: string, o: { preview?: string; session?: { token: string; csrf: string } } = {}) => call(userId, "GET", `/media/live/${f.cam[camera]}/hls/wall/index.m3u8`, o);
+
+  it("is refused without a session, like every signed-in route", async () => {
+    expect((await call(null, "GET", "/diagnostics")).status).toBe(401);
+    expect((await call(null, "GET", "/diagnostics/download")).status).toBe(401);
+  });
+  it("reports the caller's own session only: its streams, its limits, the server clock", async () => {
+    expect((await whep(f.u.front, "Front Entrance")).status).toBe(201);
+    expect((await playlist(f.u.front, "Loading Dock")).status).toBe(200);
+    expect((await whep(f.u.upper, "Upper Lounge")).status).toBe(201); // someone else
+    const before = Date.now(), d = (await call(f.u.front, "GET", "/diagnostics")).data;
+    expect(d.serverTime).toBeGreaterThanOrEqual(before);
+    expect(d.recorder).toBe("connected"); expect(d.relay).toBe(true); expect(typeof d.version).toBe("string");
+    expect(d.streams).toMatchObject({ limit: config().MAX_WALL_STREAMS + 3, open: 2, webrtc: 1, hls: 1 });
+    expect(d.streams.held.map((x: { cameraId: string }) => x.cameraId).sort()).toEqual([f.cam["Front Entrance"], f.cam["Loading Dock"]].sort());
+    const read = d.rate.find((x: { class: string }) => x.class === "read");
+    expect(read).toMatchObject({ limit: 1200 }); expect(read.used).toBeGreaterThan(0);
+    expect(d.rate.find((x: { class: string }) => x.class === "hls").used).toBe(1);
+    expect(Object.keys(d).sort()).toEqual(["rate", "recorder", "relay", "serverTime", "streams", "version"]);
+    // The same person signed in elsewhere is another session, with nothing open.
+    const other = (await call(f.u.front, "GET", "/diagnostics", { session: sess(f.u.front, true) })).data;
+    expect(other.streams).toMatchObject({ open: 0, webrtc: 0, hls: 0, held: [] });
+    expect((await call(f.u.upper, "GET", "/diagnostics")).data.streams).toMatchObject({ open: 1, held: [{ cameraId: f.cam["Upper Lounge"], quality: "wall", kinds: ["webrtc"] }] });
+  });
+  it("during a preview counts the session's streams but names only cameras the previewed person can see", async () => {
+    expect((await whep(f.u.admin, "Server Closet")).status).toBe(201);
+    const pv = (await call(f.u.admin, "POST", "/preview", { body: { userId: f.u.front } })).data.token as string;
+    expect((await whep(f.u.admin, "Front Entrance", { preview: pv })).status).toBe(201);
+    const d = (await call(f.u.admin, "GET", "/diagnostics", { preview: pv })).data;
+    expect(d.streams.open).toBe(2);
+    expect(d.streams.held.map((x: { cameraId: string }) => x.cameraId)).toEqual([f.cam["Front Entrance"]]);
+    expect(JSON.stringify(d)).not.toContain(f.cam["Server Closet"]);
+  });
+  it("serves a speed-test sample capped on the server, uncached, and only a few a minute", async () => {
+    const get = (q = "") => call(f.u.front, "GET", `/diagnostics/download${q}`);
+    const big = await get(`?bytes=${1024 ** 3}`);
+    expect(big.status).toBe(200);
+    expect(big.res.headers.get("cache-control")).toContain("no-store");
+    expect((await big.res.arrayBuffer()).byteLength).toBe(SPEED_TEST_MAX_BYTES);
+    expect((await (await get("?bytes=1")).res.arrayBuffer()).byteLength).toBe(64 * 1024);
+    const plain = await (await get()).res.arrayBuffer();
+    expect(plain.byteLength).toBeLessThanOrEqual(SPEED_TEST_MAX_BYTES);
+    expect((await (await get("?bytes=nonsense")).res.arrayBuffer()).byteLength).toBe(plain.byteLength);
+    for (let i = 4; i < 10; i++) expect((await get("?bytes=65536")).status).toBe(200);
+    const refused = await get();
+    expect(refused.status).toBe(429); expect(refused.data.error).toBe("rate_limited");
+    expect((await call(f.u.sec, "GET", "/diagnostics/download?bytes=65536")).status).toBe(200); // per session
+    const usage = (await call(f.u.front, "GET", "/diagnostics")).data.rate.find((x: { class: string }) => x.class === "media");
+    expect(usage.used).toBe(11); // counted as media too
   });
 });
