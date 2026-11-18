@@ -103,8 +103,13 @@ export function Player({ cameraId }: { cameraId: string }) {
     let off = false;
     const to = fetchTo ? Math.min(fetchTo, Date.now()) : Date.now();
     api<Ranges>(`/cameras/${cameraId}/recordings?from=${fetchFrom}&to=${to}`).then((r) => !off && setRec(r)).catch(() => !off && setRec({ ranges: [], precision: "exact" }));
-    api<{ events: ActivityEvent[] }>(`/events?cameraId=${cameraId}&from=${fetchFrom}&to=${to}&limit=1000`).then((r) => !off && setEvents(r.events)).catch(() => {});
-    return () => { off = true; };
+    // A failed load (the recorder busy, the server restarting) tries again soon, backing off, rather than leaving the timeline bare.
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const load = (wait: number) => api<{ events: ActivityEvent[] }>(`/events?cameraId=${cameraId}&from=${fetchFrom}&to=${to}&limit=1000`)
+      .then((r) => !off && setEvents(r.events))
+      .catch(() => { if (!off) retry = setTimeout(() => load(Math.min(wait * 2, 60_000)), wait); });
+    load(5000);
+    return () => { off = true; clearTimeout(retry); };
   }, [cameraId, fetchFrom, fetchTo, ready, refresh]);
   // While the timeline reaches now, pick up newly recorded time and new activity every few minutes.
   useEffect(() => { if (!live && !rolling) return; const i = setInterval(() => setRefresh((n) => n + 1), 180_000); return () => clearInterval(i); }, [live, rolling]);
