@@ -6,6 +6,8 @@ and uses it as the GitHub release notes.
 
 ## Unreleased
 
+## 1.0.0 - 2026-11-18
+
 ### Added
 - Live video from your UniFi Protect cameras on a wall of tiles, in real time where the
   network allows and a few seconds behind where it doesn't. Cameras that support it are
