@@ -30,7 +30,7 @@ export function recordProviderGroups(db: Db, userId: string, values: string[], c
  * Brings provider-synced memberships in line with each person's stored claim values and every
  * group's mapping. Only rows with source `provider` are ever removed: a membership an
  * administrator added by hand is left alone, and an existing manual member gets no second row.
- * The all-staff group is never synced (everyone is in it already).
+ * The built-in "Everyone" group is never synced (everyone is in it already).
  * Runs on the caller's connection, so inside the caller's transaction when there is one.
  * With no `userIds`, every person is re-evaluated (used after a mapping changes).
  */

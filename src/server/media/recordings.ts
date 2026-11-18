@@ -180,10 +180,12 @@ export class Recordings {
   // ---- clip export jobs -------------------------------------------------
   /** The grant a job was created under, as stored in its row. */
   private grantOf(j: typeof schema.exportJobs.$inferSelect): CameraGrant {
-    return { sessionId: j.sessionId, subjectId: j.subjectId, previewId: j.previewId ?? undefined, cameraId: j.cameraId };
+    return { sessionId: j.sessionId, subjectId: j.subjectId, previewId: j.previewId ?? undefined, cameraId: j.cameraId, needs: "clipExport" };
   }
   createExport(a: Actor, cameraId: string, startMs: number, endMs: number) {
+    // The camera first, so a hidden camera answers exactly like a missing one whatever this person may do.
     const cam = this.policy.camera(subjectOf(a), cameraId), max = config().CLIP_MAX_SECONDS * 1000;
+    if (!this.policy.canExportClips(subjectOf(a))) throw new HttpError(403, "clips_not_allowed", "You can't save clips. Ask an administrator if you need to.");
     if (!(endMs > startMs) || endMs - startMs > max || endMs > Date.now()) throw badRequest(`Clips can be up to ${fmtLimit(config().CLIP_MAX_SECONDS)} long.`);
     // A long clip ties up the recorder for minutes, so each session prepares at most two at a time.
     const running = this.db.select({ id: schema.exportJobs.id }).from(schema.exportJobs).where(and(eq(schema.exportJobs.sessionId, a.sessionId), eq(schema.exportJobs.status, "running"))).all();

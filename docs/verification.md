@@ -65,6 +65,15 @@ gateway) is pinned separately in
   camera sync signals only when the inventory changes.
 - Clip exports: bound to session and camera; an export made during a preview is refused and its
   file deleted when that preview ends or times out; at most two prepare at once per session.
+- Who may save clips (`tests/api.test.ts`, "who may save clips"): the built-in Everyone group allows
+  it by default; with it off, staff without a group that allows it get 403 while a hidden camera
+  still answers exactly like a missing one; administrators always may; See as staff uses the
+  subject's setting; turning it off removes a finished clip (unless another group still allows it)
+  and stops one being prepared; only administrators can change it and the change is audited. The
+  `0006` migration was checked by hand on a database with no built-in group, one with a
+  differently named one, one where a plain group already used the name "Everyone", and a demo
+  database whose "All Staff" group is renamed. The admin switches
+  and the hidden player button have not been checked in a browser.
 - Long clips in pieces (`tests/api.test.ts`, "long clip exports"): a 10.5-minute clip is exported as
   three pieces, reports progress and a time left, and, with every piece starting 2.5 s early as the
   recorder does, joins to the requested length plus only the first piece's lead. It also runs with a

@@ -45,6 +45,16 @@ export function Admin() {
   const seenValues = [...new Set([...ov.users.flatMap((u) => u.providerGroups), ...ov.groups.flatMap((g) => g.providerValues)])].sort();
   const setValues = (g: Overview["groups"][number], values: string[]) => put(`/admin/groups/${g.id}`, { providerValues: values }, "PATCH");
   const subjects = [...ov.groups.map((g) => ({ key: `g${g.id}`, name: g.name, kind: g.isAllStaff ? "Everyone" : "Group", body: { groupId: g.id }, has: (c: string) => ov.groupGrants.some((x) => x.groupId === g.id && x.cameraId === c) })), ...staff.map((u) => ({ key: `u${u.id}`, name: nameOf(u), kind: "Person", body: { userId: u.id }, has: (c: string) => ov.userGrants.some((x) => x.userId === u.id && x.cameraId === c) }))];
+  /** Why someone can save clips, for the People table: their role, or the groups that allow it. */
+  const clipsVia = (u: Overview["users"][number]) => {
+    if (!u.canExportClips) return <span className="text-muted-foreground">No</span>;
+    const via = u.role === "admin" ? "Admin" : ov.groups.filter((g) => g.canExportClips && (g.isAllStaff || g.memberIds.includes(u.id))).map((g) => g.name).join(", ");
+    return <>Yes{via && <span className="text-muted-foreground"> · {via}</span>}</>;
+  };
+  const setClips = (g: Overview["groups"][number], on: boolean) => {
+    if (!on && !confirm(`Stop ${g.isAllStaff ? "everyone" : `"${g.name}"`} from saving clips?\n\nClips being saved now will stop, and clips ready to download will be removed. People in another group that allows it can still save clips.`)) return;
+    void put(`/admin/groups/${g.id}`, { canExportClips: on }, "PATCH");
+  };
   const preview = staff.filter((u) => u.status === "active"), chosen = preview.find((u) => u.id === pick) ?? preview[0];
 
   return (
@@ -59,13 +69,14 @@ export function Admin() {
             {ov.signIn.local && <Button size="sm" onClick={() => setAdding(true)}><Plus />Add person</Button>}
           </div>
           {ov.signIn.email && ov.mail.failing && <p role="alert" className="mb-3 rounded-lg border border-amber-500/60 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">Emails aren&apos;t going out. People who use email codes can&apos;t sign in. Check the mail settings on the server.</p>}
-          <div className="overflow-auto rounded-xl border"><table className="w-full text-sm"><thead><tr><th className={TH}>Person</th><th className={TH}>Signs in with</th><th className={TH}>Role</th><th className={TH}>Groups</th><th className={TH}>Cameras</th><th className={TH}>Can create views</th><th className={TH}>Active</th><th className={TH} /></tr></thead><tbody>
+          <div className="overflow-auto rounded-xl border"><table className="w-full text-sm"><thead><tr><th className={TH}>Person</th><th className={TH}>Signs in with</th><th className={TH}>Role</th><th className={TH}>Groups</th><th className={TH}>Cameras</th><th className={TH}>Can save clips</th><th className={TH}>Can create views</th><th className={TH}>Active</th><th className={TH} /></tr></thead><tbody>
             {ov.users.map((u) => (
               <tr key={u.id}><td className={TD}>{nameOf(u)}<div className="text-xs text-muted-foreground">{u.signsInWith === "local" ? [u.username, u.passwordAllowed && !u.passwordSet && "hasn't chosen a password yet", u.codeEmails.length && `codes go to ${u.codeEmails.join(", ")}`].filter(Boolean).join(" · ") : u.email}</div></td>
                 <td className={TD}><span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs whitespace-nowrap ${u.methodOn ? "" : "border-amber-500/60 text-amber-700 dark:text-amber-400"}`} title={u.methodOn ? undefined : "This way of signing in is turned off, so they can't sign in."}>{methodLabel(u)}{!u.methodOn && " · turned off"}</span></td>
                 <td className={TD}><Select aria-label="Role" value={u.role} onChange={(e) => put(`/admin/users/${u.id}`, { role: e.target.value }, "PATCH")}><option value="staff">Staff</option><option value="admin">Admin</option></Select></td>
                 <td className={TD}>{ov.groups.filter((g) => !g.isAllStaff).map((g) => member(g, u.id, g.name))}</td>
                 <td className={TD}>{u.cameraCount}</td>
+                <td className={`${TD} whitespace-nowrap`} title="Comes from their groups. To change it, change their groups or the group's setting.">{clipsVia(u)}</td>
                 <td className={TD}><Switch checked={u.allowPrivateViews} onCheckedChange={(v) => put(`/admin/users/${u.id}`, { allowPrivateViews: v }, "PATCH")} aria-label="Can create views" /></td>
                 <td className={TD}><Switch checked={u.status === "active"} onCheckedChange={(v) => put(`/admin/users/${u.id}`, { status: v ? "active" : "disabled" }, "PATCH")} aria-label="Active" /></td>
                 <td className={`${TD} whitespace-nowrap`}>
@@ -82,7 +93,11 @@ export function Admin() {
         <>
           <form className="mb-3.5 flex gap-2" onSubmit={(e) => { e.preventDefault(); const f = e.currentTarget, n = new FormData(f).get("name"); if (n) void put("/admin/groups", { name: n }, "POST").then(() => f.reset()); }}><Input name="name" placeholder="New group name" aria-label="New group name" className="max-w-xs" /><Button variant="outline"><Plus />Add group</Button></form>
           {ov.groups.map((g) => (
-            <Card key={`${g.id}:${g.name}`} title={g.name} hint={g.isAllStaff ? "Includes everyone automatically." : undefined}>
+            <Card key={`${g.id}:${g.name}`} title={g.name} hint={g.isAllStaff ? "Every person is in this group automatically." : undefined}>
+              <div className="flex items-start gap-2"><span className="w-28 shrink-0 pt-0.5 text-sm text-muted-foreground">Saving clips</span><div className="flex-1">
+                <Switch checked={g.canExportClips} onCheckedChange={(on) => setClips(g, on)} aria-label={`${g.name} can save clips`} />
+                <p className="mt-1 text-xs text-muted-foreground">{g.isAllStaff ? (g.canExportClips ? "Everyone can save clips from recordings." : "Off. Only groups that allow it can save clips.") : g.canExportClips ? "Members can save clips from recordings." : "Members can't save clips unless another of their groups allows it."}</p>
+              </div></div>
               {!g.isAllStaff && <>
                 <Row label="Name"><Input aria-label="Group name" defaultValue={g.name} className="max-w-xs" onBlur={(e) => e.target.value.trim() && e.target.value.trim() !== g.name && put(`/admin/groups/${g.id}`, { name: e.target.value.trim() }, "PATCH")} /><span className="flex-1" /><Button size="sm" variant="outline" className="text-destructive" onClick={() => confirm(`Delete "${g.name}"? Members will lose access to its cameras.`) && act(() => api(`/admin/groups/${g.id}`, { method: "DELETE" }))}>Delete</Button></Row>
                 {claim && <div className="flex items-start gap-2"><span className="w-28 shrink-0 pt-1.5 text-sm text-muted-foreground">Sync from</span><div className="flex-1">

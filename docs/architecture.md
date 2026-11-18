@@ -53,7 +53,7 @@ size- and age-bounded directory.
 
 - Deny by default. A new or disabled user sees nothing.
 - Staff see the union of cameras granted to them directly and to any group they belong to,
-  including the built-in "All Staff" group. Grants are allow-only; there are no deny rules.
+  including the built-in "Everyone" group. Grants are allow-only; there are no deny rules.
 - Administrators see every camera through an explicit rule in the policy.
 - Tags and view sharing never grant a camera.
 - A newly discovered camera has no grants, so only administrators see it.
@@ -65,6 +65,7 @@ size- and age-bounded directory.
 | See which cameras are recording right now (REC mark) | Yes, but not while previewing as staff | No |
 | Open views | All curated views and their own | Their own private views and views shared with them |
 | Create private views | Yes | When an administrator allows it |
+| Save clips from recordings | Yes | When one of their groups allows it (see below) |
 | Create, edit and share curated views | Yes | No |
 | Set other people's starting view | Yes | No |
 | Tags, people, groups, grants | Yes | No |
@@ -73,6 +74,21 @@ size- and age-bounded directory.
 
 The policy caches results in memory and drops the cache on every change to users, groups, grants
 or the camera inventory.
+
+### Saving clips
+
+Saving a clip is a permission on groups (`groups.can_export_clips`), decided by
+`Policy.canExportClips`: administrators always may; staff may when at least one group they belong to
+allows it, and the built-in "Everyone" group counts for all of them. New groups start with it off.
+Migration `0006` keeps the earlier behaviour (everyone could save clips) by creating the "Everyone"
+group if there was none (a demo database's "All Staff" group is renamed to it) and turning it on
+there, so an administrator narrows it by turning "Everyone" off and a smaller group on.
+
+The camera is checked first, so a hidden camera still answers like a missing one; only then is a
+person without the permission refused (403, `clips_not_allowed`). During "See as staff" the
+subject's setting applies. Clip jobs carry `needs: "clipExport"` in their grant, so `Access` also
+re-checks the permission: taking it away stops clips being prepared and removes finished ones, like
+losing the camera. The player hides "Save clip" when `/me` says the subject may not.
 
 ## Standing access
 
@@ -87,7 +103,8 @@ exports store theirs in `export_jobs`; the others keep it in memory.
   re-validated with the provider recently enough;
 - the preview, if there was one, is live: not ended or timed out, the administrator still an
   administrator, the subject still active staff;
-- the subject can still see the camera according to the policy.
+- the subject can still see the camera according to the policy;
+- the subject still has any permission the grant needs (`needs`; clip jobs need "save clips").
 
 Anything that cannot be resolved denies. A grant can only be used by the session and subject it
 was made for.

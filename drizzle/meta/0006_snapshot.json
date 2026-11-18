@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "f1b47b75-d6c9-4f98-8674-7d9164aa6fe2",
+  "id": "75cfc7fd-05ba-4667-a7e7-796fa6c4d4a3",
   "prevId": "c88e9f0c-2c9b-49ce-98d3-e21dd8acbc42",
   "tables": {
     "audit_log": {
@@ -453,95 +453,6 @@
         }
       }
     },
-    "email_codes": {
-      "name": "email_codes",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "code_hash": {
-          "name": "code_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "tries": {
-          "name": "tries",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "used_at": {
-          "name": "used_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "email_codes_user": {
-          "name": "email_codes_user",
-          "columns": [
-            "user_id"
-          ],
-          "isUnique": false
-        },
-        "email_codes_expires": {
-          "name": "email_codes_expires",
-          "columns": [
-            "expires_at"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "email_codes_user_id_users_id_fk": {
-          "name": "email_codes_user_id_users_id_fk",
-          "tableFrom": "email_codes",
-          "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
     "export_jobs": {
       "name": "export_jobs",
       "columns": {
@@ -895,6 +806,14 @@
           "autoincrement": false,
           "default": "'[]'"
         },
+        "can_export_clips": {
+          "name": "can_export_clips",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "integer",
@@ -955,22 +874,6 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
-        },
-        "password_allowed": {
-          "name": "password_allowed",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": true
-        },
-        "code_emails": {
-          "name": "code_emails",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'[]'"
         },
         "created_at": {
           "name": "created_at",
