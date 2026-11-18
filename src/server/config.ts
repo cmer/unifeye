@@ -71,12 +71,13 @@ const schema = z.object({
    */
   LOCAL_APP_URL: z.string().url().optional(),
   /**
-   * Outgoing mail server for email sign-in codes, such as `smtps://user:pass@smtp.example.com:465`
-   * or `smtp://user:pass@smtp.example.com:587` (upgraded with STARTTLS). With MAIL_FROM, it lets
-   * administrators give password accounts email codes. Unset: no email is ever sent.
+   * Outgoing mail server, such as `smtps://user:pass@smtp.example.com:465` or
+   * `smtp://user:pass@smtp.example.com:587` (upgraded with STARTTLS). With MAIL_FROM and the `local`
+   * sign-in method, it lets administrators give password accounts email codes. It may be set without
+   * `local`; email codes then stay off. Unset: no email is ever sent.
    */
   SMTP_URL: z.string().optional().transform((v) => v?.trim() || undefined).pipe(z.string().regex(/^smtps?:\/\/[^\s]+$/, "SMTP_URL must start with smtp:// or smtps://").optional()),
-  /** The From address on sign-in emails, for example `Unifeye <cameras@example.com>`. */
+  /** The From address on outgoing email, for example `Unifeye <cameras@example.com>`. */
   MAIL_FROM: z.string().optional().transform((v) => v?.trim() || undefined).pipe(z.string().max(200).regex(/@/, "MAIL_FROM must contain an email address").optional()),
 
   OIDC_ISSUER: z.string().url().optional(),
@@ -198,7 +199,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (c.CF_ACCESS_ORIGIN_SECRET && c.CF_ACCESS_ORIGIN_SECRET.length < MIN_SECRET) problems.push(`CF_ACCESS_ORIGIN_SECRET must be at least ${MIN_SECRET} characters (openssl rand -hex 24)`);
   if (c.LOCAL_APP_URL && !m.local) problems.push("LOCAL_APP_URL needs SIGN_IN_METHODS to include local");
   if (!!c.SMTP_URL !== !!c.MAIL_FROM) problems.push("SMTP_URL and MAIL_FROM must be set together");
-  if (c.SMTP_URL && !m.local) problems.push("SMTP_URL needs SIGN_IN_METHODS to include local (email codes are for password accounts)");
   if (c.LOCAL_APP_URL && new URL(c.LOCAL_APP_URL).origin === new URL(c.APP_URL).origin) problems.push("LOCAL_APP_URL must be a different address from APP_URL");
   if (prod) {
     for (const k of ["MEDIAMTX_HOOK_SECRET", "MEDIAMTX_API_SECRET"] as const)
