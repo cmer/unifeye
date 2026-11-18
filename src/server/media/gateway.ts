@@ -12,8 +12,12 @@ export type Quality = "wall" | "focus";
 export type VideoSource = "camera" | "recorder" | "fallback";
 /** One HLS reader per session, subject, preview and stream: tiles and retries in a tab share it. */
 const jarKey = (a: Actor, path: string) => `${a.sessionId}|${subjectOf(a)}|${a.preview?.id ?? ""}|${path}`;
-/** Distinct live streams one session may hold: the wall's tiles plus a few for the player and handovers. */
-export const maxStreams = () => config().MAX_WALL_STREAMS + 3;
+/**
+ * Distinct live streams one session may hold. One tab streams at most MAX_WALL_STREAMS tiles, plus
+ * two for the player and handovers; the session gets room for two of those (a second tab, or a
+ * reload whose old streams have not been released yet).
+ */
+export const maxStreams = () => (config().MAX_WALL_STREAMS + 2) * 2;
 interface Ticket extends Grant { path: string; kind: ReaderKind; exp: number; single: boolean; used: boolean }
 interface Live extends Grant { kind: ReaderKind; path: string; since: number }
 
@@ -127,14 +131,14 @@ export class Media {
   async whepForward(a: Actor, secret: string, method: "PATCH" | "DELETE", body: string | undefined, headers: Record<string, string>) {
     const w = this.whep.get(secret);
     if (!w || !this.access.heldBy(w, a)) throw notFound();
-    const status = await (method === "PATCH" ? this.relay.whepTrickle(w.path, secret, body, headers) : this.relay.whepClose(w.path, secret, headers)).catch(relayDown);
     if (method === "DELETE") {
+      // Free the slot before asking the relay: otherwise the reader keeps counting against the stream
+      // limit until a sweep notices it is gone (20 s or more), and new tiles opened in the same moment
+      // (changing views, the HLS fallback after a failed WebRTC attempt) are refused meanwhile.
       this.whep.delete(secret);
-      // Otherwise the reader keeps counting against the stream limit until a sweep notices it is gone
-      // (20 s or more), which would refuse the HLS fallback that usually follows a failed WebRTC attempt.
       if (w.readerId) this.live.delete(w.readerId);
     }
-    return status;
+    return (method === "PATCH" ? this.relay.whepTrickle(w.path, secret, body, headers) : this.relay.whepClose(w.path, secret, headers)).catch(relayDown);
   }
 
   // ---- HLS fallback: fully proxied, so every playlist and segment request is re-authorized here. ----
@@ -173,11 +177,10 @@ export class Media {
   async hlsClose(a: Actor, cameraId: string, q: Quality) {
     const path = pathFor(cameraId, q);
     this.hlsJar.delete(jarKey(a, path));
-    for (const [id, l] of this.live) {
-      if (l.kind !== "hls" || l.sessionId !== a.sessionId || l.path !== path || (l.previewId ?? "") !== (a.preview?.id ?? "")) continue;
-      await this.relay.kick("hls", id);
-      this.live.delete(id);
-    }
+    // Free every slot before the first kick, so tiles opened in the same moment are not refused.
+    const ids = [...this.live].filter(([, l]) => l.kind === "hls" && l.sessionId === a.sessionId && l.path === path && (l.previewId ?? "") === (a.preview?.id ?? "")).map(([id]) => id);
+    for (const id of ids) this.live.delete(id);
+    for (const id of ids) await this.relay.kick("hls", id);
   }
 
   /**
