@@ -1,8 +1,9 @@
 "use client";
-import { Copy, Eye, KeyRound, Plus, RefreshCw } from "lucide-react";
+import { Copy, Ellipsis, Eye, KeyRound, Plus, RefreshCw, Settings2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -46,11 +47,7 @@ export function Admin() {
   const setValues = (g: Overview["groups"][number], values: string[]) => put(`/admin/groups/${g.id}`, { providerValues: values }, "PATCH");
   const subjects = [...ov.groups.map((g) => ({ key: `g${g.id}`, name: g.name, kind: g.isAllStaff ? "Everyone" : "Group", body: { groupId: g.id }, has: (c: string) => ov.groupGrants.some((x) => x.groupId === g.id && x.cameraId === c) })), ...staff.map((u) => ({ key: `u${u.id}`, name: nameOf(u), kind: "Person", body: { userId: u.id }, has: (c: string) => ov.userGrants.some((x) => x.userId === u.id && x.cameraId === c) }))];
   /** Why someone can save clips, for the People table: their role, or the groups that allow it. */
-  const clipsVia = (u: Overview["users"][number]) => {
-    if (!u.canExportClips) return <span className="text-muted-foreground">No</span>;
-    const via = u.role === "admin" ? "Admin" : ov.groups.filter((g) => g.canExportClips && (g.isAllStaff || g.memberIds.includes(u.id))).map((g) => g.name).join(", ");
-    return <>Yes{via && <span className="text-muted-foreground"> · {via}</span>}</>;
-  };
+  const clipsVia = (u: Overview["users"][number]) => u.role === "admin" ? "being an admin" : ov.groups.filter((g) => g.canExportClips && (g.isAllStaff || g.memberIds.includes(u.id))).map((g) => g.name).join(", ");
   const setClips = (g: Overview["groups"][number], on: boolean) => {
     if (!on && !confirm(`Stop ${g.isAllStaff ? "everyone" : `"${g.name}"`} from saving clips?\n\nClips being saved now will stop, and clips ready to download will be removed. People in another group that allows it can still save clips.`)) return;
     void put(`/admin/groups/${g.id}`, { canExportClips: on }, "PATCH");
@@ -69,22 +66,32 @@ export function Admin() {
             {ov.signIn.local && <Button size="sm" onClick={() => setAdding(true)}><Plus />Add person</Button>}
           </div>
           {ov.signIn.email && ov.mail.failing && <p role="alert" className="mb-3 rounded-lg border border-amber-500/60 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">Emails aren&apos;t going out. People who use email codes can&apos;t sign in. Check the mail settings on the server.</p>}
-          <div className="overflow-auto rounded-xl border"><table className="w-full text-sm"><thead><tr><th className={TH}>Person</th><th className={TH}>Signs in with</th><th className={TH}>Role</th><th className={TH}>Groups</th><th className={TH}>Cameras</th><th className={TH}>Can save clips</th><th className={TH}>Can create views</th><th className={TH}>Active</th><th className={TH} /></tr></thead><tbody>
-            {ov.users.map((u) => (
-              <tr key={u.id}><td className={TD}>{nameOf(u)}<div className="text-xs text-muted-foreground">{u.signsInWith === "local" ? [u.username, u.passwordAllowed && !u.passwordSet && "hasn't chosen a password yet", u.codeEmails.length && `codes go to ${u.codeEmails.join(", ")}`].filter(Boolean).join(" · ") : u.email}</div></td>
-                <td className={TD}><span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs whitespace-nowrap ${u.methodOn ? "" : "border-amber-500/60 text-amber-700 dark:text-amber-400"}`} title={u.methodOn ? undefined : "This way of signing in is turned off, so they can't sign in."}>{methodLabel(u)}{!u.methodOn && " · turned off"}</span></td>
-                <td className={TD}><Select aria-label="Role" value={u.role} onChange={(e) => put(`/admin/users/${u.id}`, { role: e.target.value }, "PATCH")}><option value="staff">Staff</option><option value="admin">Admin</option></Select></td>
-                <td className={TD}>{ov.groups.filter((g) => !g.isAllStaff).map((g) => member(g, u.id, g.name))}</td>
-                <td className={TD}>{u.cameraCount}</td>
-                <td className={`${TD} whitespace-nowrap`} title="Comes from their groups. To change it, change their groups or the group's setting.">{clipsVia(u)}</td>
-                <td className={TD}><Switch checked={u.allowPrivateViews} onCheckedChange={(v) => put(`/admin/users/${u.id}`, { allowPrivateViews: v }, "PATCH")} aria-label="Can create views" /></td>
-                <td className={TD}><Switch checked={u.status === "active"} onCheckedChange={(v) => put(`/admin/users/${u.id}`, { status: v ? "active" : "disabled" }, "PATCH")} aria-label="Active" /></td>
-                <td className={`${TD} whitespace-nowrap`}>
-                  {u.signsInWith === "local" && ov.signIn.local && <Button size="sm" variant="outline" className="mr-1.5" onClick={() => setEditing(u.id)}>Sign-in</Button>}
-                  {u.signsInWith === "local" && ov.signIn.local && u.passwordAllowed && <Button size="sm" variant="outline" className="mr-1.5" onClick={() => act(async () => { const r = await api<{ link: { url: string; expiresAt: number } }>(`/admin/users/${u.id}/password-link`, { method: "POST" }); setLink({ name: nameOf(u), ...r.link }); })}><KeyRound />Password link</Button>}
-                  {u.role === "staff" && u.status === "active" && u.methodOn && <Button size="sm" variant="outline" onClick={() => seeAs(u.id)}>View as</Button>}
-                </td></tr>
-            ))}
+          <div className="overflow-x-auto rounded-xl border"><table className="w-full text-sm"><thead><tr><th className={TH}>Person</th><th className={TH}>Role</th><th className={TH}>Groups</th><th className={TH}>Access</th><th className={TH} title="Can create their own views">Own views</th><th className={TH}>Active</th><th className={TH}><span className="sr-only">More</span></th></tr></thead><tbody>
+            {ov.users.map((u) => {
+              const local = u.signsInWith === "local" && ov.signIn.local, canSeeAs = u.role === "staff" && u.status === "active" && u.methodOn;
+              const detail = u.signsInWith === "local" ? [u.username, u.passwordAllowed && !u.passwordSet && "hasn't chosen a password yet", u.codeEmails.length && `codes go to ${u.codeEmails.join(", ")}`].filter(Boolean).join(" · ") : u.email;
+              return (
+                <tr key={u.id}>
+                  <td className={`${TD} min-w-48`}><div className="font-medium">{nameOf(u)}</div><div className="text-xs text-muted-foreground">{detail}</div>
+                    <div className={`mt-0.5 text-xs ${u.methodOn ? "text-muted-foreground" : "text-amber-700 dark:text-amber-400"}`} title={u.methodOn ? undefined : "This way of signing in is turned off, so they can't sign in."}>{methodLabel(u)}{!u.methodOn && " · turned off"}</div></td>
+                  <td className={TD}><Select aria-label="Role" className="h-8" value={u.role} onChange={(e) => put(`/admin/users/${u.id}`, { role: e.target.value }, "PATCH")}><option value="staff">Staff</option><option value="admin">Admin</option></Select></td>
+                  <td className={`${TD} [&_button]:whitespace-nowrap`}>{ov.groups.filter((g) => !g.isAllStaff).map((g) => member(g, u.id, g.name))}</td>
+                  <td className={`${TD} whitespace-nowrap`}><div>{u.cameraCount} camera{u.cameraCount === 1 ? "" : "s"}</div><div className="text-xs text-muted-foreground" title={u.canExportClips ? `Allowed by ${clipsVia(u)}. To change it, change their groups or the group's setting.` : "To change it, change their groups or the group's setting."}>{u.canExportClips ? "Can save clips" : "Can't save clips"}</div></td>
+                  <td className={TD}><Switch checked={u.allowPrivateViews} onCheckedChange={(v) => put(`/admin/users/${u.id}`, { allowPrivateViews: v }, "PATCH")} aria-label="Can create views" /></td>
+                  <td className={TD}><Switch checked={u.status === "active"} onCheckedChange={(v) => put(`/admin/users/${u.id}`, { status: v ? "active" : "disabled" }, "PATCH")} aria-label="Active" /></td>
+                  <td className={`${TD} w-0 text-right`}>
+                    {(local || canSeeAs) && <DropdownMenu>
+                      <DropdownMenuTrigger render={<Button size="icon" variant="ghost" aria-label={`More for ${nameOf(u)}`} />}><Ellipsis /></DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="min-w-44">
+                        {canSeeAs && <DropdownMenuItem onClick={() => seeAs(u.id)}><Eye />View as</DropdownMenuItem>}
+                        {local && <DropdownMenuItem onClick={() => setEditing(u.id)}><Settings2 />Sign-in</DropdownMenuItem>}
+                        {local && u.passwordAllowed && <DropdownMenuItem onClick={() => act(async () => { const r = await api<{ link: { url: string; expiresAt: number } }>(`/admin/users/${u.id}/password-link`, { method: "POST" }); setLink({ name: nameOf(u), ...r.link }); })}><KeyRound />Password link</DropdownMenuItem>}
+                      </DropdownMenuContent>
+                    </DropdownMenu>}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody></table></div>
         </>
       )}
