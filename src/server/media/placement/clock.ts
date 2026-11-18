@@ -148,14 +148,15 @@ export function clockOf(gops: Gop[], times: number[]): (s: number) => number {
 
 /**
  * Base keyframes where the picture jumps: the frame before a keyframe and the keyframe itself differ
- * far more than neighbouring frames usually do. `diff[j]` is how much frame j differs from frame j-1.
+ * far more than neighbouring frames usually do. `diff[j]` is how much frame j differs from frame j-1,
+ * and `frameOf[g]` is the frame of GOP g's keyframe (`pairByTime`), or null.
  */
-export function jumpsOf(frameT: number[], diff: number[], gops: Gop[], ratio: number): number[] {
+export function jumpsOf(diff: number[], gops: Gop[], frameOf: (number | null)[], ratio: number): number[] {
   const sorted = diff.slice(1).sort((a, b) => a - b), typical = Math.max(sorted[Math.floor(sorted.length / 2)] ?? 0, 1e-4);
   const out: number[] = [];
-  for (const g of gops.slice(1)) {
-    const j = frameT.findIndex((t) => Math.abs(t - g.t) < 0.002);
-    if (j > 0 && diff[j] / typical > ratio) out.push(g.t);
+  for (let g = 1; g < gops.length; g++) {
+    const j = frameOf[g];
+    if (j != null && j > 0 && diff[j] / typical > ratio) out.push(gops[g].t);
   }
   return out;
 }

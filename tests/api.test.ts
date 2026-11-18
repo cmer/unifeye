@@ -244,7 +244,7 @@ describe("long clip exports", () => {
 
   it("keep every minute of an adaptive recording, at the high resolution", async () => {
     const cam = f.cam["Loading Dock"], protectId = f.db.select().from(schema.cameras).where(eq(schema.cameras.id, cam)).get()!.protectId, t = Date.now() - 2 * 3600e3;
-    f.adapter.adaptive.add(protectId); // high resolution only in seconds 12-21 of every half minute
+    f.adapter.adaptive.add(protectId); // high resolution only in seconds 12.5-21.5 of every half minute
     const rec = (await call(f.u.front, "GET", `/cameras/${cam}/recordings?from=${t - 3600e3}&to=${t}`)).data.ranges as [number, number][];
     const [, b] = rec.find(([x, y]) => y - x >= 12 * 60_000)!, startMs = Math.floor((b - 11 * 60_000) / 60_000) * 60_000, endMs = startMs + 6 * 60_000;
     const { id } = (await call(f.u.front, "POST", "/exports", { body: { cameraId: cam, startMs, endMs } })).data;

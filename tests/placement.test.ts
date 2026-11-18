@@ -236,4 +236,31 @@ describe("placing an adaptive recording", () => {
     // Without the pictures, the times alone pick the first.
     expect(at({ ...PLACEMENT, holes: { ...PLACEMENT.holes, open: 0, close: 0 } })).toEqual([10]);
   });
+
+  it("pairs each keyframe with its picture once and counts what does not pair", () => {
+    const lo = channel("lo", busy(), LOW, 1), hi = channel("hi", busy(), HIGH, 2);
+    const whole = placeStretch(WINDOW, asBase(lo), asHigh(hi, HIGH_LIST)).trace;
+    expect(whole.baseFrames).toEqual(lo.gops.map((g) => g.t * FPS));
+    expect(whole.high!.keys).toEqual(hi.gops.map((_, g) => g));
+    expect(whole.unpaired).toEqual({ baseGops: 0, highGops: 0, highKeys: 0 });
+
+    // A frame just before a keyframe does not stand in for it.
+    const base = asBase(lo), frames = base.frames!;
+    frames.t = frames.t.map((t, j) => (j === 10 * FPS - 1 ? 10 - 0.01 : t));
+    // The picture of high GOP 2 is missing, and one picture matches no GOP.
+    const keys = hi.keys(), size = W * H, keep = keys.t.map((_, k) => k).filter((k) => k !== 2);
+    const px = new Uint8Array((keep.length + 1) * size);
+    keep.forEach((k, r) => px.set(keys.px.subarray(k * size, (k + 1) * size), r * size));
+    const stray = { w: W, h: H, t: [...keep.map((k) => keys.t[k]), hi.end - 0.5], px };
+    const { trace } = placeStretch(WINDOW, { ...base, frames }, { ...asHigh(hi, HIGH_LIST), keys: stray });
+    expect(trace.baseFrames[10]).toBe(10 * FPS);
+    expect(trace.high!.keys.slice(0, 4)).toEqual([0, 1, null, 2]);
+    expect(trace.high!.matched[2]).toBeNull();
+    expect(trace.unpaired).toEqual({ baseGops: 0, highGops: 1, highKeys: 1 });
+
+    // Without base pictures there is nothing to pair the base with.
+    const blind = placeStretch(WINDOW, asBase(lo, { pictures: false })).trace;
+    expect(blind.baseFrames.every((j) => j == null)).toBe(true);
+    expect(blind.unpaired.baseGops).toBe(0);
+  });
 });

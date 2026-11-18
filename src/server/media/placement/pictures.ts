@@ -144,15 +144,32 @@ function bestPath(S: Float32Array, lowT: number[], gap: number[], o: MatchOption
   return out;
 }
 
+const PAIR_SEC = 0.02;
+
+/**
+ * Pairs each GOP with the picture of its keyframe: the index in `t` (picture times) of the picture
+ * nearest the keyframe's time, within `PAIR_SEC`, or null. GOP and picture times come from two reads
+ * of the same file and agree; the tolerance only absorbs small differences in how each read prints
+ * them. Taking the nearest, not the first within reach, keeps a neighbouring frame of a stream with
+ * frames a few milliseconds apart from standing in for the keyframe.
+ */
+export function pairByTime(gops: { t: number }[], t: number[]): (number | null)[] {
+  return gops.map((g) => {
+    let k: number | null = null, best = PAIR_SEC;
+    for (let i = 0; i < t.length; i++) { const d = Math.abs(t[i] - g.t); if (d < best) { best = d; k = i; } }
+    return k;
+  });
+}
+
 /**
  * Where each high GOP lands in the base, in base media time, or null when no base frame shows it, and
  * how alike a GOP's keyframe and the base frame at a given time are (for placing unmatched GOPs).
- * `keys` are thumbnails of the high file's keyframes, `gops` its GOPs (`gopsOf`); they are paired by time.
+ * `keys` are thumbnails of the high file's keyframes, `gops` its GOPs (`gopsOf`), and `keyOf` the
+ * thumbnail of each GOP's keyframe (`pairByTime`); a GOP without one is never matched.
  */
-export function matchGops(keys: Thumbs, low: Thumbs, gops: { t: number; len: number }[], o: MatchOptions): { at: (number | null)[]; similar: (g: number, s: number) => number } {
-  const size = keys.w * keys.h, row: number[] = [];
-  for (const g of gops) { let k = -1; for (let i = 0; i < keys.t.length; i++) if (Math.abs(keys.t[i] - g.t) < 0.02) { k = i; break; } row.push(k); }
-  const have = row.map((k, g) => [k, g] as const).filter(([k]) => k >= 0);
+export function matchGops(keys: Thumbs, low: Thumbs, gops: { t: number; len: number }[], keyOf: (number | null)[], o: MatchOptions): { at: (number | null)[]; similar: (g: number, s: number) => number } {
+  const size = keys.w * keys.h;
+  const have = keyOf.flatMap((k, g) => (k == null ? [] : [[k, g] as const]));
   if (!have.length || !low.t.length) return { at: gops.map(() => null), similar: () => 0 };
   const px = new Uint8Array(have.length * size);
   have.forEach(([k], r) => px.set(keys.px.subarray(k * size, (k + 1) * size), r * size));

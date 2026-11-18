@@ -13,11 +13,15 @@ and uses it as the GitHub release notes.
 ### Changed
 - Times in recordings, the timeline and activity now show in the recorder's time zone by default,
   so they match the clock on the video. "My time zone" and others are still in the time zone menu.
+- The People list in Admin is more compact and fits without scrolling sideways. View as, sign-in
+  settings and password links are in the ⋯ menu on each row.
 - Sign out and the light or dark switch are now in the menu that opens when you click your name.
 
 ### Fixed
 - Activity shows a picture for each motion and detection event again.
 - If activity markers fail to load on a camera's timeline, the player tries again on its own.
+- Recorded video no longer sometimes jumps back a few seconds as it plays on from one
+  minute to the next.
 - Saved clips no longer lose a second where part of the clip couldn't be fetched from the recorder.
 - Saved clips and playback no longer repeat a moment where the recording switches to high quality.
 

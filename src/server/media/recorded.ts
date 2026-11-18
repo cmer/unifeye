@@ -184,7 +184,7 @@ export async function fetchRecorded(exportChannel: ExportChannel, startMs: numbe
   const keys = await ops.thumbnails(f, { keyframes: true, ...PLACEMENT.thumb }, signal);
   const { entries, trace } = placeStretch(window, { gops: b.gops, end: b.end, segments: segs.wall, frames }, { gops: h.gops, end: h.end, segments: segs.focus, keys });
   const matched = trace.high!.matched.filter((a, g) => a != null && g > 0).length;
-  log("info", "adaptive recording placed", { ...context, startMs, lowGops: b.gops.length, highGops: h.gops.length, matched });
+  log("info", "adaptive recording placed", { ...context, startMs, lowGops: b.gops.length, highGops: h.gops.length, matched, unpaired: trace.unpaired });
   return { base: b.path, high: f, entries, seams: { base: seamOf(b.gops), high: seamOf(h.gops) }, busy };
 }
 
