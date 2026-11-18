@@ -7,7 +7,7 @@ export interface Me {
   user: { id: string; name: string; role: "admin" | "staff"; signsInWith: "oidc" | "local" | "cloudflare" };
   csrf: string;
   preview: { subject: { id: string; name: string } } | null;
-  subject: { id: string; name: string; role: string; canCreateViews: boolean };
+  subject: { id: string; name: string; role: string; canCreateViews: boolean; canExportClips: boolean };
   isAdmin: boolean;
   landing: { viewId: string | null; reason: string };
   views: ViewSummary[];

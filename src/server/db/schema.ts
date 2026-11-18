@@ -121,7 +121,7 @@ export const groups = sqliteTable(
     name: text("name").notNull(),
     /** Higher wins when several group defaults compete. Ties break on the lower group id. */
     defaultPriority: integer("default_priority").notNull().default(0),
-    /** The built-in "All staff" group: every active staff member is treated as a member. */
+    /** The built-in "Everyone" group: every active person is treated as a member. */
     isAllStaff: integer("is_all_staff", { mode: "boolean" }).notNull().default(false),
     /**
      * Values of the provider's group claim (OIDC_GROUPS_CLAIM) that make someone a member. At every
@@ -129,6 +129,11 @@ export const groups = sqliteTable(
      * members whose claim no longer does are removed. Empty: membership is managed by hand only.
      */
     providerValues: text("provider_values", { mode: "json" }).$type<string[]>().notNull().default([]),
+    /**
+     * Members may save clips from recordings. Staff need at least one group with this on (the
+     * "Everyone" group counts for all of them); administrators always may. Off for new groups.
+     */
+    canExportClips: integer("can_export_clips", { mode: "boolean" }).notNull().default(false),
     createdAt: ts("created_at").notNull(),
     version: integer("version").notNull().default(1),
   },

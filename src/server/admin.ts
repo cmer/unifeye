@@ -124,11 +124,13 @@ export class Admin {
     this.done();
     return { id, name: n };
   }
-  updateGroup(a: Actor, id: string, patch: { name?: string; defaultPriority?: number; providerValues?: string[] }) {
+  updateGroup(a: Actor, id: string, patch: { name?: string; defaultPriority?: number; providerValues?: string[]; canExportClips?: boolean }) {
     this.admin(a, "group.update");
     const set: Partial<typeof S.groups.$inferInsert> = {};
     if (patch.name != null) set.name = name.parse(patch.name);
     if (patch.defaultPriority != null) set.defaultPriority = z.number().int().min(-1000).max(1000).parse(patch.defaultPriority);
+    // Turning this off also ends clips its members are saving or have ready, unless another group still allows them (Access).
+    if (patch.canExportClips != null) set.canExportClips = z.boolean().parse(patch.canExportClips);
     if (patch.providerValues != null) {
       if (!groupsClaim()) throw badRequest("Group sync is off. Set OIDC_GROUPS_CLAIM to turn it on.");
       const g = this.db.select().from(S.groups).where(eq(S.groups.id, id)).get();
@@ -319,8 +321,8 @@ export class Admin {
   // ---- landing defaults ---------------------------------------------------
   /**
    * Assigns or clears (viewId = null) a landing view. Validated now and again at every sign-in:
-   *  org      - curated view shared with all staff
-   *  group    - curated view shared with that group (or with all staff)
+   *  org      - curated view shared with everyone
+   *  group    - curated view shared with that group (or with everyone)
    *  user     - any view that person can open
    *  personal - set by the person themself, from views they can open, when personal views are enabled
    */

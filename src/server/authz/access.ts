@@ -10,7 +10,7 @@ import type { Previews } from "./preview";
  * memory or in a table row (`export_jobs`) and be re-checked at any later time.
  * `cameraId` is absent for access that is not tied to one camera (the event feed).
  */
-export interface Grant { sessionId: string; subjectId: string; previewId?: string; cameraId?: string }
+export interface Grant { sessionId: string; subjectId: string; previewId?: string; cameraId?: string; /** A permission beyond seeing the camera that must still hold. */ needs?: "clipExport" }
 export type CameraGrant = Grant & { cameraId: string };
 
 /**
@@ -22,7 +22,8 @@ export type CameraGrant = Grant & { cameraId: string };
  *    re-validated with the identity provider recently enough);
  *  - if it was made during "See as staff", that preview is live (not ended or timed out, the
  *    administrator is still one, the subject is still active staff);
- *  - if it names a camera, the subject can still see it according to Policy.
+ *  - if it names a camera, the subject can still see it according to Policy;
+ *  - if it needs a permission (`needs`), the subject still has it according to Policy.
  * Anything that cannot be resolved denies.
  *
  * `onChange` listeners run after every event that can make a grant stop holding: a policy cache
@@ -50,7 +51,7 @@ export class Access {
   /** Whether the grant is still good right now. Read-only and safe to call from a listener. */
   holds(g: Grant): boolean {
     try {
-      return this.sessions.isLive(g.sessionId) && (!g.previewId || this.previews.isLive(g.previewId)) && (g.cameraId === undefined || this.policy.canAccessCamera(g.subjectId, g.cameraId));
+      return this.sessions.isLive(g.sessionId) && (!g.previewId || this.previews.isLive(g.previewId)) && (g.cameraId === undefined || this.policy.canAccessCamera(g.subjectId, g.cameraId)) && (g.needs !== "clipExport" || this.policy.canExportClips(g.subjectId));
     } catch { return false; }
   }
   /** `holds`, and the grant was made for this actor's session and subject. Use when a client presents an id. */

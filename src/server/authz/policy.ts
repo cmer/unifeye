@@ -21,7 +21,7 @@ export interface CameraInfo {
  *  - Deny by default. A disabled or unknown user sees nothing, and so does anyone whose sign-in
  *    method (SIGN_IN_METHODS) is turned off.
  *  - Staff: union of explicit allow grants made to the user and to every group they belong to
- *    (including any group flagged "all staff"). There are no deny rules.
+ *    (including the built-in "Everyone" group, flagged `is_all_staff`). There are no deny rules.
  *  - Admin: every camera known to Unifeye. This is an explicit policy, not a side effect.
  *  - Tags and view sharing never grant access.
  *
@@ -110,6 +110,19 @@ export class Policy {
       );
     this.camIds.set(userId, ids);
     return ids;
+  }
+
+  /**
+   * Whether the user may save clips: an administrator, or staff in at least one group that allows
+   * it (the built-in "Everyone" group counts for all of them). Not cached; it is one small query.
+   */
+  canExportClips(userId: string) {
+    const u = this.activeUser(userId);
+    if (!u) return false;
+    if (u.role === "admin") return true;
+    return !!this.db.$client
+      .prepare("select 1 from groups where can_export_clips = 1 and (is_all_staff = 1 or id in (select group_id from group_members where user_id = ?)) limit 1")
+      .get(userId);
   }
 
   canAccessCamera(userId: string, cameraId: string) {

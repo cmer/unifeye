@@ -295,6 +295,81 @@ describe("clip exports when the recorder fails part of the clip", () => {
   }, 60_000);
 });
 
+describe("who may save clips", () => {
+  const allStaff = () => f.db.select().from(schema.groups).where(eq(schema.groups.isAllStaff, true)).get()!;
+  const setClips = (groupId: string, on: boolean) => call(f.u.admin, "PATCH", `/admin/groups/${groupId}`, { body: { canExportClips: on } });
+  const lastMinute = async (userId: string, cam: string) => {
+    const t = Date.now() - 2 * 3600e3, rec = (await call(userId, "GET", `/cameras/${cam}/recordings?from=${t - 3600e3}&to=${t}`)).data.ranges as [number, number][];
+    return rec[rec.length - 1][1] - 60_000;
+  };
+
+  it("everyone may by default, through the built-in Everyone group", async () => {
+    expect(allStaff()).toMatchObject({ name: "Everyone", canExportClips: true });
+    expect(f.db.select().from(schema.groups).where(eq(schema.groups.isAllStaff, true)).all()).toHaveLength(1);
+    expect((await call(f.u.nobody, "GET", "/me")).data.subject.canExportClips).toBe(true);
+  });
+
+  it("staff need a group that allows it; administrators always may", async () => {
+    expect((await setClips(allStaff().id, false)).status).toBeLessThan(300);
+    const cam = f.cam["Front Entrance"], start = await lastMinute(f.u.front, cam), body = { cameraId: cam, startMs: start, endMs: start + 5000 };
+    expect((await call(f.u.front, "GET", "/me")).data.subject.canExportClips).toBe(false);
+    const no = await call(f.u.front, "POST", "/exports", { body });
+    expect(no.status).toBe(403); expect(no.data.error).toBe("clips_not_allowed");
+    // A camera they can't see still looks exactly like a missing one, not forbidden.
+    expect(f.cam["Server Closet"]).toBeDefined();
+    const hidden = await call(f.u.front, "POST", "/exports", { body: { ...body, cameraId: f.cam["Server Closet"] } });
+    const missing = await call(f.u.front, "POST", "/exports", { body: { ...body, cameraId: "00000000-0000-4000-8000-000000000000" } });
+    expect(hidden.status).toBe(404); expect(hidden.text).toBe(missing.text);
+    expect((await call(f.u.admin, "POST", "/exports", { body })).status).toBe(200);
+    expect((await call(f.u.admin, "GET", "/me")).data.subject.canExportClips).toBe(true);
+
+    await setClips(f.g["Front Desk Team"], true);
+    expect((await call(f.u.front, "GET", "/me")).data.subject.canExportClips).toBe(true);
+    expect((await call(f.u.front, "POST", "/exports", { body })).status).toBe(200);
+    expect((await call(f.u.upper, "GET", "/me")).data.subject.canExportClips).toBe(false); // not in that group
+
+    const ov = (await call(f.u.admin, "GET", "/admin/overview")).data;
+    expect(ov.groups.find((g: { id: string }) => g.id === f.g["Front Desk Team"]).canExportClips).toBe(true);
+    expect(ov.users.find((u: { id: string }) => u.id === f.u.front).canExportClips).toBe(true);
+    expect(ov.users.find((u: { id: string }) => u.id === f.u.upper).canExportClips).toBe(false);
+  });
+
+  it("See as staff uses the person's setting", async () => {
+    await setClips(allStaff().id, false);
+    const pv = (await call(f.u.admin, "POST", "/preview", { body: { userId: f.u.front } })).data.token as string;
+    expect((await call(f.u.admin, "GET", "/me", { preview: pv })).data.subject.canExportClips).toBe(false);
+    const cam = f.cam["Front Entrance"];
+    expect((await call(f.u.admin, "POST", "/exports", { preview: pv, body: { cameraId: cam, startMs: Date.now() - 3600e3, endMs: Date.now() - 3595e3 } })).status).toBe(403);
+  });
+
+  it("taking it away removes finished clips and stops ones in progress", async () => {
+    const cam = f.cam["Loading Dock"], start = await lastMinute(f.u.front, cam);
+    const { id } = (await call(f.u.front, "POST", "/exports", { body: { cameraId: cam, startMs: start, endMs: start + 5000 } })).data;
+    await wait(async () => (await call(f.u.front, "GET", `/exports/${id}`)).data.status === "ready");
+    const file = f.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, id)).get()!.filePath!;
+    // Another group allowing it keeps the clip.
+    await setClips(f.g["Front Desk Team"], true);
+    await setClips(allStaff().id, false);
+    expect((await call(f.u.front, "GET", `/exports/${id}/download`)).status).toBe(200);
+    await setClips(f.g["Front Desk Team"], false);
+    expect((await call(f.u.front, "GET", `/exports/${id}/download`)).status).toBe(404);
+    expect((await call(f.u.front, "GET", `/exports/${id}`)).status).toBe(404);
+    await wait(async () => !existsSync(file), 2000);
+
+    await setClips(allStaff().id, true);
+    const t = Date.now() - 3 * 3600e3, running = (await call(f.u.front, "POST", "/exports", { body: { cameraId: f.cam["Front Entrance"], startMs: t, endMs: t + 20 * 60_000 } })).data.id;
+    await setClips(allStaff().id, false);
+    await wait(async () => !f.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, running)).get(), 5000);
+  }, 30_000);
+
+  it("only administrators can change it, and the change is recorded", async () => {
+    expect((await call(f.u.front, "PATCH", `/admin/groups/${f.g["Front Desk Team"]}`, { body: { canExportClips: true } })).status).toBe(403);
+    await setClips(f.g["Front Desk Team"], true);
+    const entry = f.db.select().from(schema.auditLog).where(eq(schema.auditLog.action, "group.update")).all().at(-1)!;
+    expect(entry).toMatchObject({ targetId: f.g["Front Desk Team"], detail: { canExportClips: true } });
+  });
+});
+
 describe("clip exports made during See as staff", () => {
   it("are refused and cleaned up once that preview ends, even through another live preview of the same person", async () => {
     const cam = f.cam["Loading Dock"], t = Date.now() - 2 * 3600e3;
