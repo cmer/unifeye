@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import { maxStreams } from "@/server/media/gateway";
 import { existsSync, readdirSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -722,6 +723,15 @@ describe("rate limits", () => {
     // Nine tiles at about 60 requests a minute each, plus still images for the rest of the wall.
     expect(await statuses(700, () => playlist(f.u.front, "198.51.100.10"))).toEqual([200]);
     expect((await call(f.u.front, "GET", `/cameras/${f.cam["Front Entrance"]}/snapshot`, { headers: from("198.51.100.10") })).status).toBe(200);
+  });
+  it("gives still images a budget of their own, sized from the stream limit", async () => {
+    const usage = async () => Object.fromEntries((await call(f.u.sec, "GET", "/diagnostics")).data.rate.map((x: { class: string; used: number; limit: number }) => [x.class, x]));
+    const before = await usage();
+    expect((await call(f.u.sec, "GET", `/cameras/${f.cam["Front Entrance"]}/snapshot`)).status).toBe(200);
+    const after = await usage();
+    expect(after.stills.used).toBe(before.stills.used + 1);
+    expect(after.media.used).toBe(before.media.used);
+    expect(after.stills.limit).toBe(maxStreams() * 60);
   });
   it("counts signed-in requests per session, so people behind one address each get the full limit", async () => {
     (config() as { MAX_WALL_STREAMS: number }).MAX_WALL_STREAMS = -1; // 2 streams, so 240 HLS requests a minute

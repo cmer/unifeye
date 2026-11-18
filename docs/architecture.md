@@ -46,7 +46,7 @@ size- and age-bounded directory.
 | `src/server/media/` | Media gateway and revocation sweep (`gateway.ts`), the relay interface (`relay.ts`) and its MediaMTX adapter (`mediamtx.ts`), playback windows, clip export. |
 | `src/server/testing/` | Test fixture and the in-memory relay used by the automated tests. |
 | `src/server/api.ts` | All HTTP endpoints, authentication, CSRF, rate limits. |
-| `src/ui/` | The React interface. |
+| `src/ui/` | The React interface. Recorded video (`recorded-video.tsx`) is shared by the player and the wall's rewind (`wall-rewind.tsx`). |
 | `drizzle/` | Versioned SQL migrations. |
 
 ## Camera permissions
@@ -202,7 +202,8 @@ count per client address; a valid session is never refused because of its addres
 | `auth` (sign-in routes) | 30 | address |
 | `unauth` (failed authentication) | 600 | address |
 | `read` / `write` | 1,200 / 240 | session |
-| `media` (snapshots, WebRTC set-up, playback, thumbnails, exports, the diagnostics speed test) | 600 | session |
+| `media` (WebRTC set-up, playback, thumbnails, exports, the diagnostics speed test) | 600 | session |
+| `stills` (camera snapshots, live and from a recording) | 60 × the stream limit, 1,320 by default | session |
 | `speedtest` (the diagnostics download sample, on top of `media`) | 10 | session |
 | `hls` (playlists and segments) | 120 × the stream limit, 2,640 by default | session |
 
@@ -592,6 +593,9 @@ video elements and swaps it in, so playback continues without a black gap (the n
 buffered only once it is fully recorded; near live, the old load-on-end path still applies). Windows
 are cached on disk within a size and age limit. A seek that is abandoned cancels its export if nobody
 else is waiting for it. Clicking an event starts `EVENT_PREROLL_SECONDS` (default 5) before it.
+Playing a window (fetching descriptions, buffering the next one, stepping through entries, handing
+over) lives in `RecordedVideo` (`src/ui/recorded-video.tsx`), which the player and the wall share;
+a seek mounts a fresh one.
 
 The recorder exports a plain run of GOPs (a keyframe and the frames that follow) with no times
 inside, starting with the last keyframe at or before the requested time: the window's lead, which
@@ -611,6 +615,29 @@ the window before's last, playing on skips the leads; otherwise the base lead pl
 window's files wait in hidden elements at that entry. These decisions live in
 `src/ui/recorded-playback.ts` (`stepEntries` runs on every animation frame); the player only wires
 them to its video elements. Choosing a clip's ends on the timeline follows the rules in `src/ui/trim.ts`.
+Dragging along the timeline does not seek: the video pauses and a full-size still from the recording
+follows the playhead (`StillFeed` in `src/ui/scrub-still.tsx`: one request at a time, at most one every
+250 ms, always for the latest moment). Letting go seeks once, and the still stays up until the video
+plays from there. A spot the timeline knows was not recorded says so instead of showing a still.
+Resting on one window while dragging for `SCRUB_PRELOAD_MS` (default 500, 0 off) asks for its
+description (`WindowWarmer`), which starts the export; moving to another window cancels it. After
+letting go it is kept for three seconds, so the seek joins the same export instead of starting over.
+
+### Rewinding the wall
+
+The wall's Rewind button opens a timeline in place of its dock (`src/ui/wall-rewind.tsx`). It shows
+when any camera on screen recorded (their ranges joined) and their events. Every tile plays the same
+moment: one seek remounts every tile's `RecordedVideo` at that moment. Only the first
+`WALL_PLAYBACK_STREAMS` tiles on screen (default 4) play, because each asks the recorder for an
+export every minute; the others show a still from that moment every five seconds. The wall's time is
+the median of the playing tiles' times, and a tile more than three seconds off is moved back to it, at
+most once every ten seconds. A tile that starts playing later (scrolled into view, a filter changed)
+starts at the wall's time. Dragging works as in the player, with stills on every tile on screen, paced
+to about ten a second across the wall; the stills stay up until each tile plays. The wall has no Save
+clip. Opening a tile opens that camera at the wall's moment, and the moment is kept in the wall's
+address (`at`) so coming back carries on from it. Switching views keeps the timeline open at the same
+moment: each view remounts the wall, and the new one picks up the state the old one left. Go live closes
+the timeline; dragging to its right edge goes live and leaves it open.
 
 Adaptive recording (Protect records the low channel, and the high channel around motion) is handled
 in one module, `src/server/media/recorded.ts` (`fetchRecorded`), which playback windows and clip
@@ -722,7 +749,8 @@ zone, so a day is 23, 24 or 25 hours long around daylight-saving changes.
 - Timeline previews (a still from the recording under the pointer) depend on Protect's
   `recording-snapshot`, which on Protect 7.3.74 answers "Recording not found" for most third-party
   cameras even where a recording exists (37 of 42 on 2026-11-17). Unifeye stops asking for a camera
-  that has never given one after three misses, for 30 minutes, and the player then shows only the time.
+  that has never given one after three misses, for 30 minutes, and the player then shows only the time
+  (and, while dragging, the paused video, dimmed).
 - Recorded video, historical events and thumbnails use Protect's private HTTP API, which the
   `unifi-protect` library does not cover and Ubiquiti does not document. They may change between
   Protect releases. Adaptive playback also relies on `playback-history` (each channel's recorded

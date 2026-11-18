@@ -1,14 +1,17 @@
 "use client";
-import { Camera as CameraIcon, Lock, Maximize, Search, SlidersHorizontal } from "lucide-react";
+import { Camera as CameraIcon, History, Lock, Maximize, Search, SlidersHorizontal } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { api, ApiError, type Camera } from "./api";
+import { api, ApiError, fmtTime, type Camera } from "./api";
 import { Empty, fail, RecMark, SidebarOpener, useApp, useRecording } from "./app";
 import { LiveVideo } from "./live";
 import { SoundButton, useSound } from "./sound";
+import { RecordedVideo } from "./recorded-video";
+import { ScrubStill } from "./scrub-still";
+import { RewindBar, useRewind } from "./wall-rewind";
 import { useSidebar } from "@/components/ui/sidebar";
 
 interface ViewData { id: string; name: string; type: string; columns: number; cameras: Camera[] }
@@ -20,7 +23,7 @@ const GRID: Record<number, string> = { 2: "sm:grid-cols-2", 3: "sm:grid-cols-2 l
  * show a still image.
  */
 export function Wall({ viewId }: { viewId?: string }) {
-  const { me, nav, loc, setPref, reload } = useApp();
+  const { me, nav, loc, tz, setPref, reload } = useApp();
   const { open: sidebarOpen, isMobile } = useSidebar();
   const recording = useRecording();
   const [data, setData] = useState<{ cameras: Camera[]; view?: ViewData } | null>(null);
@@ -67,6 +70,28 @@ export function Wall({ viewId }: { viewId?: string }) {
     return () => io.disconnect();
   }, [shown, cols]);
   const streaming = useMemo(() => new Set(shown.filter((c) => visible.includes(c.id)).slice(0, me.limits.maxStreams).map((c) => c.id)), [shown, visible, me.limits.maxStreams]);
+  // Rewinding: the tiles on screen play the same moment from the recording, up to the playback limit.
+  const playIds = useMemo(() => shown.filter((c) => visible.includes(c.id)).slice(0, me.limits.wallPlaybackStreams).map((c) => c.id), [shown, visible, me.limits.wallPlaybackStreams]);
+  const shownIds = useMemo(() => shown.map((c) => c.id), [shown]);
+  // Opening a camera from a rewound wall keeps the moment in the address (`at`), so coming back carries on from there.
+  const [startAt] = useState(() => Number(loc.query.get("at")) || undefined);
+  const rw = useRewind({ playIds, shownIds, W: me.limits.windowSeconds * 1000, preloadMs: me.limits.scrubPreloadMs, startAt });
+  useEffect(() => { if (!loc.query.has("at")) return; const p = new URLSearchParams(loc.query); p.delete("at"); nav(`${loc.path}${p.size ? `?${p}` : ""}`, true); }, [loc, nav]);
+  const open = (id: string) => {
+    if (!past) { nav(`/camera/${id}`); return; }
+    const p = new URLSearchParams(loc.query), at = Math.round(rw.t);
+    p.set("at", String(at));
+    nav(`${loc.path}?${p}`, true);
+    nav(`/camera/${id}?t=${at}`);
+  };
+  const past = rw.open && !rw.live, down = me.recorder === "down";
+  // Space plays and pauses while rewinding.
+  useEffect(() => {
+    if (!rw.open) return;
+    const key = (e: KeyboardEvent) => { if (e.key !== " " || e.defaultPrevented || (e.target as HTMLElement).closest("input,select,textarea,button,[role=dialog]")) return; e.preventDefault(); rw.toggle(); };
+    addEventListener("keydown", key);
+    return () => removeEventListener("keydown", key);
+  });
 
   const filtered = tags.length > 0 || !!needle;
   const saveView = async () => {
@@ -88,26 +113,51 @@ export function Wall({ viewId }: { viewId?: string }) {
   else if (!shown.length) body = <Empty icon={<Search />} title="No matching cameras">Try removing a tag or changing your search.<div><Button variant="outline" className="mt-4" onClick={() => setFilter({ tags: [], q: "" })}>Clear filters</Button></div></Empty>;
   else body = (
     <div className={`grid grid-cols-1 gap-0.5 ${GRID[cols]}`}>
-      {shown.map((c) => (
+      {shown.map((c) => {
+        const st = past ? rw.tileStart(c.id) : null, playRec = !!st && !down && playIds.includes(c.id), onScreen = visible.includes(c.id);
+        const still = rw.open && onScreen && !down ? rw.stillAt(c.id) : null, onAudio = (h: boolean | null) => setAudio((a) => (a[c.id] === h ? a : { ...a, [c.id]: h }));
+        return (
         <div key={c.id} data-cam={c.id} className="group relative aspect-video overflow-hidden bg-black text-white">
-          <button onClick={() => nav(`/camera/${c.id}`)} aria-label={`Open ${c.name}`} className="peer absolute inset-0 text-left outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-inset">
-            <LiveVideo cameraId={c.id} quality="wall" active={streaming.has(c.id) && me.recorder !== "down"} online={c.online && me.recorder !== "down"} sound={sound === c.id} onAudio={(h) => setAudio((a) => (a[c.id] === h ? a : { ...a, [c.id]: h }))} onGone={() => { setTick((n) => n + 1); void reload(); }} />
-            <span className="absolute top-2.5 left-2.5 flex max-w-[calc(100%-4.5rem)] items-center gap-1.5 truncate rounded-md bg-black/65 px-2 py-0.5 text-xs font-medium"><i className={`size-1.5 shrink-0 rounded-full ${c.online ? "bg-green-500" : "bg-red-500"}`} />{c.name}</span>
-            {recording.has(c.id) && <RecMark className="absolute top-2.5 right-2.5" />}
+          <button onClick={() => open(c.id)} aria-label={`Open ${c.name}`} className="peer absolute inset-0 text-left outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-inset">
+            {!past ? <LiveVideo cameraId={c.id} quality="wall" active={streaming.has(c.id) && !down} online={c.online && !down} sound={sound === c.id} onAudio={onAudio} onGone={() => { setTick((n) => n + 1); void reload(); }} />
+              : playRec ? <RecordedVideo key={st.key} cameraId={c.id} W={me.limits.windowSeconds * 1000} startMs={st.ms} playing={rw.playing && !rw.dragging} speed={rw.speed} fit="object-cover" sound={sound === c.id} onAudio={onAudio} {...rw.tile(c.id)} />
+              : onScreen && !down && <ScrubStill cameraId={c.id} ms={Math.floor(rw.t / 5000) * 5000} close={4000} width={640} gap={1000} className="absolute inset-0 size-full object-cover" />}
+            {playRec && rw.missing[c.id] && still === null && <span className="absolute inset-0 grid place-items-center bg-zinc-900 p-3 text-center text-sm text-zinc-300">No recording at this time</span>}
+            {still !== null && (
+              <span className="absolute inset-0 bg-black/60">
+                {!rw.recorded(c.id, still) ? <span className="absolute inset-0 grid place-items-center bg-zinc-900 p-3 text-center text-sm text-zinc-300">No recording at {fmtTime(still, tz)}</span>
+                  : still < rw.clock - 10_000 && <ScrubStill key={rw.scrub?.n} cameraId={c.id} ms={still} close={2000} width={640} gap={rw.stillGap} className="absolute inset-0 size-full object-cover" />}
+              </span>
+            )}
+            <span className="absolute top-2.5 left-2.5 flex max-w-[calc(100%-4.5rem)] items-center gap-1.5 truncate rounded-md bg-black/65 px-2 py-0.5 text-xs font-medium"><i className={`size-1.5 shrink-0 rounded-full ${past || rw.dragging ? "bg-zinc-400" : c.online ? "bg-green-500" : "bg-red-500"}`} />{c.name}</span>
+            {!past && !rw.dragging && recording.has(c.id) && <RecMark className="absolute top-2.5 right-2.5" />}
           </button>
           <span className={`pointer-events-none absolute inset-0 ring-2 transition ring-inset ${sound === c.id && audio[c.id] ? "ring-green-400" : "ring-white/0 group-hover:ring-white"}`} />
           <span className="absolute right-2 bottom-2"><SoundButton cameraId={c.id} has={audio[c.id] ?? null} className="size-7 rounded-md bg-black/65 opacity-0 group-hover:opacity-100 peer-focus-visible:opacity-100 focus-visible:opacity-100 hover:bg-black/80 [&_svg]:size-3.5" onClassName="bg-white text-black opacity-100 hover:bg-white/90" /></span>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 
   const dockViews = !sidebarOpen || isMobile;
+  const lift = rw.open ? "bottom-[8.5rem]" : "bottom-[4.4rem]";
+  const dockTabs = dockViews && <>
+    <i className="mx-1 h-5 w-px shrink-0 bg-border" />
+    <DockTab on={!viewId} onClick={() => nav("/?all")}>All</DockTab>
+    {me.views.slice(0, 4).map((v) => <DockTab key={v.id} on={viewId === v.id} onClick={() => nav(`/view/${v.id}`)}>{v.name}</DockTab>)}
+  </>;
+  const dockLeft = <><SidebarOpener />{dockTabs}</>;
+  const dockTools = <>
+    <Button variant={rw.open ? "secondary" : "ghost"} size="icon" aria-label={rw.open ? "Back to live" : "Rewind"} title={rw.open ? "Back to live" : "Rewind"} aria-pressed={rw.open} disabled={down && !rw.open} onClick={() => (rw.open ? rw.close() : rw.setOpen(true))}><History /></Button>
+    <Button variant="ghost" size="icon" className="relative" aria-label="Filter and layout" title="Filter and layout" onClick={() => setPanel((p) => !p)}><SlidersHorizontal />{filtered && <i className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-blue-500" />}</Button>
+    <Button variant="ghost" size="icon" aria-label="Full screen" title="Full screen" onClick={() => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen().catch(() => toast("Full screen isn't available")))}><Maximize /></Button>
+  </>;
   return (
     <>
-      <div ref={root} className="flex min-h-0 flex-1 flex-col overflow-auto">{body}</div>
+      <div ref={root} className={`flex min-h-0 flex-1 flex-col overflow-auto ${rw.open ? "pb-32" : ""}`}>{body}</div>
       {filtered && shown.length > 0 && !panel && (
-        <div className="absolute bottom-[4.4rem] left-1/2 z-10 flex max-w-[calc(100%-1.5rem)] -translate-x-1/2 items-center gap-3 rounded-full border bg-background py-1 pr-1 pl-4 text-sm font-medium whitespace-nowrap shadow-lg">
+        <div className={`absolute ${lift} left-1/2 z-10 flex max-w-[calc(100%-1.5rem)] -translate-x-1/2 items-center gap-3 rounded-full border bg-background py-1 pr-1 pl-4 text-sm font-medium whitespace-nowrap shadow-lg`}>
           <span className="truncate">{[...tags, needle && `"${q.trim()}"`].filter(Boolean).join(" + ")}</span><span className="font-normal text-muted-foreground">{shown.length} camera{shown.length === 1 ? "" : "s"}</span>
           <Button size="sm" variant="outline" className="rounded-full" onClick={() => setFilter({ tags: [], q: "" })}>Clear</Button>
         </div>
@@ -115,7 +165,7 @@ export function Wall({ viewId }: { viewId?: string }) {
       {panel && (
         <>
           <div className="absolute inset-0 z-10" onClick={() => setPanel(false)} />
-          <div role="dialog" aria-label="Filter and layout" className="absolute bottom-[4.4rem] left-1/2 z-20 max-h-[calc(100%-6rem)] w-[min(19rem,calc(100%-1.5rem))] -translate-x-1/2 overflow-auto rounded-xl border bg-popover p-3 text-popover-foreground shadow-xl">
+          <div role="dialog" aria-label="Filter and layout" className={`absolute ${lift} left-1/2 z-20 max-h-[calc(100%-6rem)] w-[min(19rem,calc(100%-1.5rem))] -translate-x-1/2 overflow-auto rounded-xl border bg-popover p-3 text-popover-foreground shadow-xl`}>
             <Input autoFocus type="search" placeholder="Search cameras" value={q} onChange={(e) => setFilter({ q: e.target.value })} aria-label="Search cameras" />
             <div className="px-0.5 pt-3 pb-1.5 text-xs font-medium text-muted-foreground">Tags</div>
             {facet.length ? facet.map(([t, n]) => (
@@ -133,19 +183,12 @@ export function Wall({ viewId }: { viewId?: string }) {
           </div>
         </>
       )}
-      <div className="absolute bottom-4 left-1/2 z-20 flex max-w-[calc(100%-1.5rem)] -translate-x-1/2 items-center gap-0.5 overflow-x-auto rounded-xl border bg-background/90 p-1 shadow-lg backdrop-blur-md">
-        <SidebarOpener />
-        {dockViews && (
-          <>
-            <i className="mx-1 h-5 w-px shrink-0 bg-border" />
-            <DockTab on={!viewId} onClick={() => nav("/?all")}>All</DockTab>
-            {me.views.slice(0, 4).map((v) => <DockTab key={v.id} on={viewId === v.id} onClick={() => nav(`/view/${v.id}`)}>{v.name}</DockTab>)}
-            <i className="mx-1 h-5 w-px shrink-0 bg-border" />
-          </>
-        )}
-        <Button variant="ghost" size="icon" className="relative" aria-label="Filter and layout" title="Filter and layout" onClick={() => setPanel((p) => !p)}><SlidersHorizontal />{filtered && <i className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-blue-500" />}</Button>
-        <Button variant="ghost" size="icon" aria-label="Full screen" title="Full screen" onClick={() => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen().catch(() => toast("Full screen isn't available")))}><Maximize /></Button>
-      </div>
+      {rw.open ? <RewindBar rw={rw} tz={tz} dock={<><SidebarOpener /><span className="contents max-lg:hidden">{dockTabs}</span><i className="mx-1 h-5 w-px shrink-0 bg-border" /></>} tools={<><i className="mx-1 h-5 w-px shrink-0 bg-border" />{dockTools}</>} />
+        : <div className="absolute bottom-4 left-1/2 z-20 flex max-w-[calc(100%-1.5rem)] -translate-x-1/2 items-center gap-0.5 overflow-x-auto rounded-xl border bg-background/90 p-1 shadow-lg backdrop-blur-md">
+          {dockLeft}
+          {dockViews && <i className="mx-1 h-5 w-px shrink-0 bg-border" />}
+          {dockTools}
+        </div>}
     </>
   );
 }

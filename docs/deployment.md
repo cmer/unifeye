@@ -258,7 +258,9 @@ relay, last backup). Neither exposes configuration or secrets.
 | `OIDC_MAX_STALE_SECONDS` | 1800 | How long a session survives without a successful re-check |
 | `REVOCATION_SWEEP_SECONDS` | 10 | Worst-case delay before revoked media stops (max 30) |
 | `MAX_WALL_STREAMS` | 9 | Simultaneous live tiles; the rest show stills |
+| `WALL_PLAYBACK_STREAMS` | 4 | Tiles that play recorded video at once when someone rewinds the wall; the rest show a still every few seconds. Each asks the recorder for an export every minute, so raise it only if your recorder keeps up |
 | `PLAYBACK_WINDOW_SECONDS` | 60 | Size of each recorded-video window |
+| `SCRUB_PRELOAD_MS` | 500 | While someone drags a camera's timeline, how long the playhead must rest before that moment's video starts loading, so letting go there plays sooner. Lower is snappier but asks the recorder for more video that may go unwatched; 0 turns it off |
 | `CLIP_MAX_SECONDS` | 7200 | Longest clip a person can save. Clips stream from the recorder to disk, so `/cache` needs room for them (roughly 1–4 GB per hour of video, depending on the camera) |
 | `CLIP_EXPORT_PARALLEL` | 3 | How many five-minute pieces of a long clip are fetched from the recorder at once. Higher is faster if the recorder keeps up |
 | `CLIP_MATCH_RESOLUTION` | on | With adaptive recording, re-encode the parts of a clip recorded only in low resolution at the high-resolution size, so players don't resize the picture partway. Off joins them as recorded |

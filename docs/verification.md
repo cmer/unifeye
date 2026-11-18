@@ -167,7 +167,21 @@ gateway) is pinned separately in
   the base without a usable high file, seeks applied once each file can move, the handover at the
   end of the entries only while playing, and pausing. A clip's ends dragged and typed within the
   length limits and never past two seconds ago, and the timeline's zoom, pan and refitting. The React
-  wiring around them is not tested.
+  wiring around them is not tested. `tests/scrub-still.test.ts` covers the stills shown while dragging
+  the timeline: one request at a time for the latest moment, the 250 ms gap, nearby moments skipped,
+  the last still kept when one fails, nothing after the drag ends.
+- Dragging the player's timeline (mock mode, headless Chromium, 2026-11-18): stills followed the
+  playhead with no playback requests during the drag; letting go asked for one window, the still
+  stayed up until the video played; dragging to the right edge read "Live" and letting go went live.
+  Resting 2.5 s mid-drag loaded that window (935 ms in mock mode); after letting go there its
+  description came back in 15 ms instead of about 870 ms. Not measured against a real recorder.
+- Rewinding the wall (mock mode, headless Chromium, 2026-11-18): dragging showed stills on all eight
+  tiles, paced across the wall; letting go played four tiles in step (the same position in the
+  window) with stills on the rest, and they stayed in step across a window boundary. Opening a tile
+  opened that camera at the wall's moment, and going back carried on from it; switching views kept
+  the timeline open at the same moment; Go live and closing the bar went back to live video
+  (Go live keeping the bar open; it now closes it, which was not rechecked in the browser).
+  `tests/wall-rewind.test.ts` covers joining ranges and choosing tiles to move back in step.
 - Resize speed (synthetic 640x480 7 fps source, five minutes, Apple M5 Max, 4 threads): 8.5 s to
   2688x1512 with libx264 `veryfast`, 7.6 s with VideoToolbox. Reading the picture sizes of a
   five-minute 2688x1512 piece took about 1 s.
@@ -435,7 +449,8 @@ Read from the running stack, its audit log and its logs. Nothing was changed.
 | Cloudflare Access against a real team | No Access application available | Token claims (`sub`, `email`) or key rotation behave differently from the stub; the Transform Rule header not reaching the origin through the tunnel; the 30-second `/me` reload not reaching Unifeye often enough behind Access |
 | Password sign-in and password links in a browser | Checked through the API tests and a production build only | Password-manager autofill, the set-password page on phones |
 | Browser test suite | Not written | Screens were checked by hand in one desktop browser |
-| Phones and tablets | No device testing | Layout or touch problems |
+| Phones and tablets | No device testing | Layout or touch problems; dragging the timeline with a finger (stills while dragging) is untested |
+| Rewinding the wall on a real UNVR | Mock mode only | How many tiles the recorder can export for at once (`WALL_PLAYBACK_STREAMS`), how quickly they start after a seek, and how often tiles drift and get moved back in step |
 | HLS playback in a browser | Used in Chrome in production, where it turned up the HLS bugs above; the fixes are not yet checked there | Player-level issues |
 | Sound from a real UNVR in Unifeye end to end | The retiming relay was checked outside Unifeye only (see Verified) | HLS sound, wall-quality streams, other camera models; recordings from Protect may lack audio |
 | Sound in Safari and Firefox | Only Chromium was used | "No audio" shown wrongly, or the speaker missing; no level meter in Safari for HLS and recordings |

@@ -15,7 +15,7 @@ export interface Me {
   preferences: Record<string, unknown>;
   mode: "mock" | "real";
   recorder: "connected" | "connecting" | "down";
-  limits: { maxStreams: number; windowSeconds: number; prerollSeconds: number; clipMaxSeconds: number };
+  limits: { maxStreams: number; windowSeconds: number; prerollSeconds: number; clipMaxSeconds: number; scrubPreloadMs: number; wallPlaybackStreams: number };
 }
 export interface ActivityEvent { id: string; cameraId: string; cameraName: string; type: string; startMs: number; endMs: number | null; hasThumbnail: boolean }
 export class ApiError extends Error {

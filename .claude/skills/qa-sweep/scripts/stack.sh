@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 # Runs one isolated Unifeye stack (test sign-in provider, MediaMTX, app) in mock mode for QA.
-#   stack.sh start <slot 1-9>   prints the app URL when everything answers
+#   stack.sh start <slot 1-9>   starts it in the background and prints the app URL when everything answers
+#   stack.sh run   <slot 1-9>   the same in the foreground: shows the app log, and Ctrl-C stops everything
 #   stack.sh stop  <slot>
 #   stack.sh url   <slot>
 # Run it from the root of your own worktree. Each slot has its own ports; each worktree its own data.
+#
+# A real recorder instead of simulated cameras (read-only, as always; no demo data is seeded): put
+#   UNIFEYE_MODE=real
+#   PROTECT_HOST=...  PROTECT_USERNAME=...  PROTECT_PASSWORD=...
+#   PROTECT_TLS_INSECURE=1   (or PROTECT_TLS_CA_FILE=...) for the recorder's own certificate
+# in .env.stack.local at the root of the worktree (git ignores it), or set them in the environment.
+# Sign-in still uses the test provider; "Avery Chen" is the administrator.
 set -euo pipefail
 cmd="${1:-}"; slot="${2:-}"
-[[ "$cmd" =~ ^(start|stop|url)$ && "$slot" =~ ^[1-9]$ ]] || { echo "usage: stack.sh start|stop|url <slot 1-9>" >&2; exit 2; }
+[[ "$cmd" =~ ^(start|run|stop|url)$ && "$slot" =~ ^[1-9]$ ]] || { echo "usage: stack.sh start|run|stop|url <slot 1-9>" >&2; exit 2; }
 [[ -f package.json && -f docker/mediamtx.yml ]] || { echo "run from the root of a Unifeye checkout" >&2; exit 2; }
 base=$((3100 + slot * 10)); app=$base; idp=$((base+1)); api=$((base+2)); hls=$((base+3)); whep=$((base+4)); rtsp=$((base+5)); media=$((base+6)); hook=$((base+7))
 dir="tmp/qa/stack-$slot"; url="http://localhost:$app"
@@ -25,8 +33,18 @@ mtx_bin() {
 }
 
 stop; mkdir -p "$dir"; : > "$dir/pids"
+# In the foreground, Ctrl-C stops everything, even while it is still starting.
+[[ "$cmd" == run ]] && trap 'echo; stop; echo "stopped slot $slot"; exit 0' INT TERM
 [[ -d node_modules ]] || pnpm install --frozen-lockfile >/dev/null
-export UNIFEYE_MODE=mock SEED_DEMO=1 APP_URL="$url" OIDC_ISSUER="http://localhost:$idp" OIDC_ALLOW_INSECURE_ISSUER=1 OIDC_CLIENT_ID=unifeye-dev OIDC_ADMIT_CLAIM=groups OIDC_ADMIT_VALUES=unifeye
+if [[ -f .env.stack.local ]]; then set -a; source .env.stack.local; set +a; fi
+export UNIFEYE_MODE="${UNIFEYE_MODE:-mock}"
+if [[ "$UNIFEYE_MODE" == real ]]; then
+  for k in PROTECT_HOST PROTECT_USERNAME PROTECT_PASSWORD; do [[ -n "${!k:-}" ]] || { echo "$k is needed for a real recorder (see the top of stack.sh)" >&2; exit 2; }; done
+  export SEED_DEMO=0
+else
+  export SEED_DEMO=1
+fi
+export APP_URL="$url" OIDC_ISSUER="http://localhost:$idp" OIDC_ALLOW_INSECURE_ISSUER=1 OIDC_CLIENT_ID=unifeye-dev OIDC_ADMIT_CLAIM=groups OIDC_ADMIT_VALUES=unifeye
 export BOOTSTRAP_ADMIN_ISSUER="http://localhost:$idp" BOOTSTRAP_ADMIN_SUBJECT=dev-admin TOKEN_ENC_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= MEDIAMTX_HOOK_SECRET=qa-hook MEDIAMTX_API_SECRET=qa-api
 export DATABASE_PATH="$dir/data/unifeye.sqlite" BACKUP_DIR="$dir/data/backups" MEDIA_CACHE_DIR="$dir/data/cache"
 export MEDIAMTX_API_URL="http://127.0.0.1:$api" MEDIAMTX_HLS_URL="http://127.0.0.1:$hls" MEDIAMTX_WHEP_URL="http://127.0.0.1:$whep" HOOK_PORT=$hook TEST_OIDC_PORT=$idp
@@ -39,7 +57,15 @@ MTX_APIADDRESS=":$api" MTX_HLSADDRESS=":$hls" MTX_WEBRTCADDRESS=":$whep" MTX_RTS
 nohup pnpm exec next dev -p "$app" > "$dir/app.log" 2>&1 & echo $! >> "$dir/pids"
 
 for _ in $(seq 1 60); do
-  if curl -fsS -m 3 "$url/api/ready" 2>/dev/null | grep -q '"relay":true'; then echo "$url"; echo "logs: $dir/{app,idp,mediamtx}.log   sign in: open $url and pick a test identity"; exit 0; fi
+  if curl -fsS -m 3 "$url/api/ready" 2>/dev/null | grep -q '"relay":true'; then
+    echo "$url"; echo "logs: $dir/{app,idp,mediamtx}.log   sign in: open $url and pick a test identity ($UNIFEYE_MODE mode)"
+    [[ "$cmd" == start ]] && exit 0
+    echo "Ctrl-C stops everything."
+    tail -n 0 -f "$dir/app.log" & tailer=$!
+    wait "$tailer"
+  fi
   sleep 1
 done
-echo "stack did not become ready; see $dir/*.log" >&2; curl -s -m 3 "$url/api/ready" >&2 || true; exit 1
+echo "stack did not become ready; see $dir/*.log" >&2; curl -s -m 3 "$url/api/ready" >&2 || true
+[[ "$cmd" == run ]] && stop
+exit 1

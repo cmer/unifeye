@@ -9,6 +9,18 @@ and uses it as the GitHub release notes.
 ### Added
 - `scripts/update.sh` takes a version number: `1.1.2` for that release, `1.3` for the newest
   1.3.x, or `2` for the newest 2.x.x.
+- The camera wall can rewind: press the clock button to open a timeline, and every camera on
+  screen plays the same moment. Drag to look back, with pictures as you go. Clips can't be
+  saved from the wall; open a camera to save one.
+- New `WALL_PLAYBACK_STREAMS` setting: how many cameras on the wall play recorded video at once
+  when rewinding (default 4). The rest show a picture every few seconds.
+- New `SCRUB_PRELOAD_MS` setting: how long someone pauses while dragging a camera's timeline
+  before that moment starts loading (default 500; 0 turns it off).
+
+### Changed
+- Dragging along a camera's timeline shows pictures from each moment as you go, and the video
+  starts where you let go. Pausing on a moment while dragging starts loading it, so it plays
+  sooner when you let go.
 
 ## 1.1.1 - 2026-11-18
 

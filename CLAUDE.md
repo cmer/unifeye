@@ -27,6 +27,7 @@ Package manager is pnpm; Node 22.20 or newer.
 | Generate a migration after editing `src/server/db/schema.ts` | `pnpm db:generate` |
 | Release a version (`major`, `minor`, `patch` or `X.Y.Z`; `--dry-run` to preview) | `scripts/release.sh <version>` |
 | Ops CLI: `migrate`, `backup`, `verify <file>`, `restore <file> [--force]` | `pnpm unifeye <command>` |
+| Throwaway full stack (sign-in, MediaMTX, app) on its own ports; Ctrl-C stops it. Real recorder: see the script's header | `.claude/skills/qa-sweep/scripts/stack.sh run <slot 1-9>` |
 
 Local setup: `cp .env.development.example .env.development.local`, then run `pnpm dev:idp` and `pnpm dev` in separate terminals. Sign in as "Avery Chen", the bootstrap administrator; demo data is seeded on that first sign-in. Live video also needs FFmpeg and a MediaMTX 1.21.4 binary started with `docker/mediamtx.yml` (the exact command is in `README.md`).
 
