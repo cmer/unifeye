@@ -10,6 +10,10 @@ and uses it as the GitHub release notes.
 - `scripts/update.sh` takes a version number: `1.1.2` for that release, `1.3` for the newest
   1.3.x, or `2` for the newest 2.x.x.
 
+### Fixed
+- Saved clips no longer lose a second where part of the clip couldn't be fetched from the recorder.
+- Saved clips and playback no longer repeat a moment where the recording switches to high quality.
+
 ## 1.1.1 - 2026-11-18
 
 ### Fixed

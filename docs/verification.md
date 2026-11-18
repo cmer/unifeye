@@ -88,7 +88,10 @@ gateway) is pinned separately in
   recorder does (from the last keyframe at or before its start, so its first GOP is byte for byte the
   last one of the piece before), the joins drop each repeated lead by keyframe hash and the clip comes
   out the requested length plus half a GOP at each end. It also runs with a relative cache folder,
-  which once broke the join.
+  which once broke the join. In mock mode with an adaptive camera, an 11-minute clip whose middle piece
+  the recorder keeps failing keeps the last piece's lead (362 s, 361 s before), and a six-minute clip
+  whose second piece has only the high resolution no longer repeats the high GOP the first piece ended
+  with (319 s, 320 s before).
 - One picture size across a clip (`tests/match-size.test.ts`, and "play at one size" in
   `tests/api.test.ts`): with synthetic files, pieces at 640x480 (4:3), 960x540 and one that changes
   from 640x480 to 1280x720 partway, added before the 1280x720 piece, all come out 1280x720 with every
@@ -123,7 +126,8 @@ gateway) is pinned separately in
   the same low pictures, has nothing or is busy (then "may be missing time"); channel 0 alone when the
   low channel keeps failing; without segment lists, the old size and length rules; which error wins
   when both channels fail; a retime failure kept, a cancel during one stopping the fetch; a clip piece
-  rendered without its leads after the first piece and without its high lead on the first, or saved
+  rendered without its leads after a piece that ended with the same low keyframe and without its high
+  lead otherwise (the first piece, one after a piece left out, or after a different keyframe), or saved
   from the low file with its lead and covered time when rendering fails. `tests/placement.test.ts`
   drives the placement module through `placeStretch` on made-up recordings of made-up scenes (a room
   whose picture changes smoothly, and a still one) and checks what the player would show against
@@ -160,7 +164,7 @@ gateway) is pinned separately in
   elements, no browser: when the next window is buffered and when it may take over; where a seek
   lands (the entry showing the moment, the high file waiting where it is next needed, a moment only
   the high file has); where playing on starts (past both leads when the keyframes match, else on the
-  base lead); carrying on from the base when the full order arrives; and `stepEntries` frame by frame:
+  base lead; table cases in `tests/timeline.test.ts`); carrying on from the base when the full order arrives; and `stepEntries` frame by frame:
   the high file parked and hidden under base entries, kept in step under overs (moved past 0.25 s of
   drift, matched in speed, shown only with the right frame), playing alone through an insert with the
   base paused and parked, waiting for a high file still loading, inserts skipped and overs played as

@@ -4,7 +4,7 @@ import { gopsOf, probe, renderEntries, retimeVideoToAudio, thumbnails, videoSize
 import { isNoRecording, isRecorderBusy } from "../protect/types";
 import { log } from "../util";
 import { PLACEMENT, placeStretch, type Thumbs } from "./placement";
-import { skipLead, type Entry, type Gop, type Segments } from "./timeline";
+import { startAfter, type Entry, type Gop, type Seam, type Seams, type Segments } from "./timeline";
 
 export type { Entry } from "./timeline";
 
@@ -57,9 +57,6 @@ export const ffmpegOps: MediaOps = {
   },
 };
 
-/** Keyframe hashes of a file's first GOP (its lead) and last GOP: neighbouring stretches share them. */
-export interface Seam { first: string; last: string }
-
 export interface Recorded {
   /** The file every entry's `base` time refers to: `files.focus` or `files.wall`. */
   base: string;
@@ -67,7 +64,7 @@ export interface Recorded {
   high: string | null;
   /** The playback order (`placement/`). */
   entries: Entry[];
-  seams: { base: Seam; high: Seam | null };
+  seams: Seams;
   /** The low channel was needed but kept failing for reasons other than "nothing recorded", so time may be missing. */
   busy: boolean;
 }
@@ -201,35 +198,53 @@ export function coveredMs(entries: Entry[], startMs: number, endMs: number): num
 
 export interface Piece {
   info: MediaInfo;
-  /** Seconds at the start of the file that repeat the piece before (its lead), when kept; see `joinParts`. */
-  leadSec: number;
-  /** The piece was rendered (adaptive recording), with its lead already left out when asked. */
+  /**
+   * The entries the file holds, in order. A plain piece keeps its lead, which the join cuts when the
+   * piece before ends with it (`startAfter`); a rendered one starts where `startAfter` says already.
+   */
+  entries: Entry[];
+  /** The piece was rendered (adaptive recording). */
   rendered: boolean;
-  seams: Recorded["seams"];
+  /** The seams of the file as saved: without the high file's when it holds only the base. */
+  seams: Seams;
   busy: boolean;
   /** Wall-clock time the file covers inside [startMs, endMs), in ms. */
   coveredMs: number;
   combineMs: number;
 }
 
+export interface PieceOptions {
+  /**
+   * The seams of the piece before in the clip once it is fetched, or null when there is none (it had
+   * nothing recorded or could not be exported). Omitted: this is the clip's first piece.
+   */
+  before?: Promise<Seams | null>;
+  /** Called with this piece's seams once it is fetched, for the piece after. */
+  onFetched?: (seams: Seams) => void;
+}
+
 /**
  * Exports [startMs, endMs) to `path` as one file, for a saved clip. An adaptive recording is rendered
- * in playback order at the high resolution (`MediaOps.render`), without its high lead, and without
- * either lead when `dropLead` (the piece before holds them). If rendering fails, the piece is saved in low resolution, so little time
- * is missing. A plain export is kept as it is, lead included (`leadSec`).
+ * in playback order at the high resolution (`MediaOps.render`), from where it carries on after the
+ * piece before (`startAfter`): past both leads when that piece ended with the same base GOP, else
+ * from the base lead. That waits for the piece before to be fetched, not rendered, so pieces still
+ * render side by side. If rendering fails, the piece is saved in low resolution, so little time is
+ * missing. A plain export is kept as it is, lead included, and cut where it joins (`entries`).
  */
-export async function fetchRecordedFile(exportChannel: ExportChannel, startMs: number, endMs: number, path: string, opts: FetchOptions & { dropLead?: boolean }): Promise<Piece> {
+export async function fetchRecordedFile(exportChannel: ExportChannel, startMs: number, endMs: number, path: string, opts: FetchOptions & PieceOptions): Promise<Piece> {
   const { signal, ops = ffmpegOps, context } = opts;
   const t = Date.now(), r = await fetchRecorded(exportChannel, startMs, endMs, opts), fetchMs = Date.now() - t;
+  opts.onFetched?.(r.seams);
   if (r.high) {
+    // Only the base counts: the piece before may yet be saved without its high file, and it always keeps its base.
+    const prev = await (opts.before ?? null);
+    signal.throwIfAborted();
     try {
-      // The high lead is the last high GOP before the start, which may be from well before it: a clip
-      // starts on the base lead (or past both leads, when the piece before holds them).
-      const entries = opts.dropLead ? r.entries.slice(skipLead(r.entries)) : r.entries.filter((e) => !(e.lead && e.kind === "insert"));
+      const entries = r.entries.slice(startAfter(prev && { base: prev.base, high: null }, r));
       const { encoder, ms } = await ops.render(r.base, r.high, entries, path, signal);
       const info = await ops.probe(path, signal);
       log("info", "clip piece ready", { ...context, startMs, fetchMs, combined: true, combineMs: ms, encoder, width: info.width });
-      return { info, leadSec: 0, rendered: true, seams: r.seams, busy: r.busy, coveredMs: coveredMs(r.entries, startMs, endMs), combineMs: ms };
+      return { info, entries, rendered: true, seams: r.seams, busy: r.busy, coveredMs: coveredMs(r.entries, startMs, endMs), combineMs: ms };
     } catch (e) {
       if (signal.aborted) throw e;
       log("warn", "a clip piece is saved in low resolution: its high-resolution parts could not be combined with it", { ...context, startMs, error: e });
@@ -238,6 +253,5 @@ export async function fetchRecordedFile(exportChannel: ExportChannel, startMs: n
   await rename(r.base, path);
   const info = await ops.probe(path, signal), base = r.entries.filter((e) => e.kind !== "insert");
   log("info", "clip piece ready", { ...context, startMs, fetchMs, combined: false, width: info.width });
-  const leadSec = base.filter((e) => e.lead).reduce((n, e) => n + e.len, 0);
-  return { info, leadSec, rendered: false, seams: { base: r.seams.base, high: null }, busy: r.busy, coveredMs: coveredMs(base, startMs, endMs), combineMs: 0 };
+  return { info, entries: base, rendered: false, seams: { base: r.seams.base, high: null }, busy: r.busy, coveredMs: coveredMs(base, startMs, endMs), combineMs: 0 };
 }

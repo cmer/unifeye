@@ -14,7 +14,8 @@ import { joinParts, probe } from "../protect/ffmpeg";
 import { isNoRecording, isRecorderBusy, NoRecordingError, RecorderBusyError, type ProtectAdapter } from "../protect/types";
 import { badRequest, HttpError, log, newId, notFound } from "../util";
 import { SizeMatcher } from "./match-size";
-import { fetchRecorded, fetchRecordedFile, type Entry, type ExportChannel, type ListSegments, type Piece, type Recorded } from "./recorded";
+import { fetchRecorded, fetchRecordedFile, type Entry, type ExportChannel, type ListSegments, type Piece, type PieceOptions, type Recorded } from "./recorded";
+import { startAfter, type Seams } from "./timeline";
 
 /**
  * What the player needs to know about a window: the order to play its files in (`timeline.ts`),
@@ -192,10 +193,10 @@ export class Recordings {
   }
 
   /** One piece of a clip, as a single file covering the whole piece (`fetchRecordedFile`). */
-  private async exportPiece(protectId: string, startMs: number, endMs: number, path: string, signal: AbortSignal, dropLead: boolean) {
+  private async exportPiece(protectId: string, startMs: number, endMs: number, path: string, signal: AbortSignal, join: PieceOptions) {
     const files = { focus: `${path}.f`, wall: `${path}.w` };
     try {
-      return await fetchRecordedFile(this.exporter(protectId, startMs, endMs, true), startMs, endMs, path, { files, signal, dropLead, segments: this.segments(protectId, startMs, endMs), context: { protectId } });
+      return await fetchRecordedFile(this.exporter(protectId, startMs, endMs, true), startMs, endMs, path, { files, signal, ...join, segments: this.segments(protectId, startMs, endMs), context: { protectId } });
     } finally {
       await Promise.all([files.focus, files.wall].map((p) => rm(p, { force: true })));
     }
@@ -245,9 +246,10 @@ export class Recordings {
    * Exports a clip in pieces of up to `PIECE`, `CLIP_EXPORT_PARALLEL` at a time, then joins them
    * without re-encoding. The recorder builds a whole export before sending the first byte, so pieces
    * are what make progress measurable, and running a few at once shortens the wait. Each piece starts
-   * with the last keyframe before its start (its lead), which the piece before ends with: a rendered
-   * piece leaves it out, and a plain one has it cut when joined, if their keyframes are the same. A
-   * piece with nothing recorded is left out. So is one the recorder still fails after its retries
+   * with the last keyframe before its start (its lead), which the piece before ends with. Where a
+   * piece carries on after the one before is `startAfter`, from what that piece really was: a plain
+   * piece is cut when joined, and a rendered one is rendered from there once the piece before is
+   * fetched (each piece's `fetched`). A piece with nothing recorded is left out. So is one the recorder still fails after its retries
    * (`exporter`), and `busy` then says the clip may be missing time that was recorded; if no piece
    * could be exported at all, the clip fails.
    *
@@ -258,7 +260,12 @@ export class Recordings {
    */
   private async exportPieces(protectId: string, startMs: number, endMs: number, file: string, signal: AbortSignal, onProgress: (f: number, etaMs: number) => void): Promise<{ busy: boolean; coveredMs: number; stats: { pieces: number; combined: number; combineMs: number; resized: number; resizeMs: number; joinMs: number } }> {
     const n = Math.max(1, Math.ceil((endMs - startMs) / PIECE));
-    const parts = Array.from({ length: n }, (_, i) => ({ i, a: startMs + i * PIECE, b: Math.min(endMs, startMs + (i + 1) * PIECE), path: n === 1 ? `${file}.part` : `${file}.${i}.part`, piece: null as Piece | null }));
+    const parts = Array.from({ length: n }, (_, i) => {
+      let fetched!: (s: Seams | null) => void;
+      // Settles once the piece is fetched, or with null when it is left out or the clip fails.
+      const seams = new Promise<Seams | null>((r) => { fetched = r; });
+      return { i, a: startMs + i * PIECE, b: Math.min(endMs, startMs + (i + 1) * PIECE), path: n === 1 ? `${file}.part` : `${file}.${i}.part`, piece: null as Piece | null, seams, fetched };
+    });
     const local = new AbortController(), stop = () => local.abort();
     signal.addEventListener("abort", stop, { once: true });
     const width = Math.min(n, config().CLIP_EXPORT_PARALLEL);
@@ -274,14 +281,15 @@ export class Recordings {
       while (next < n && !local.signal.aborted) {
         const p = parts[next++], t = Date.now();
         try {
-          const r = await this.exportPiece(protectId, p.a, p.b, p.path, local.signal, p.i > 0);
+          // The piece before was taken up earlier, so waiting for it to be fetched never waits on this one.
+          const r = await this.exportPiece(protectId, p.a, p.b, p.path, local.signal, { before: p.i > 0 ? parts[p.i - 1].seams : undefined, onFetched: p.fetched });
           p.piece = r; busy ||= r.busy;
           if (r.combineMs) { combined++; combineMs += r.combineMs; }
           sizes?.add(p.path);
         } catch (e) {
           if (isRecorderBusy(e) && !local.signal.aborted) { busy = true; log("warn", "part of a clip is left out: the recorder kept failing to export it", { protectId, startMs: p.a, error: e }); }
           else if (!isNoRecording(e)) { local.abort(); throw e; }
-        }
+        } finally { p.fetched(null); }
         done++; spent += Date.now() - t;
         report();
       }
@@ -295,10 +303,10 @@ export class Recordings {
       if (!got.length) throw busy ? new RecorderBusyError(0) : new NoRecordingError();
       const fitted = sizes ? await sizes.finish() : new Map<string, string>(), joinAt = Date.now();
       if (got.length === 1) await rename(fitted.get(got[0].path) ?? got[0].path, file);
-      else await joinParts(got.map((p, k) => {
-        const pc = p.piece!, prev = got[k - 1];
-        const repeats = !!prev && prev.b === p.a && !pc.rendered && pc.leadSec > 0.05 && prev.piece!.seams.base.last === pc.seams.base.first;
-        return { path: fitted.get(p.path) ?? p.path, inpoint: repeats ? pc.info.start + pc.leadSec : undefined };
+      else await joinParts(got.map((p) => {
+        const pc = p.piece!, prev = p.i > 0 ? parts[p.i - 1].piece : null;
+        const skip = pc.rendered ? 0 : pc.entries.slice(0, startAfter(prev?.seams ?? null, pc)).reduce((s, e) => s + e.len, 0);
+        return { path: fitted.get(p.path) ?? p.path, inpoint: skip > 0.05 ? pc.info.start + skip : undefined };
       }), file, signal);
       const coveredMs = got.reduce((s, p) => s + p.piece!.coveredMs, 0);
       return { busy, coveredMs, stats: { pieces: got.length, combined, combineMs, resized: sizes?.done ?? 0, resizeMs: sizes?.spentMs ?? 0, joinMs: Date.now() - joinAt } };
