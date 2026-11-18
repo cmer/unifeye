@@ -68,6 +68,30 @@ describe("authentication boundary", () => {
   });
 });
 
+describe("checking a whole column of camera access", () => {
+  it("grants and removes every listed camera for one person in one request, logging only real changes", async () => {
+    const all = Object.values(f.cam);
+    const own = () => f.db.select().from(schema.userCameraGrants).where(eq(schema.userCameraGrants.userId, f.u.front)).all().length;
+    const before = own();
+    expect(before).toBeLessThan(all.length);
+    expect((await call(f.u.admin, "PUT", "/admin/grants", { body: { userId: f.u.front, cameraIds: all, on: true } })).status).toBe(200);
+    expect(own()).toBe(all.length);
+    for (const id of all) expect(f.policy.canAccessCamera(f.u.front, id)).toBe(true);
+    const added = f.db.select().from(schema.auditLog).where(eq(schema.auditLog.action, "grant.add")).all();
+    expect(added).toHaveLength(all.length - before);
+    expect((await call(f.u.admin, "PUT", "/admin/grants", { body: { userId: f.u.front, cameraIds: all, on: false } })).status).toBe(200);
+    expect(own()).toBe(0);
+  });
+  it("changes nothing if any listed camera is unknown", async () => {
+    const r = await call(f.u.admin, "PUT", "/admin/grants", { body: { userId: f.u.front, cameraIds: [f.cam["Server Closet"], "nope"], on: true } });
+    expect(r.status).toBe(404);
+    expect(f.policy.canAccessCamera(f.u.front, f.cam["Server Closet"])).toBe(false);
+  });
+  it("is refused for staff", async () => {
+    expect((await call(f.u.front, "PUT", "/admin/grants", { body: { userId: f.u.front, cameraIds: Object.values(f.cam), on: true } })).status).toBe(403);
+  });
+});
+
 describe("a forbidden camera is indistinguishable from a missing one, on every route", () => {
   it("covers metadata, images, recordings, playback, live setup, events and exports", async () => {
     const bad = f.cam["Server Closet"], none = "00000000-0000-4000-8000-000000000000", t = Date.now() - 3600e3;

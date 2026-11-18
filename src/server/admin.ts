@@ -258,16 +258,26 @@ export class Admin {
 
   // ---- camera grants ----------------------------------------------------
   setGrant(a: Actor, subject: { userId: string } | { groupId: string }, cameraId: string, on: boolean) {
+    this.setGrants(a, subject, [cameraId], on);
+  }
+
+  /** Check or uncheck several cameras for one person or group at once (a whole column). One audit entry per camera that changed. */
+  setGrants(a: Actor, subject: { userId: string } | { groupId: string }, cameraIds: string[], on: boolean) {
     this.admin(a, "grant.set");
-    if (!this.policy.cameraUnchecked(cameraId)) throw notFound();
-    if ("userId" in subject) {
-      if (on) this.db.insert(S.userCameraGrants).values({ userId: subject.userId, cameraId, createdAt: Date.now() }).onConflictDoNothing().run();
-      else this.db.delete(S.userCameraGrants).where(and(eq(S.userCameraGrants.userId, subject.userId), eq(S.userCameraGrants.cameraId, cameraId))).run();
-    } else {
-      if (on) this.db.insert(S.groupCameraGrants).values({ groupId: subject.groupId, cameraId, createdAt: Date.now() }).onConflictDoNothing().run();
-      else this.db.delete(S.groupCameraGrants).where(and(eq(S.groupCameraGrants.groupId, subject.groupId), eq(S.groupCameraGrants.cameraId, cameraId))).run();
-    }
-    this.log(a, on ? "grant.add" : "grant.revoke", "camera", cameraId, subject);
+    const ids = [...new Set(cameraIds)];
+    for (const id of ids) if (!this.policy.cameraUnchecked(id)) throw notFound();
+    this.db.transaction(() => {
+      for (const cameraId of ids) {
+        const changed = "userId" in subject
+          ? on
+            ? this.db.insert(S.userCameraGrants).values({ userId: subject.userId, cameraId, createdAt: Date.now() }).onConflictDoNothing().run().changes
+            : this.db.delete(S.userCameraGrants).where(and(eq(S.userCameraGrants.userId, subject.userId), eq(S.userCameraGrants.cameraId, cameraId))).run().changes
+          : on
+            ? this.db.insert(S.groupCameraGrants).values({ groupId: subject.groupId, cameraId, createdAt: Date.now() }).onConflictDoNothing().run().changes
+            : this.db.delete(S.groupCameraGrants).where(and(eq(S.groupCameraGrants.groupId, subject.groupId), eq(S.groupCameraGrants.cameraId, cameraId))).run().changes;
+        if (changed || ids.length === 1) this.log(a, on ? "grant.add" : "grant.revoke", "camera", cameraId, subject);
+      }
+    });
     this.done();
   }
 
