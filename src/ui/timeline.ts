@@ -59,25 +59,62 @@ export function nearestEvent<E extends { startMs: number }>(events: E[], ms: num
   return best;
 }
 
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+/** "6 hours", "1.5 hours", "10 minutes": how much time a zoomed timeline shows. */
+export const fmtSpan = (ms: number) => { const m = Math.round(ms / 60_000); return m >= 60 ? `${+(m / 60).toFixed(1)} hour${m === 60 ? "" : "s"}` : `${m} minute${m === 1 ? "" : "s"}`; };
+
 /**
- * Turns wheel and pinch events into zoom steps for a timeline with a few fixed zoom levels: 1 to zoom
- * in (wheel up, pinch out), -1 to zoom out, 0 for nothing yet. Scrolling adds up until it is a deliberate
- * notch, then nothing more counts for a moment, so one flick of a trackpad moves one level rather than all of them.
- * Sideways scrolling is ignored.
+ * How much one wheel or pinch event zooms a timeline: a factor above 1 widens it (wheel down, pinch in),
+ * below 1 narrows it. Proportional to the scroll, so a trackpad zooms smoothly and a mouse wheel a little
+ * per notch. Null for a sideways scroll.
  */
-export function wheelZoomSteps(threshold = 40, pause = 300): (e: Pick<WheelEvent, "deltaX" | "deltaY" | "deltaMode" | "ctrlKey" | "timeStamp">) => 1 | -1 | 0 {
-  let sum = 0, last = -Infinity, until = -Infinity;
-  return (e) => {
-    const px = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;
-    if (!e.ctrlKey && Math.abs(e.deltaX) > Math.abs(e.deltaY)) return 0;
-    // A quiet spell starts the count afresh; a pause after a step is extended by the trackpad's own coasting.
-    if (e.timeStamp - last > pause) sum = 0;
-    last = e.timeStamp;
-    if (e.timeStamp < until) { until = e.timeStamp + pause; return 0; }
-    sum += e.deltaY * px * (e.ctrlKey ? 2.5 : 1);
-    if (Math.abs(sum) < threshold) return 0;
-    const d = sum < 0 ? 1 : -1;
-    sum = 0; until = e.timeStamp + pause;
-    return d;
-  };
+export function wheelZoom(e: Pick<WheelEvent, "deltaX" | "deltaY" | "deltaMode" | "ctrlKey">): number | null {
+  const px = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;
+  if (!e.ctrlKey && Math.abs(e.deltaX) > Math.abs(e.deltaY)) return null;
+  return Math.exp(clamp(e.deltaY * px, -100, 100) * (e.ctrlKey ? 0.01 : 0.004));
+}
+
+/** The closest the player's and the wall's timelines zoom: one minute across. */
+export const MIN_SPAN = 60_000;
+/** Where the zoom buttons and keys stop on the way in or out, besides the whole timeline and `MIN_SPAN`. */
+const ZOOM_STOPS = [6 * 3600_000, 3600_000, 600_000];
+/**
+ * A timeline's zoom: how much time it shows (Infinity for all of it) and where that stretch starts
+ * (null to place it around the playhead).
+ */
+export type Zoom = { span: number; start: number | null };
+export const UNZOOMED: Zoom = { span: Infinity, start: null };
+
+/**
+ * The stretch of `[lo, hi]` a timeline at `z` shows. Zoomed in, it holds still while the playhead `t`
+ * is inside it, so clicks and drags land where aimed, and re-centres when the playhead leaves (live
+ * sits near the right edge).
+ */
+export function zoomedView(z: Zoom, t: number, lo: number, hi: number, live: boolean): [number, number] {
+  const span = Math.min(z.span, hi - lo), s = z.start;
+  if (span >= hi - lo) return [lo, hi];
+  const fits = s !== null && s >= lo && s + span <= hi && t >= s && t <= s + span;
+  const a = fits ? s : clamp(t - span * (live ? 0.9 : 0.5), lo, hi - span);
+  return [a, a + span];
+}
+
+/**
+ * Zooms by `factor` (above 1 widens), keeping the moment at `frac` of the width in place, or the
+ * playhead when `frac` is undefined (the buttons and keys). The playhead never leaves the view, so the
+ * zoom drifts towards it when the pointer is far from it.
+ */
+export function zoomTimeline(z: Zoom, factor: number, frac: number | undefined, t: number, lo: number, hi: number, live: boolean): Zoom {
+  const [a, b] = zoomedView(z, t, lo, hi, live), full = hi - lo;
+  const span = clamp((b - a) * factor, Math.min(MIN_SPAN, full), full);
+  if (span >= full) return UNZOOMED;
+  const f = frac ?? clamp((t - a) / (b - a), 0, 1), at = a + f * (b - a);
+  const s = clamp(clamp(at - f * span, t - span, t), lo, hi - span);
+  return { span, start: s };
+}
+
+/** The span the zoom buttons and keys go to next from `span`: the next stop in (`dir` 1) or out (-1). */
+export function nextZoomStop(span: number, dir: 1 | -1, full: number): number {
+  const stops = [full, ...ZOOM_STOPS.filter((s) => s < full), MIN_SPAN];
+  return dir > 0 ? (stops.find((s) => s < span * 0.99) ?? MIN_SPAN) : (stops.findLast((s) => s > span * 1.01) ?? full);
 }

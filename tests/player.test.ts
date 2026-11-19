@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Entry } from "@/server/media/timeline";
 import { canHandOver, carryOnAt, cursorAt, cursorAtBase, handOver, positionAt, seekTo, shouldArm, skipped, stepEntries, stepPlayback, windowHoles, windowStart, type MediaPort, type Shown } from "@/ui/recorded-playback";
-import { cutHoles, DAY, fmtAgo, fmtSkipped, nearestEvent, tickTimes, timelineBounds, wheelZoomSteps } from "@/ui/timeline";
+import { cutHoles, DAY, fmtAgo, fmtSkipped, MIN_SPAN, nearestEvent, nextZoomStop, tickTimes, timelineBounds, UNZOOMED, wheelZoom, zoomedView, zoomTimeline } from "@/ui/timeline";
 import { dragTrim, MIN_CLIP, nearestEnd, panTrim, startTrim, TRIM_SPAN, typeTrim, viewFor, zoomTrim, type Trim } from "@/ui/trim";
 
 /** A <video> element as far as playback can see one. Moving it is instant. */
@@ -423,34 +423,54 @@ describe("picking an event dot", () => {
   });
 });
 
-describe("zooming the timeline with the wheel", () => {
-  const ev = (timeStamp: number, deltaY: number, o: { deltaX?: number; deltaMode?: number; ctrlKey?: boolean } = {}) => ({ timeStamp, deltaY, deltaX: o.deltaX ?? 0, deltaMode: o.deltaMode ?? 0, ctrlKey: o.ctrlKey ?? false });
+describe("zooming the timeline", () => {
+  const ev = (deltaY: number, o: { deltaX?: number; deltaMode?: number; ctrlKey?: boolean } = {}) => ({ deltaY, deltaX: o.deltaX ?? 0, deltaMode: o.deltaMode ?? 0, ctrlKey: o.ctrlKey ?? false });
+  const H = 3600_000, lo = 0, hi = DAY;
 
-  it("zooms in on a wheel up and out on a wheel down", () => {
-    expect(wheelZoomSteps()(ev(0, -100))).toBe(1);
-    expect(wheelZoomSteps()(ev(0, 100))).toBe(-1);
-    expect(wheelZoomSteps()(ev(0, 3, { deltaMode: 1 }))).toBe(-1);
-  });
-
-  it("adds up small scrolls, and starts afresh after a quiet spell", () => {
-    const w = wheelZoomSteps();
-    expect(w(ev(0, -15))).toBe(0);
-    expect(w(ev(16, -15))).toBe(0);
-    expect(w(ev(32, -15))).toBe(1);
-    const q = wheelZoomSteps();
-    expect(q(ev(0, -30))).toBe(0);
-    expect(q(ev(1000, -30))).toBe(0);
-  });
-
-  it("moves one level per flick, however long the trackpad coasts", () => {
-    const w = wheelZoomSteps();
-    const out = Array.from({ length: 60 }, (_, i) => w(ev(i * 16, -30)));
-    expect(out.filter((d) => d !== 0)).toEqual([1]);
-    expect(w(ev(60 * 16 + 400, -100))).toBe(1);
+  it("zooms a little at a time, in on a wheel up and out on a wheel down", () => {
+    expect(wheelZoom(ev(-100))).toBeLessThan(1);
+    expect(wheelZoom(ev(100))).toBeGreaterThan(1);
+    expect(wheelZoom(ev(-4))).toBeCloseTo(Math.exp(-0.016));
+    expect(wheelZoom(ev(3, { deltaMode: 1 }))).toBe(wheelZoom(ev(48)));
+    expect(wheelZoom(ev(-5000))).toBe(wheelZoom(ev(-100)));
   });
 
   it("follows a pinch and ignores sideways scrolling", () => {
-    expect(wheelZoomSteps()(ev(0, -25, { ctrlKey: true }))).toBe(1);
-    expect(wheelZoomSteps()(ev(0, 10, { deltaX: 200 }))).toBe(0);
+    expect(wheelZoom(ev(-25, { ctrlKey: true }))).toBeLessThan(wheelZoom(ev(-25))!);
+    expect(wheelZoom(ev(10, { deltaX: 200 }))).toBeNull();
+  });
+
+  it("keeps the moment under the pointer in place, between a minute and the whole day", () => {
+    const z = zoomTimeline(UNZOOMED, 0.5, 0.25, 6 * H, lo, hi, false);
+    expect(z.span).toBe(12 * H);
+    expect(zoomedView(z, 6 * H, lo, hi, false)).toEqual([3 * H, 15 * H]);
+    expect(zoomTimeline(z, 3, 0.5, 6 * H, lo, hi, false)).toEqual(UNZOOMED);
+    expect(zoomTimeline(z, 1e-9, 0.5, 6 * H, lo, hi, false).span).toBe(MIN_SPAN);
+  });
+
+  it("never zooms the playhead out of view", () => {
+    const z = zoomTimeline(UNZOOMED, 1 / 24, 0.9, 2 * H, lo, hi, false);
+    const [a, b] = zoomedView(z, 2 * H, lo, hi, false);
+    expect(b - a).toBe(H);
+    expect(a).toBeLessThanOrEqual(2 * H);
+    expect(b).toBeGreaterThanOrEqual(2 * H);
+  });
+
+  it("zooms around the playhead from the buttons, stopping at round spans", () => {
+    expect(nextZoomStop(DAY, 1, DAY)).toBe(6 * H);
+    expect(nextZoomStop(2 * H, 1, DAY)).toBe(H);
+    expect(nextZoomStop(H, 1, DAY)).toBe(600_000);
+    expect(nextZoomStop(600_000, 1, DAY)).toBe(MIN_SPAN);
+    expect(nextZoomStop(2 * H, -1, DAY)).toBe(6 * H);
+    expect(nextZoomStop(6 * H, -1, DAY)).toBe(DAY);
+    const z = zoomTimeline(UNZOOMED, 0.25, undefined, 18 * H, lo, hi, false);
+    expect(zoomedView(z, 18 * H, lo, hi, false)).toEqual([18 * H - 4.5 * H, 18 * H + 1.5 * H]);
+  });
+
+  it("holds still while the playhead is inside, and follows it out", () => {
+    const z = { span: H, start: 5 * H };
+    expect(zoomedView(z, 5.5 * H, lo, hi, false)).toEqual([5 * H, 6 * H]);
+    expect(zoomedView(z, 8 * H, lo, hi, false)).toEqual([7.5 * H, 8.5 * H]);
+    expect(zoomedView(z, hi, lo, hi, true)).toEqual([hi - H, hi]);
   });
 });

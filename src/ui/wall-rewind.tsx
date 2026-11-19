@@ -5,11 +5,9 @@ import { Button } from "@/components/ui/button";
 import { api, dayBounds, EVENT_COLOR, EVENT_LABEL, fmtShort, fmtTime, type ActivityEvent } from "./api";
 import { windowStart } from "./recorded-playback";
 import { WindowWarmer } from "./scrub-still";
-import { DAY, DOT_REACH_PX, fmtAgo, nearestEvent, tickTimes, wheelZoomSteps } from "./timeline";
+import { DAY, DOT_REACH_PX, fmtAgo, MIN_SPAN, nearestEvent, nextZoomStop, tickTimes, UNZOOMED, wheelZoom, zoomedView, zoomTimeline, type Zoom } from "./timeline";
 
 type Range = [number, number];
-/** How much time the timeline shows, widest first. 0 is the last 24 hours. */
-const ZOOMS: [number, string][] = [[0, "24 hours"], [6 * 3600_000, "6 hours"], [3600_000, "1 hour"], [600_000, "10 minutes"]];
 /** Spacing between timeline labels: the first that gives at most six across. */
 const TICKS = [60_000, 120_000, 300_000, 600_000, 900_000, 1800_000, 3600_000, 7200_000, 3 * 3600_000, 6 * 3600_000];
 /** A tile further than this from the others is moved back in step (at most once every `RESYNC_EVERY`). */
@@ -187,31 +185,34 @@ export type RewindState = ReturnType<typeof useRewind>;
  */
 export function RewindBar({ rw, tz, prerollMs, dock, tools }: { rw: RewindState; tz: string; prerollMs: number; dock: React.ReactNode; tools: React.ReactNode }) {
   const { clock, t, pt, live, dragging, scrub } = rw;
-  const [zoom, setZoom] = useState(0);
-  const [view, setView] = useState<number | null>(null);
+  /** How far the timeline is zoomed in, and where (see `zoomedView`). */
+  const [zoom, setZoom] = useState<Zoom>(UNZOOMED);
   const tl = useRef<HTMLDivElement>(null);
   /** The event dot under the mouse, which clicking jumps to. */
   const [hoverDot, setHoverDot] = useState<ActivityEvent | null>(null);
   /** Pressed on an event dot: where the press began, so a little wobble before letting go still lands on the event. */
   const pressedDot = useRef<number | null>(null);
-  const zoomBy = (d: number) => setZoom((z) => { const n = Math.min(Math.max(z + d, 0), ZOOMS.length - 1); if (n !== z) setView(null); return n; });
-  // The wheel or a pinch on the timeline steps through the zoom levels. A native listener, so the page doesn't scroll or zoom.
-  const [wheelSteps] = useState(() => wheelZoomSteps());
+  const lo = clock - DAY, hi = clock;
+  /** The buttons zoom to the next stop in (1) or out (-1), around the playhead (see `nextZoomStop`). */
+  const zoomBy = (d: 1 | -1) => setZoom((z) => {
+    const [a0, b0] = zoomedView(z, t, lo, hi, live), to = nextZoomStop(b0 - a0, d, DAY);
+    return zoomTimeline(z, to / (b0 - a0), undefined, t, lo, hi, live);
+  });
+  // The wheel or a pinch zooms the timeline smoothly around the pointer. A native listener, so the page doesn't scroll or zoom.
   useEffect(() => {
     const el = tl.current;
     if (!el) return;
-    const wheel = (e: WheelEvent) => { e.preventDefault(); const d = wheelSteps(e); if (d) zoomBy(d); };
+    const wheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const r = el.getBoundingClientRect(), factor = wheelZoom(e);
+      if (factor !== null) setZoom((z) => zoomTimeline(z, factor, Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1), t, lo, hi, live));
+    };
     el.addEventListener("wheel", wheel, { passive: false });
     return () => el.removeEventListener("wheel", wheel);
-  }, [wheelSteps]);
-  const lo = clock - DAY, hi = clock, span = ZOOMS[zoom][0];
-  let a = lo, b = hi;
-  // Zoomed in, the timeline shows a stretch around the playhead that holds still while the playhead is inside it.
-  if (span) {
-    const fits = view !== null && view >= lo && view + span <= hi && t >= view && t <= view + span;
-    a = fits ? view : Math.min(Math.max(t - span * (live ? 0.9 : 0.5), lo), hi - span); b = a + span;
-    if (a !== view) setView(a);
-  }
+  });
+  // Zoomed in, the timeline shows a stretch around the playhead (see `zoomedView`).
+  const [a, b] = zoomedView(zoom, t, lo, hi, live);
+  if (b - a < hi - lo && a !== zoom.start) setZoom({ span: b - a, start: a });
   const step = TICKS.find((s) => (b - a) / s <= 6) ?? TICKS[TICKS.length - 1];
   const toNow = b >= clock - 2000, today = dayBounds(clock, tz)[0];
   const ticks = tickTimes(a, b, step, tz).filter((m) => !toNow || (b - m) / (b - a) > 0.08);
@@ -265,8 +266,8 @@ export function RewindBar({ rw, tz, prerollMs, dock, tools }: { rw: RewindState;
         <span className="min-w-2 flex-1" />
         {!live && <Button variant="outline" size="sm" className="mr-1 shrink-0 rounded-full" onClick={rw.close}><i className="size-1.5 rounded-full bg-muted-foreground" />Go live</Button>}
         {!live && <select aria-label="Playback speed" value={rw.speed} onChange={(e) => rw.setSpeed(Number(e.target.value))} className="h-8 shrink-0 rounded-lg bg-transparent px-1 text-sm outline-none hover:bg-accent max-sm:hidden">{[0.5, 1, 2, 4].map((x) => <option key={x} value={x}>{x}×</option>)}</select>}
-        <Button variant="ghost" size="icon" className={`${ghost} max-sm:hidden`} aria-label="Zoom out" title="Zoom out" disabled={zoom === 0} onClick={() => zoomBy(-1)}><ZoomOut /></Button>
-        <Button variant="ghost" size="icon" className={`${ghost} max-sm:hidden`} aria-label="Zoom in" title="Zoom in" disabled={zoom === ZOOMS.length - 1} onClick={() => zoomBy(1)}><ZoomIn /></Button>
+        <Button variant="ghost" size="icon" className={`${ghost} max-sm:hidden`} aria-label="Zoom out" title="Zoom out" disabled={b - a >= hi - lo} onClick={() => zoomBy(-1)}><ZoomOut /></Button>
+        <Button variant="ghost" size="icon" className={`${ghost} max-sm:hidden`} aria-label="Zoom in" title="Zoom in" disabled={b - a <= MIN_SPAN + 1} onClick={() => zoomBy(1)}><ZoomIn /></Button>
         {tools}
       </div>
     </div>
