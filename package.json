@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
-    "unifeye": "tsx scripts/cli.ts"
+    "unifeye": "tsx scripts/cli.ts",
+    "changelog": "node scripts/changelog.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

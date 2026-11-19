@@ -1,12 +1,13 @@
 ---
 name: release
-description: Tag and publish a Unifeye release with scripts/release.sh, which updates CHANGELOG.md and package.json, tags, pushes and creates the GitHub release. Use when Carl asks to release, ship, tag or publish a version (e.g. "release minor", "cut a patch release", "release 0.5.0", "/release major").
+description: Tag and publish a Unifeye release with scripts/release.sh, which writes the .changelog/ entries into CHANGELOG.md, updates package.json, tags, pushes and creates the GitHub release. Use when Carl asks to release, ship, tag or publish a version (e.g. "release minor", "cut a patch release", "release 0.5.0", "/release major").
 ---
 
 # Release Unifeye
 
 `scripts/release.sh <major|minor|patch|X.Y.Z>` does the work. It sets the version in
-`package.json`, turns CHANGELOG.md's `## Unreleased` section into `## X.Y.Z - date`, runs
+`package.json`, writes the unreleased entries in `.changelog/` (one file per change, see
+`.changelog/README.md`) into CHANGELOG.md as `## X.Y.Z - date` and deletes them, runs
 typecheck, lint and the tests, commits "Release vX.Y.Z", tags, pushes to `main`, and creates
 the GitHub release with that changelog section as its notes. Your job is to pick the version,
 get the repository ready, run the script, and report.
@@ -19,8 +20,8 @@ get the repository ready, run the script, and report.
   script works out the number from the newest `vX.Y.Z` tag (or `package.json` before the
   first tag).
 - Nothing named: run `scripts/release.sh patch --dry-run` to see the current version and
-  the unreleased entries. Propose `patch` when they are all under `### Fixed`, `minor` when
-  anything is under `### Added` or `### Changed`, and `major` only if Carl asks for it.
+  the unreleased entries. Propose `patch` when they are all `Fixed`, `minor` when any is
+  `Added`, `Changed` or `Removed`, and `major` only if Carl asks for it.
 - A suffix such as `1.0.0-beta.1` becomes a GitHub prerelease.
 
 ## 2. Get the repository ready
@@ -34,10 +35,14 @@ and the release notes, and lists everything a real run would stop on. Fix what i
   request, say so and stop: it has to be merged first.
 - **Working tree isn't clean.** Show `git status --short` and ask what to do. Don't commit,
   stash or discard anything without a yes.
-- **Nothing under `## Unreleased`.** Compare the changelog with `git log <last tag>..HEAD
-  --oneline` and draft the missing entries following the Changelog rules in CLAUDE.md. Show
-  them to Carl, and get them onto `main` (a commit or a pull request, as he prefers) before
-  releasing.
+- **No entries in `.changelog/`.** Compare `pnpm changelog notes` with `git log <last
+  tag>..HEAD --oneline` and draft the missing entries with `pnpm changelog add`, following
+  the Changelog rules in CLAUDE.md. Show them to Carl, and get them onto `main` (a commit or
+  a pull request, as he prefers) before releasing.
+- **An entry is malformed.** The dry run names the file and what's wrong. Fix it on `main`.
+- **CHANGELOG.md has an `## Unreleased` section.** A branch from before `.changelog/` wrote to
+  it. Move each line into its own `.changelog/` file (`pnpm changelog add`), delete the
+  section, and get that onto `main`.
 - **Entries are there, but check them anyway.** Compare them with the same `git log`. If a
   change people would notice is missing, or an entry describes something that was later
   reverted, raise it before releasing.
@@ -65,7 +70,7 @@ cause on `main` and run it again.
 - Production doesn't update itself. If Carl wants it updated, that is `scripts/update.sh`
   on the server, and a separate request.
 - If the script failed before "Tagging", nothing was committed or pushed, and
-  `package.json` and `CHANGELOG.md` were put back. Fix the cause and run it again.
+  `package.json`, `CHANGELOG.md` and `.changelog/` were put back. Fix the cause and run it again.
 - If the push was refused, the script undid its commit and tag; `main` moved. Fetch, switch
   to the new `origin/main` and run it again.
 - If it failed at "Creating the GitHub release", the tag is already on GitHub. Don't rerun
