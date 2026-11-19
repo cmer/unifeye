@@ -159,8 +159,13 @@ gateway) is pinned separately in
   another), 8 s twice and 86 s never; 650 of 731 high GOPs were placed within 4 s of their clock
   (`lag.mts`). The same windows fetched through `fetchRecorded` and the UniFi adapter from the app
   container (five consecutive minutes of one camera): about 2 s per window, the base ready after
-  0.7 to 1.2 s, no moment shown after a later one. Not checked in a browser against the real
-  recorder, and not on any other Protect version.
+  0.7 to 1.2 s, no moment shown after a later one. In headless Chrome on a local stack in
+  real mode against the same recorder (one camera, about a minute and a half from one seek): playback
+  ran at the speed of the clock, the high-resolution picture came up over the low one and carried on
+  alone where the low channel had a hole, each skip showed its note ("3 seconds not recorded",
+  "10 seconds not recorded"), the zoomed-in timeline showed the breaks of the minutes played, and
+  playing into a gap of over a minute stopped on "Nothing recorded until ..." with its skip button.
+  Not checked on any other Protect version, on a phone, or on the wall.
 - Placing adaptive recordings on real exports (read-only exports of eight five-minute windows from six
   adaptive-recording cameras on the production UNVR, 2026-11-18; 330 high GOPs beside about 19 minutes
   of low-resolution video). The cameras' burned-in clocks, read by OCR, were used to check results
