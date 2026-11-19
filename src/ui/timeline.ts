@@ -48,3 +48,26 @@ export function cutHoles(ranges: [number, number][], holes: [number, number][]):
   }
   return out;
 }
+
+/**
+ * Turns wheel and pinch events into zoom steps for a timeline with a few fixed zoom levels: 1 to zoom
+ * in (wheel up, pinch out), -1 to zoom out, 0 for nothing yet. Scrolling adds up until it is a deliberate
+ * notch, then nothing more counts for a moment, so one flick of a trackpad moves one level rather than all of them.
+ * Sideways scrolling is ignored.
+ */
+export function wheelZoomSteps(threshold = 40, pause = 300): (e: Pick<WheelEvent, "deltaX" | "deltaY" | "deltaMode" | "ctrlKey" | "timeStamp">) => 1 | -1 | 0 {
+  let sum = 0, last = -Infinity, until = -Infinity;
+  return (e) => {
+    const px = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;
+    if (!e.ctrlKey && Math.abs(e.deltaX) > Math.abs(e.deltaY)) return 0;
+    // A quiet spell starts the count afresh; a pause after a step is extended by the trackpad's own coasting.
+    if (e.timeStamp - last > pause) sum = 0;
+    last = e.timeStamp;
+    if (e.timeStamp < until) { until = e.timeStamp + pause; return 0; }
+    sum += e.deltaY * px * (e.ctrlKey ? 2.5 : 1);
+    if (Math.abs(sum) < threshold) return 0;
+    const d = sum < 0 ? 1 : -1;
+    sum = 0; until = e.timeStamp + pause;
+    return d;
+  };
+}

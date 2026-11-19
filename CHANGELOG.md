@@ -6,6 +6,9 @@ and uses it as the GitHub release notes.
 
 ## Unreleased
 
+### Added
+- Scrolling or pinching on the timeline zooms it in and out.
+
 ### Changed
 - Clicking “Now” at the end of the timeline goes back to live video.
 - The timeline is easier to grab: you no longer need to land right on the dot.

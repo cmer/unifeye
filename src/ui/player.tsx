@@ -13,7 +13,7 @@ import { RecordedVideo } from "./recorded-video";
 import { windowStart } from "./recorded-playback";
 import { dragTrim, nearestEnd, panTrim, startTrim as newTrim, TRIM_SPAN, typeTrim as typedTrim, zoomedSpan, zoomTrim as zoomedTrim, type End, type Trim } from "./trim";
 import { claimSound, setSound, SoundButton, useSound } from "./sound";
-import { cutHoles, fmtAgo, fmtSkipped, tickTimes, timelineBounds } from "./timeline";
+import { cutHoles, fmtAgo, fmtSkipped, tickTimes, timelineBounds, wheelZoomSteps } from "./timeline";
 import { ScrubStill, WindowWarmer } from "./scrub-still";
 
 type Ranges = { ranges: [number, number][]; precision: "exact" | "bounds" };
@@ -172,13 +172,22 @@ export function Player({ cameraId }: { cameraId: string }) {
     setTrim((tr) => tr && zoomedTrim(tr, factor, frac, at));
   };
   const panTrimBy = (frac: number) => { const at = now(); setTrim((tr) => tr && panTrim(tr, frac, at)); };
+  /** Steps through the zoom levels (`ZOOMS`). */
+  const zoomBy = (d: number) => {
+    const z = clamp(zoom + d, 0, ZOOMS.length - 1);
+    if (z === zoom) return;
+    setZoom(z); setView(null); setZoomNote((p) => ({ text: z || !rolling ? ZOOMS[z][1] : "24 hours", n: (p?.n ?? 0) + 1 }));
+  };
   // On the timeline while choosing a clip, the wheel or a pinch zooms around the pointer and a sideways scroll pans.
-  // A native listener, because React's wheel handler can't stop the page from scrolling or zooming.
+  // Otherwise it steps through the zoom levels, like the buttons. A native listener, because React's wheel
+  // handler can't stop the page from scrolling or zooming.
+  const [wheelSteps] = useState(() => wheelZoomSteps());
   useEffect(() => {
     const el = tl.current;
-    if (!el || !trim) return;
+    if (!el) return;
     const wheel = (e: WheelEvent) => {
       e.preventDefault();
+      if (!trim) { const d = wheelSteps(e); if (d) zoomBy(d); return; }
       if (trim.grab) return;
       const r = el.getBoundingClientRect(), px = e.deltaMode === 1 ? 16 : 1;
       if (!e.ctrlKey && Math.abs(e.deltaX) > Math.abs(e.deltaY)) { panTrimBy((e.deltaX * px) / r.width); return; }
@@ -238,11 +247,6 @@ export function Player({ cameraId }: { cameraId: string }) {
     setScrub((p) => (p && ms < now() - 5000 ? { ...p, ms, held: true } : null));
   };
 
-  const zoomBy = (d: number) => {
-    const z = clamp(zoom + d, 0, ZOOMS.length - 1);
-    if (z === zoom) return;
-    setZoom(z); setView(null); setZoomNote((p) => ({ text: z || !rolling ? ZOOMS[z][1] : "24 hours", n: (p?.n ?? 0) + 1 }));
-  };
   useEffect(() => { if (!zoomNote) return; const i = setTimeout(() => setZoomNote(null), 1200); return () => clearTimeout(i); }, [zoomNote]);
   const back = () => (history.length > 1 ? history.back() : nav("/"));
   const toggle = () => { setGap(null); if (live) { seek(Date.now() - 6000, false); setPlaying(false); } else setPlaying((p) => !p); };
