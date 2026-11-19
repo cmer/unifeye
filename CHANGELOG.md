@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## 1.3.0 - 2026-11-19
+
+### Added
+- Scrolling or pinching on the timeline zooms it in and out.
+- Click a colored event mark on the timeline to jump to that moment. Pointing at one shows what happened and when.
+
+### Changed
+- Clicking “Now” at the end of the timeline goes back to live video.
+- The timeline is easier to grab: you no longer need to land right on the dot.
+
 ## 1.2.2 - 2026-11-18
 
 ### Added
