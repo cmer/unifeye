@@ -1,8 +1,6 @@
 # Changelog
 
 What changed in each release of Unifeye, for the people who run it and use it.
-Changes waiting for the next release are in `.changelog/`; `scripts/release.sh` gathers
-them into the new version's section here and uses it as the GitHub release notes.
 
 ## 1.2.2 - 2026-11-18
 
