@@ -6,6 +6,10 @@ and uses it as the GitHub release notes.
 
 ## Unreleased
 
+### Changed
+- Clicking “Now” at the end of the timeline goes back to live video.
+- The timeline is easier to grab: you no longer need to land right on the dot.
+
 ## 1.2.2 - 2026-11-18
 
 ### Added

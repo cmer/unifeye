@@ -210,7 +210,7 @@ export function RewindBar({ rw, tz, dock, tools }: { rw: RewindState; tz: string
 
   return (
     <div className="absolute inset-x-3 bottom-3 z-20 rounded-xl border bg-background/90 px-3 pt-2 pb-1.5 shadow-lg backdrop-blur-md">
-      <div ref={tl} className="relative h-8 cursor-pointer touch-none select-none" role="slider" aria-label="Timeline" aria-valuemin={a} aria-valuemax={b} aria-valuenow={Math.round(pt)} aria-valuetext={fmtTime(pt, tz)} tabIndex={0}
+      <div ref={tl} className="relative h-8 cursor-pointer touch-none select-none before:absolute before:inset-x-0 before:-top-3 before:-bottom-4 before:content-['']" role="slider" aria-label="Timeline" aria-valuemin={a} aria-valuemax={b} aria-valuenow={Math.round(pt)} aria-valuetext={fmtTime(pt, tz)} tabIndex={0}
         onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); rw.startScrub(at(e.currentTarget, e.clientX)); }}
         onPointerMove={(e) => { if (e.buttons && dragging) rw.scrubTo(at(e.currentTarget, e.clientX)); }}
         onPointerUp={rw.endScrub} onPointerCancel={rw.endScrub}
@@ -222,8 +222,9 @@ export function RewindBar({ rw, tz, dock, tools }: { rw: RewindState; tz: string
         <i className={`pointer-events-none absolute bottom-[3px] size-[15px] -translate-x-1/2 rounded-full ${showLive ? "live-dot bg-red-500" : "bg-foreground shadow-[0_0_0_4px_color-mix(in_oklab,var(--foreground)_25%,transparent)]"}`} style={{ left: pct(pt) }} />
         {dragging && <span className={`pointer-events-none absolute bottom-8 rounded-md bg-foreground px-2 py-0.5 text-sm font-semibold whitespace-nowrap text-background tabular-nums shadow ${f < 0.06 ? "" : f > 0.94 ? "-translate-x-full" : "-translate-x-1/2"}`} style={{ left: pct(pt) }}>{toLive ? "Live" : fmtTime(pt, tz)}</span>}
       </div>
-      <div className="relative h-4 text-[11px] text-muted-foreground">{ticks.map((m) => { const g = (m - a) / (b - a); return <span key={m} className={`absolute top-0 whitespace-nowrap ${g < 0.04 ? "" : g > 0.96 ? "-translate-x-full" : "-translate-x-1/2"} ${m === today ? "font-semibold text-foreground" : ""}`} style={{ left: pct(m) }}>{m === today ? "Today" : fmtShort(m, tz)}</span>; })}
-        {toNow && <span className="absolute top-0 right-0 font-semibold text-red-500">Now</span>}</div>
+      <div className="pointer-events-none relative h-4 text-[11px] text-muted-foreground">{ticks.map((m) => { const g = (m - a) / (b - a); return <span key={m} className={`absolute top-0 whitespace-nowrap ${g < 0.04 ? "" : g > 0.96 ? "-translate-x-full" : "-translate-x-1/2"} ${m === today ? "font-semibold text-foreground" : ""}`} style={{ left: pct(m) }}>{m === today ? "Today" : fmtShort(m, tz)}</span>; })}
+        {toNow && (live ? <span className="absolute top-0 right-0 font-semibold text-red-500">Now</span>
+          : <button type="button" className="pointer-events-auto absolute -top-1 -right-2 cursor-pointer rounded px-2 py-1 font-semibold text-red-500 hover:text-red-400" onClick={rw.close}>Now</button>)}</div>
       <div className="mt-1 flex items-center gap-0.5 overflow-x-auto">
         {dock}
         <Button variant="ghost" size="icon" className={ghost} aria-label="Back 10 seconds" onClick={() => rw.seek(t - 10_000)}><RotateCcw /></Button>

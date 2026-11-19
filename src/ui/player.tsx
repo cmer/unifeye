@@ -338,7 +338,7 @@ export function Player({ cameraId }: { cameraId: string }) {
       )}
       <div className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent px-4 pt-12 pb-[max(0.9rem,env(safe-area-inset-bottom))] transition-opacity ${idle ? "opacity-0" : ""}`}>
         {zoomNote && <div key={zoomNote.n} role="status" className="pointer-events-none absolute top-5 left-1/2 -translate-x-1/2 rounded-md bg-black/75 px-2.5 py-1 text-xs font-semibold whitespace-nowrap">{zoomNote.text}</div>}
-        <div ref={tl} className="relative h-8 cursor-pointer touch-none select-none" role="slider" aria-label="Timeline" aria-valuemin={a} aria-valuemax={b} aria-valuenow={Math.round(pt)} aria-valuetext={fmtTime(pt, tz)} tabIndex={0}
+        <div ref={tl} className="relative h-8 cursor-pointer touch-none select-none before:absolute before:inset-x-0 before:-top-4 before:-bottom-5 before:content-['']" role="slider" aria-label="Timeline" aria-valuemin={a} aria-valuemax={b} aria-valuenow={Math.round(pt)} aria-valuetext={fmtTime(pt, tz)} tabIndex={0}
           onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); const ms = at(e.currentTarget, e.clientX); if (trim) drag(nearestEnd(trim, ms), ms); else startScrub(ms); }}
           onPointerUp={(e) => { if (trim?.grab) drag(trim.grab, at(e.currentTarget, e.clientX), true); else if (dragging) endScrub(scrub.ms); }}
           onPointerCancel={() => { if (trim?.grab) drag(trim.grab, trim[trim.grab], true); else if (dragging) endScrub(scrub.ms); }}
@@ -356,8 +356,9 @@ export function Player({ cameraId }: { cameraId: string }) {
           {dragging && (() => { const f = (scrub.ms - a) / (b - a); return <span className={`pointer-events-none absolute bottom-8 rounded-md bg-white px-2 py-0.5 text-sm font-semibold whitespace-nowrap text-black tabular-nums shadow ${f < 0.06 ? "" : f > 0.94 ? "-translate-x-full" : "-translate-x-1/2"}`} style={{ left: pct(scrub.ms) }}>{toLive ? "Live" : fmtTime(scrub.ms, tz)}</span>; })()}
           {showLive && !trim && !dragging && <span className="pointer-events-none absolute right-0 bottom-[25px] rounded bg-red-500 px-1 text-[10px] leading-[14px] font-bold tracking-wide">LIVE</span>}
         </div>
-        <div className="relative mt-0.5 h-4 text-[11px] text-zinc-400">{ticks.map((m) => { const f = (m - a) / (b - a); return <span key={m} className={`absolute top-0 whitespace-nowrap ${f < 0.04 ? "" : f > 0.96 ? "-translate-x-full" : "-translate-x-1/2"} ${m === today ? "font-semibold text-zinc-200" : ""}`} style={{ left: pct(m) }}>{m === today ? "Today" : fmtShort(m, tz)}</span>; })}
-          {toNow && <span className="absolute top-0 right-0 font-semibold text-red-400">Now</span>}</div>
+        <div className="pointer-events-none relative mt-0.5 h-4 text-[11px] text-zinc-400">{ticks.map((m) => { const f = (m - a) / (b - a); return <span key={m} className={`absolute top-0 whitespace-nowrap ${f < 0.04 ? "" : f > 0.96 ? "-translate-x-full" : "-translate-x-1/2"} ${m === today ? "font-semibold text-zinc-200" : ""}`} style={{ left: pct(m) }}>{m === today ? "Today" : fmtShort(m, tz)}</span>; })}
+          {toNow && (live ? <span className="absolute top-0 right-0 font-semibold text-red-400">Now</span>
+            : <button type="button" className="pointer-events-auto absolute -top-1 -right-2 cursor-pointer rounded px-2 py-1 font-semibold text-red-400 hover:text-red-300" onClick={() => seek(Date.now())}>Now</button>)}</div>
         {trim ? (
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {(["a", "b"] as const).map((g) => <input key={g} type="time" step={1} aria-label={g === "a" ? "Clip starts" : "Clip ends"} value={timeInput(trim[g], tz)} onChange={(e) => typeTrim(g, e.target.value)} className="h-9 rounded-lg border border-white/30 bg-transparent px-2 text-sm text-white tabular-nums outline-none [color-scheme:dark] focus-visible:border-white" />)}
