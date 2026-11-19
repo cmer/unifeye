@@ -6,6 +6,8 @@ and uses it as the GitHub release notes.
 
 ## Unreleased
 
+## 1.2.2 - 2026-11-18
+
 ### Added
 - When playback skips a few seconds the recorder didn't record, a short note says so.
 - Zoomed in, the timeline shows short breaks in the recording around the parts you've watched.
