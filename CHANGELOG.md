@@ -1,6 +1,4 @@
-# Changelog
-
-What changed in each release of Unifeye, for the people who run it and use it.
+# CHANGELOG
 
 ## 1.2.2 - 2026-11-18
 
