@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { api, dayBounds, EVENT_COLOR, EVENT_LABEL, fmtShort, fmtTime, type ActivityEvent } from "./api";
 import { windowStart } from "./recorded-playback";
 import { WindowWarmer } from "./scrub-still";
-import { DAY, fmtAgo, tickTimes } from "./timeline";
+import { DAY, fmtAgo, tickTimes, wheelZoomSteps } from "./timeline";
 
 type Range = [number, number];
 /** How much time the timeline shows, widest first. 0 is the last 24 hours. */
@@ -190,6 +190,16 @@ export function RewindBar({ rw, tz, dock, tools }: { rw: RewindState; tz: string
   const [zoom, setZoom] = useState(0);
   const [view, setView] = useState<number | null>(null);
   const tl = useRef<HTMLDivElement>(null);
+  const zoomBy = (d: number) => setZoom((z) => { const n = Math.min(Math.max(z + d, 0), ZOOMS.length - 1); if (n !== z) setView(null); return n; });
+  // The wheel or a pinch on the timeline steps through the zoom levels. A native listener, so the page doesn't scroll or zoom.
+  const [wheelSteps] = useState(() => wheelZoomSteps());
+  useEffect(() => {
+    const el = tl.current;
+    if (!el) return;
+    const wheel = (e: WheelEvent) => { e.preventDefault(); const d = wheelSteps(e); if (d) zoomBy(d); };
+    el.addEventListener("wheel", wheel, { passive: false });
+    return () => el.removeEventListener("wheel", wheel);
+  }, [wheelSteps]);
   const lo = clock - DAY, hi = clock, span = ZOOMS[zoom][0];
   let a = lo, b = hi;
   // Zoomed in, the timeline shows a stretch around the playhead that holds still while the playhead is inside it.
@@ -236,8 +246,8 @@ export function RewindBar({ rw, tz, dock, tools }: { rw: RewindState; tz: string
         <span className="min-w-2 flex-1" />
         {!live && <Button variant="outline" size="sm" className="mr-1 shrink-0 rounded-full" onClick={rw.close}><i className="size-1.5 rounded-full bg-muted-foreground" />Go live</Button>}
         {!live && <select aria-label="Playback speed" value={rw.speed} onChange={(e) => rw.setSpeed(Number(e.target.value))} className="h-8 shrink-0 rounded-lg bg-transparent px-1 text-sm outline-none hover:bg-accent max-sm:hidden">{[0.5, 1, 2, 4].map((x) => <option key={x} value={x}>{x}×</option>)}</select>}
-        <Button variant="ghost" size="icon" className={`${ghost} max-sm:hidden`} aria-label="Zoom out" title="Zoom out" disabled={zoom === 0} onClick={() => { setZoom((z) => z - 1); setView(null); }}><ZoomOut /></Button>
-        <Button variant="ghost" size="icon" className={`${ghost} max-sm:hidden`} aria-label="Zoom in" title="Zoom in" disabled={zoom === ZOOMS.length - 1} onClick={() => { setZoom((z) => z + 1); setView(null); }}><ZoomIn /></Button>
+        <Button variant="ghost" size="icon" className={`${ghost} max-sm:hidden`} aria-label="Zoom out" title="Zoom out" disabled={zoom === 0} onClick={() => zoomBy(-1)}><ZoomOut /></Button>
+        <Button variant="ghost" size="icon" className={`${ghost} max-sm:hidden`} aria-label="Zoom in" title="Zoom in" disabled={zoom === ZOOMS.length - 1} onClick={() => zoomBy(1)}><ZoomIn /></Button>
         {tools}
       </div>
     </div>
