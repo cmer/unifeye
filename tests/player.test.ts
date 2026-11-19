@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Entry } from "@/server/media/timeline";
 import { canHandOver, carryOnAt, cursorAt, cursorAtBase, handOver, positionAt, seekTo, shouldArm, skipped, stepEntries, stepPlayback, windowHoles, windowStart, type MediaPort, type Shown } from "@/ui/recorded-playback";
-import { cutHoles, DAY, fmtAgo, fmtSkipped, tickTimes, timelineBounds } from "@/ui/timeline";
+import { cutHoles, DAY, fmtAgo, fmtSkipped, tickTimes, timelineBounds, wheelZoomSteps } from "@/ui/timeline";
 import { dragTrim, MIN_CLIP, nearestEnd, panTrim, startTrim, TRIM_SPAN, typeTrim, viewFor, zoomTrim, type Trim } from "@/ui/trim";
 
 /** A <video> element as far as playback can see one. Moving it is instant. */
@@ -407,5 +407,37 @@ describe("timeline range", () => {
     expect(fmtAgo(5 * H)).toBe("5 hr ago");
     expect(fmtAgo(5 * H + 12 * 60_000)).toBe("5 hr 12 min ago");
     expect(fmtAgo(3 * DAY)).toBeNull();
+  });
+});
+
+describe("zooming the timeline with the wheel", () => {
+  const ev = (timeStamp: number, deltaY: number, o: { deltaX?: number; deltaMode?: number; ctrlKey?: boolean } = {}) => ({ timeStamp, deltaY, deltaX: o.deltaX ?? 0, deltaMode: o.deltaMode ?? 0, ctrlKey: o.ctrlKey ?? false });
+
+  it("zooms in on a wheel up and out on a wheel down", () => {
+    expect(wheelZoomSteps()(ev(0, -100))).toBe(1);
+    expect(wheelZoomSteps()(ev(0, 100))).toBe(-1);
+    expect(wheelZoomSteps()(ev(0, 3, { deltaMode: 1 }))).toBe(-1);
+  });
+
+  it("adds up small scrolls, and starts afresh after a quiet spell", () => {
+    const w = wheelZoomSteps();
+    expect(w(ev(0, -15))).toBe(0);
+    expect(w(ev(16, -15))).toBe(0);
+    expect(w(ev(32, -15))).toBe(1);
+    const q = wheelZoomSteps();
+    expect(q(ev(0, -30))).toBe(0);
+    expect(q(ev(1000, -30))).toBe(0);
+  });
+
+  it("moves one level per flick, however long the trackpad coasts", () => {
+    const w = wheelZoomSteps();
+    const out = Array.from({ length: 60 }, (_, i) => w(ev(i * 16, -30)));
+    expect(out.filter((d) => d !== 0)).toEqual([1]);
+    expect(w(ev(60 * 16 + 400, -100))).toBe(1);
+  });
+
+  it("follows a pinch and ignores sideways scrolling", () => {
+    expect(wheelZoomSteps()(ev(0, -25, { ctrlKey: true }))).toBe(1);
+    expect(wheelZoomSteps()(ev(0, 10, { deltaX: 200 }))).toBe(0);
   });
 });
