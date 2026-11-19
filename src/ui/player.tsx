@@ -13,7 +13,7 @@ import { RecordedVideo } from "./recorded-video";
 import { windowStart } from "./recorded-playback";
 import { dragTrim, nearestEnd, panTrim, startTrim as newTrim, TRIM_SPAN, typeTrim as typedTrim, zoomedSpan, zoomTrim as zoomedTrim, type End, type Trim } from "./trim";
 import { claimSound, setSound, SoundButton, useSound } from "./sound";
-import { cutHoles, DOT_REACH_PX, fmtAgo, fmtSkipped, nearestEvent, tickTimes, timelineBounds, wheelZoomSteps } from "./timeline";
+import { cutHoles, DOT_REACH_PX, fmtAgo, fmtSkipped, fmtSpan, MIN_SPAN, nearestEvent, nextZoomStop, tickTimes, timelineBounds, UNZOOMED, wheelZoom, zoomedView, zoomTimeline, type Zoom } from "./timeline";
 import { ScrubStill, WindowWarmer } from "./scrub-still";
 
 type Ranges = { ranges: [number, number][]; precision: "exact" | "bounds" };
@@ -28,9 +28,6 @@ const fmtLen = (ms: number) => {
   const s = Math.round(ms / 1000), m = Math.floor(s / 60), h = Math.floor(m / 60);
   return h ? `${h} hr${m % 60 ? ` ${m % 60} min` : ""}` : m ? `${m} min${s % 60 ? ` ${s % 60} sec` : ""}` : `${s} sec`;
 };
-const fmtSpan = (ms: number) => { const m = Math.round(ms / 60_000); return m >= 60 ? `${+(m / 60).toFixed(1)} hour${m === 60 ? "" : "s"}` : `${m} minute${m === 1 ? "" : "s"}`; };
-/** How much time the timeline shows, widest first. 0 is everything (see `timelineBounds`). */
-const ZOOMS: [number, string][] = [[0, "Whole day"], [6 * 3600_000, "6 hours"], [3600_000, "1 hour"], [600_000, "10 minutes"]];
 /** Spacing between timeline labels: the first that gives at most six across. */
 /** A skip over time not recorded this long or longer pauses playback and says so, rather than playing on. */
 const LONG_GAP = 60_000;
@@ -59,9 +56,8 @@ export function Player({ cameraId }: { cameraId: string }) {
   const [clock, setClock] = useState(() => Date.now());
   /** A past date was picked: show that calendar day rather than the last 24 hours (see `timelineBounds`). */
   const [pinned, setPinned] = useState(false);
-  const [zoom, setZoom] = useState(0);
-  /** Start of the zoomed-in stretch. It stays put while the playhead is inside it, so clicks and drags land where aimed. */
-  const [view, setView] = useState<number | null>(null);
+  /** How far the timeline is zoomed in, and where (see `zoomedView`). */
+  const [zoom, setZoom] = useState<Zoom>(UNZOOMED);
   const [zoomNote, setZoomNote] = useState<{ text: string; n: number } | null>(null);
   const [rec, setRec] = useState<Ranges | null>(null);
   const [events, setEvents] = useState<ActivityEvent[]>([]);
@@ -175,26 +171,25 @@ export function Player({ cameraId }: { cameraId: string }) {
     setTrim((tr) => tr && zoomedTrim(tr, factor, frac, at));
   };
   const panTrimBy = (frac: number) => { const at = now(); setTrim((tr) => tr && panTrim(tr, frac, at)); };
-  /** Steps through the zoom levels (`ZOOMS`). */
-  const zoomBy = (d: number) => {
-    const z = clamp(zoom + d, 0, ZOOMS.length - 1);
-    if (z === zoom) return;
-    setZoom(z); setView(null); setZoomNote((p) => ({ text: z || !rolling ? ZOOMS[z][1] : "24 hours", n: (p?.n ?? 0) + 1 }));
+  /** The buttons and keys zoom to the next stop in (1) or out (-1), around the playhead (see `nextZoomStop`). */
+  const zoomBy = (d: 1 | -1) => {
+    const [a0, b0] = zoomedView(zoom, t, lo, hi, live), to = nextZoomStop(b0 - a0, d, hi - lo);
+    if (Math.abs(to - (b0 - a0)) < 1) return;
+    setZoom(zoomTimeline(zoom, to / (b0 - a0), undefined, t, lo, hi, live));
+    setZoomNote((p) => ({ text: to < hi - lo ? fmtSpan(to) : rolling ? "24 hours" : "Whole day", n: (p?.n ?? 0) + 1 }));
   };
-  // On the timeline while choosing a clip, the wheel or a pinch zooms around the pointer and a sideways scroll pans.
-  // Otherwise it steps through the zoom levels, like the buttons. A native listener, because React's wheel
-  // handler can't stop the page from scrolling or zooming.
-  const [wheelSteps] = useState(() => wheelZoomSteps());
+  // The wheel or a pinch zooms the timeline smoothly around the pointer. While choosing a clip, a sideways
+  // scroll pans. A native listener, because React's wheel handler can't stop the page from scrolling or zooming.
   useEffect(() => {
     const el = tl.current;
     if (!el) return;
     const wheel = (e: WheelEvent) => {
       e.preventDefault();
-      if (!trim) { const d = wheelSteps(e); if (d) zoomBy(d); return; }
-      if (trim.grab) return;
-      const r = el.getBoundingClientRect(), px = e.deltaMode === 1 ? 16 : 1;
-      if (!e.ctrlKey && Math.abs(e.deltaX) > Math.abs(e.deltaY)) { panTrimBy((e.deltaX * px) / r.width); return; }
-      zoomTrim(Math.exp(clamp(e.deltaY * px, -100, 100) * (e.ctrlKey ? 0.01 : 0.004)), clamp((e.clientX - r.left) / r.width, 0, 1), false);
+      if (trim?.grab) return;
+      const r = el.getBoundingClientRect(), frac = clamp((e.clientX - r.left) / r.width, 0, 1), factor = wheelZoom(e);
+      if (factor === null) { if (trim) panTrimBy(((e.deltaMode === 1 ? 16 : 1) * e.deltaX) / r.width); return; }
+      if (trim) zoomTrim(factor, frac, false);
+      else setZoom((z) => zoomTimeline(z, factor, frac, t, lo, hi, live));
     };
     el.addEventListener("wheel", wheel, { passive: false });
     return () => el.removeEventListener("wheel", wheel);
@@ -278,14 +273,11 @@ export function Player({ cameraId }: { cameraId: string }) {
   if (!cam) return <div className="flex-1 bg-black" />;
 
   let a = lo, b = hi;
-  // Zoomed in, the timeline shows a stretch around the playhead. It holds still while the playhead is
-  // inside it and re-centres when the playhead leaves (live stays at the right edge).
-  const span = ZOOMS[zoom][0];
+  // Zoomed in, the timeline shows a stretch around the playhead (see `zoomedView`).
   if (trim) [a, b] = trim.view;
-  else if (span) {
-    const fits = view !== null && view >= lo && view + span <= hi && t >= view && t <= view + span;
-    a = fits ? view : clamp(t - span * (live ? 0.9 : 0.5), lo, hi - span); b = a + span;
-    if (a !== view) setView(a);
+  else {
+    [a, b] = zoomedView(zoom, t, lo, hi, live);
+    if (b - a < hi - lo && a !== zoom.start) setZoom({ span: b - a, start: a });
   }
   const step = TICKS.find((s) => (b - a) / s <= 6) ?? TICKS[TICKS.length - 1];
   // When the timeline reaches now, the right edge reads "Now" and labels too close to it are dropped. Today's midnight reads "Today".
@@ -407,8 +399,8 @@ export function Player({ cameraId }: { cameraId: string }) {
             : <span className="ml-2 text-base font-semibold tabular-nums">{fmtTime(pt, tz)}{ago && <span className="font-normal text-zinc-400 max-sm:hidden"> · {ago}</span>}</span>}
           <span className="flex-1" />
           {!live && <Button variant="outline" size="sm" className="mr-1 rounded-full border-white/30 bg-transparent text-white hover:bg-white/15 hover:text-white" onClick={() => seek(Date.now())}><i className="size-1.5 rounded-full bg-zinc-400" />Go live</Button>}
-          <Button variant="ghost" size="icon" className={ghost} aria-label="Zoom out" title="Zoom out (−)" disabled={zoom === 0} onClick={() => zoomBy(-1)}><ZoomOut /></Button>
-          <Button variant="ghost" size="icon" className={ghost} aria-label="Zoom in" title="Zoom in (+)" disabled={zoom === ZOOMS.length - 1} onClick={() => zoomBy(1)}><ZoomIn /></Button>
+          <Button variant="ghost" size="icon" className={ghost} aria-label="Zoom out" title="Zoom out (−)" disabled={b - a >= hi - lo} onClick={() => zoomBy(-1)}><ZoomOut /></Button>
+          <Button variant="ghost" size="icon" className={ghost} aria-label="Zoom in" title="Zoom in (+)" disabled={b - a <= MIN_SPAN + 1} onClick={() => zoomBy(1)}><ZoomIn /></Button>
           {!live && <select aria-label="Playback speed" value={speed} onChange={(e) => setSpeed(Number(e.target.value))} className="h-9 rounded-lg bg-transparent px-1 text-sm text-white outline-none hover:bg-white/15 [&>option]:text-black">{[0.5, 1, 2, 4, 8].map((x) => <option key={x} value={x}>{x}×</option>)}</select>}
           {me.subject.canExportClips && <Button variant="ghost" className={ghost} disabled={down} onClick={startTrim}><Download /><span className="max-sm:hidden">Save clip</span></Button>}
           <SoundButton cameraId={cameraId} has={hasAudio} media={live ? liveEl : recEl} recorded={!live} />
