@@ -88,7 +88,10 @@ gateway) is pinned separately in
   recorder does (from the last keyframe at or before its start, so its first GOP is byte for byte the
   last one of the piece before), the joins drop each repeated lead by keyframe hash and the clip comes
   out the requested length plus half a GOP at each end. It also runs with a relative cache folder,
-  which once broke the join.
+  which once broke the join. In mock mode with an adaptive camera, an 11-minute clip whose middle piece
+  the recorder keeps failing keeps the last piece's lead (362 s, 361 s before), and a six-minute clip
+  whose second piece has only the high resolution no longer repeats the high GOP the first piece ended
+  with (319 s, 320 s before).
 - One picture size across a clip (`tests/match-size.test.ts`, and "play at one size" in
   `tests/api.test.ts`): with synthetic files, pieces at 640x480 (4:3), 960x540 and one that changes
   from 640x480 to 1280x720 partway, added before the 1280x720 piece, all come out 1280x720 with every
@@ -123,7 +126,8 @@ gateway) is pinned separately in
   the same low pictures, has nothing or is busy (then "may be missing time"); channel 0 alone when the
   low channel keeps failing; without segment lists, the old size and length rules; which error wins
   when both channels fail; a retime failure kept, a cancel during one stopping the fetch; a clip piece
-  rendered without its leads after the first piece and without its high lead on the first, or saved
+  rendered without its leads after a piece that ended with the same low keyframe and without its high
+  lead otherwise (the first piece, one after a piece left out, or after a different keyframe), or saved
   from the low file with its lead and covered time when rendering fails. `tests/placement.test.ts`
   drives the placement module through `placeStretch` on made-up recordings of made-up scenes (a room
   whose picture changes smoothly, and a still one) and checks what the player would show against
@@ -155,20 +159,32 @@ gateway) is pinned separately in
   eight stretches, mostly by 3 to 37 s and twice by about 80 s (inserts placed in the wrong hole); one
   of the 42, a step of 354 s, came from a misread clock, not from the order. No moment of either file was
   left out. Placing took 0.2 to 0.4 s per stretch. After the placement became one module
-  (`placeStretch`), the scripts gave exactly the same numbers.
+  (`placeStretch`), the scripts gave exactly the same numbers. After keyframes were paired with their
+  pictures once inside `placeStretch` (the scripts now read that pairing from its trace instead of
+  pairing by time themselves), `placement.mts`, `order.mts`, `clock.mts` and `segments.mts` (both
+  channels) gave the same output line for line, the entries and keyframe times of all eight stretches
+  were unchanged, and no GOP or picture was left unpaired (rechecked 2026-11-18).
 - Recorded playback and clip choice in the player (`tests/player.test.ts`), with fake video
   elements, no browser: when the next window is buffered and when it may take over; where a seek
   lands (the entry showing the moment, the high file waiting where it is next needed, a moment only
   the high file has); where playing on starts (past both leads when the keyframes match, else on the
-  base lead); carrying on from the base when the full order arrives; and `stepEntries` frame by frame:
+  base lead; table cases in `tests/timeline.test.ts`); carrying on from the base when the full order arrives; and `stepEntries` frame by frame:
   the high file parked and hidden under base entries, kept in step under overs (moved past 0.25 s of
   drift, matched in speed, shown only with the right frame), playing alone through an insert with the
   base paused and parked, waiting for a high file still loading, inserts skipped and overs played as
   the base without a usable high file, seeks applied once each file can move, the handover at the
-  end of the entries only while playing, and pausing. A clip's ends dragged and typed within the
-  length limits and never past two seconds ago, and the timeline's zoom, pan and refitting. The React
-  wiring around them is not tested. `tests/scrub-still.test.ts` covers the stills shown while dragging
-  the timeline: one request at a time for the latest moment, the 250 ms gap, nearby moments skipped,
+  end of the entries only while playing, and pausing. Across frames (`stepPlayback`): a new window
+  starts with a seek; when the full order arrives, playback restarts from the moment asked for within
+  10 seconds of a seek (or while the seek is not yet carried out) and otherwise carries on from the
+  base; a hand-over carries on where `carryOnAt` says, past a lead that starts half a second before
+  the window, rather than where a seek to the window's start would land (inside that lead); and a
+  frame of the window handed over from, run before the player catches up, changes nothing. Before,
+  such a frame rebuilt the next window's cursor as a seek, which on a lead that crosses the window
+  start played the last moments of the window before again; that race was found by reading the code
+  and was not reproduced in a browser. A clip's ends dragged and typed within the length limits and
+  never past two seconds ago, and the timeline's zoom, pan and refitting. What remains untested is
+  the thin React wiring: refs, the animation-frame loop and the hidden elements of the next window.
+  `tests/scrub-still.test.ts` covers the stills shown while dragging the timeline: one request at a time for the latest moment, the 250 ms gap, nearby moments skipped,
   the last still kept when one fails, nothing after the drag ends.
 - Dragging the player's timeline (mock mode, headless Chromium, 2026-11-18): stills followed the
   playhead with no playback requests during the drag; letting go asked for one window, the still
@@ -298,7 +314,22 @@ are now pinned by the stub tests above. Production has since run live video thro
   seams matched), and the picture never stopped except for 0.3 s at the start. This run found two
   bugs, both fixed: windows with motion at an edge were sent the high file alone, losing low-only
   seconds (`channelsFor`), and the simulated recorder's high exports did not repeat GOPs byte for byte,
-  so a handover replayed its lead. Clips, seeking by hand and slow connections were not tried.
+  so a handover replayed its lead. Clips, seeking by hand and slow connections were not tried. In
+  that run the simulated recorder's GOPs sat on whole seconds, so every lead ended exactly at its
+  window's start, and carrying on from the window before and seeking to the window's start landed on
+  the same entry: the run could not tell them apart.
+- Adaptive playback in mock mode after the simulated GOPs moved to half a second past each whole
+  second (headless Chrome through Playwright, 15-second windows, `MOCK_ADAPTIVE=mock-06`,
+  2026-11-18, twice for 50 s each): the window at second 15 of each half minute opens with the low
+  file's last GOP before its gap, which `tests/playback.test.ts` shows is dated from half a second
+  before the window to half a second into it, so a seek to that window's start lands inside the lead.
+  At every handover into such a window (four across both runs) the base carried on at 1.00 s, just
+  past its 1 s lead, with the high file playing the gap from just past its own lead; the low file
+  played alone, then under the high file from about 12.5 s, held still for the 3 s only the high
+  file has, and ran on with it to the end of motion. The picture stopped for 0.2 s at the start of
+  one run and for one 0.1 s sample in the other. The same check with the earlier player code gave
+  the same handovers: the stale-frame race it had depends on frame timing and did not occur there,
+  so only `tests/player.test.ts` covers it.
 - Adaptive playback in mock mode with the earlier overlay player (headless Chromium, 10-second
   windows, `MOCK_ADAPTIVE=mock-06`, so motion crosses window boundaries): over a minute and six handovers, wall-clock time never
   jumped or repeated. The overlay appeared within about 0.1 s of motion starting and disappeared within

@@ -17,7 +17,7 @@ import { fmtAgo, tickTimes, timelineBounds } from "./timeline";
 import { ScrubStill, WindowWarmer } from "./scrub-still";
 
 type Ranges = { ranges: [number, number][]; precision: "exact" | "bounds" };
-const ZONES: [string, string][] = [["local", "My time zone"], ["UTC", "UTC"], ["America/Toronto", "Toronto"], ["America/Vancouver", "Vancouver"], ["America/Chicago", "Chicago"], ["Europe/London", "London"], ["Europe/Paris", "Paris"], ["Australia/Sydney", "Sydney"]];
+const ZONES: [string, string][] = [["recorder", "Recorder's time zone"], ["local", "My time zone"], ["UTC", "UTC"], ["America/Toronto", "Toronto"], ["America/Vancouver", "Vancouver"], ["America/Chicago", "Chicago"], ["Europe/London", "London"], ["Europe/Paris", "Paris"], ["Australia/Sydney", "Sydney"]];
 const ghost = "text-white hover:bg-white/15 hover:text-white";
 /** `gap`: why a finished clip is noticeably shorter than asked (`durationMs` is its real length). */
 type Job = { id: string; status: string; error: string | null; progress?: number; etaMs?: number | null; fileName?: string | null; bytes?: number | null; durationMs?: number | null; gap?: "unrecorded" | "busy" | null };
@@ -99,8 +99,13 @@ export function Player({ cameraId }: { cameraId: string }) {
     let off = false;
     const to = fetchTo ? Math.min(fetchTo, Date.now()) : Date.now();
     api<Ranges>(`/cameras/${cameraId}/recordings?from=${fetchFrom}&to=${to}`).then((r) => !off && setRec(r)).catch(() => !off && setRec({ ranges: [], precision: "exact" }));
-    api<{ events: ActivityEvent[] }>(`/events?cameraId=${cameraId}&from=${fetchFrom}&to=${to}&limit=1000`).then((r) => !off && setEvents(r.events)).catch(() => {});
-    return () => { off = true; };
+    // A failed load (the recorder busy, the server restarting) tries again soon, backing off, rather than leaving the timeline bare.
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const load = (wait: number) => api<{ events: ActivityEvent[] }>(`/events?cameraId=${cameraId}&from=${fetchFrom}&to=${to}&limit=1000`)
+      .then((r) => !off && setEvents(r.events))
+      .catch(() => { if (!off) retry = setTimeout(() => load(Math.min(wait * 2, 60_000)), wait); });
+    load(5000);
+    return () => { off = true; clearTimeout(retry); };
   }, [cameraId, fetchFrom, fetchTo, ready, refresh]);
   // While the timeline reaches now, pick up newly recorded time and new activity every few minutes.
   useEffect(() => { if (!live && !rolling) return; const i = setInterval(() => setRefresh((n) => n + 1), 180_000); return () => clearInterval(i); }, [live, rolling]);
@@ -283,7 +288,7 @@ export function Player({ cameraId }: { cameraId: string }) {
           <div role="dialog" aria-label="Jump to a time" className="absolute top-14 right-4 z-20 grid w-64 gap-2 rounded-xl border bg-popover p-3 text-popover-foreground shadow-xl">
             <Input type="date" aria-label="Date" value={dateInput(t, tz)} onChange={(e) => { if (!e.target.value) return; const [y, m, d] = e.target.value.split("-").map(Number), p = zonedParts(t, tz), ms = zonedToUtc(y, m, d, p.hour, p.minute, p.second, tz); setPinned(ms < dayBounds(now(), tz)[0]); seek(ms); }} />
             <Input type="time" step={1} aria-label="Time" value={timeInput(t, tz)} onChange={(e) => { if (!e.target.value) return; const [h, mi, s = 0] = e.target.value.split(":").map(Number), p = zonedParts(t, tz); seek(zonedToUtc(p.year, p.month, p.day, h, mi, s, tz)); }} />
-            <Select aria-label="Time zone" value={typeof me.preferences.tz === "string" ? me.preferences.tz : "local"} onChange={(e) => setPref("tz", e.target.value)}>{ZONES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</Select>
+            <Select aria-label="Time zone" value={typeof me.preferences.tz === "string" ? me.preferences.tz : "recorder"} onChange={(e) => setPref("tz", e.target.value)}>{ZONES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</Select>
           </div>
         </>
       )}

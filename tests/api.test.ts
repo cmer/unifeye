@@ -117,6 +117,7 @@ describe("a forbidden camera is indistinguishable from a missing one, on every r
     for (const leak of ["Stock Room", f.cam["Stock Room"], f.cam["Upper Lounge"], f.cam["Parking Lot North"]]) expect(r.text).not.toContain(leak);
     expect((await call(f.u.front, "GET", `/views/${f.viewByName()["Restricted Rooms"]}`)).status).toBe(404);
     const me = (await call(f.u.front, "GET", "/me")).data;
+    expect(me.recorderTimeZone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone); // the mock recorder keeps the server's zone
     expect(me.views.find((v: { name: string }) => v.name === "Building Overview").count).toBe(3);
   });
   it("event listings, counts and ids never cross the permission boundary", async () => {
@@ -244,7 +245,7 @@ describe("long clip exports", () => {
 
   it("keep every minute of an adaptive recording, at the high resolution", async () => {
     const cam = f.cam["Loading Dock"], protectId = f.db.select().from(schema.cameras).where(eq(schema.cameras.id, cam)).get()!.protectId, t = Date.now() - 2 * 3600e3;
-    f.adapter.adaptive.add(protectId); // high resolution only in seconds 12-21 of every half minute
+    f.adapter.adaptive.add(protectId); // high resolution only in seconds 12.5-21.5 of every half minute
     const rec = (await call(f.u.front, "GET", `/cameras/${cam}/recordings?from=${t - 3600e3}&to=${t}`)).data.ranges as [number, number][];
     const [, b] = rec.find(([x, y]) => y - x >= 12 * 60_000)!, startMs = Math.floor((b - 11 * 60_000) / 60_000) * 60_000, endMs = startMs + 6 * 60_000;
     const { id } = (await call(f.u.front, "POST", "/exports", { body: { cameraId: cam, startMs, endMs } })).data;
@@ -257,6 +258,45 @@ describe("long clip exports", () => {
     // second early); before, only the 108 s of high-resolution stretches came out.
     expect((await probe(file)).duration).toBeCloseTo(6 * 60 + 1, 0);
     expect(readdirSync(dirname(file))).toEqual([basename(file)]);
+  }, 120_000);
+
+  /** An adaptive camera and a minute-aligned stretch of its recordings. */
+  const adaptiveSetup = async () => {
+    const cam = f.cam["Loading Dock"], protectId = f.db.select().from(schema.cameras).where(eq(schema.cameras.id, cam)).get()!.protectId, t = Date.now() - 2 * 3600e3;
+    f.adapter.adaptive.add(protectId); // high resolution only in seconds 12-21 of every half minute
+    const rec = (await call(f.u.front, "GET", `/cameras/${cam}/recordings?from=${t - 3600e3}&to=${t}`)).data.ranges as [number, number][];
+    const [, b] = rec.find(([x, y]) => y - x >= 12 * 60_000)!, startMs = Math.floor((b - 11 * 60_000) / 60_000) * 60_000;
+    f.s.recordings.retryDelaysMs = [10, 10];
+    return { cam, startMs, real: f.adapter.exportClip.bind(f.adapter), types: await import("@/server/protect/types") };
+  };
+  const finished = async (cam: string, startMs: number, endMs: number) => {
+    const { id } = (await call(f.u.front, "POST", "/exports", { body: { cameraId: cam, startMs, endMs } })).data;
+    await wait(async () => (await call(f.u.front, "GET", `/exports/${id}`)).data.status !== "running", 110_000);
+    const j = (await call(f.u.front, "GET", `/exports/${id}`)).data;
+    const { probe } = await import("@/server/protect/ffmpeg");
+    return { j, duration: (await probe(f.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, id)).get()!.filePath!)).duration };
+  };
+
+  it("keep the moment before an adaptive piece when the piece before it is left out", async () => {
+    const { cam, startMs, real, types } = await adaptiveSetup(), middle = startMs + 5 * 60_000;
+    vi.spyOn(f.adapter, "exportClip").mockImplementation((id, s0, e0, dest, o) => s0 === middle ? Promise.reject(new types.RecorderBusyError(503)) : real(id, s0, e0, dest, o));
+    const { j, duration } = await finished(cam, startMs, startMs + 11 * 60_000);
+    expect(j.status).toBe("ready"); expect(j.gap).toBe("busy");
+    // Five minutes and the last minute, each with the second before it (the simulated recorder starts
+    // on the keyframe a second early): with nothing before it, the last piece keeps its own.
+    expect(duration).toBeCloseTo(5 * 60 + 1 + 60 + 1, 0);
+  }, 120_000);
+
+  it("don't repeat a moment where an adaptive piece is followed by a high-resolution one", async () => {
+    const { cam, startMs, real, types } = await adaptiveSetup(), second = startMs + 5 * 60_000;
+    // The second piece only has the high resolution, so it is saved as it is, starting with the high
+    // keyframe the first piece ended with.
+    vi.spyOn(f.adapter, "exportClip").mockImplementation((id, s0, e0, dest, o) => s0 === second && o?.quality === "wall" ? Promise.reject(new types.NoRecordingError()) : real(id, s0, e0, dest, o));
+    const { j, duration } = await finished(cam, startMs, startMs + 6 * 60_000);
+    expect(j.status).toBe("ready");
+    // Five minutes and a second, then the high-resolution GOPs of the last minute (seconds 12-21 of
+    // each half minute), without the one the first piece already showed.
+    expect(duration).toBeCloseTo(5 * 60 + 1 + 2 * 9, 0);
   }, 120_000);
 
   it("keep a stretch the recorder only has in low resolution", async () => {

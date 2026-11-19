@@ -1,5 +1,5 @@
 import type { WindowInfo } from "@/server/media/recordings";
-import { entryFor, skipLead, wallAt, type Entry } from "@/server/media/timeline";
+import { entryFor, startAfter, wallAt, type Entry } from "@/server/media/timeline";
 
 /**
  * Recorded playback, without React: where to start a window, when to buffer the next one and hand
@@ -86,17 +86,9 @@ export function cursorAtBase(entries: Entry[], t: number): Cursor {
   return { i, high: positionAt(entries, i, offset).high };
 }
 
-/**
- * Where the next window starts when playing on from `prev`. A window's first entries (its leads)
- * repeat the end of the window before: the base lead is skipped when its keyframe is the same as the
- * last one before, and played otherwise so nothing is left out. The high lead is always skipped: the
- * window before showed that moment already.
- */
+/** Where the next window starts when playing on from `prev` (`startAfter`). */
 export function carryOnAt(prev: Pick<WindowInfo, "seams">, next: Pick<WindowInfo, "seams" | "entries">): number {
-  const es = next.entries, last = prev.seams.base.last;
-  if (last && last === next.seams.base.first) return skipLead(es);
-  const k = es.findIndex((e) => e.lead && e.kind === "base");
-  return k < 0 ? skipLead(es) : k;
+  return startAfter(prev.seams, next);
 }
 
 export interface Step {
@@ -170,4 +162,54 @@ export function stepEntries(base: MediaPort, high: MediaPort | null, entries: En
   const up = positionAt(entries, i).high;
   if (ph == null && up != null && hi.readyState >= HAVE_METADATA && !hi.seeking) move(hi, up);
   return out(false, wall);
+}
+
+/**
+ * Where recorded playback stands across frames: the window it plays (`key`), the cursor in that
+ * window's entries, whether it started with a seek, and whether the window's high-resolution order
+ * is still to come. `from` is the window it was handed over from, if any.
+ */
+export interface Playback { key: string; cur: Cursor; seek: boolean; pending: boolean; from?: string }
+
+/** A window as playback needs it: its key and its description. */
+export interface PlayWindow { key: string; info: Pick<WindowInfo, "entries" | "pending"> }
+
+/** Seconds after a seek within which the high-resolution order, once it arrives, starts again from the moment asked for. */
+const SEEK_SWAP = 10_000;
+
+/** Playback started by a seek to wall-clock `ms` in window `w`. */
+export const seekTo = (w: PlayWindow, ms: number): Playback => ({ key: w.key, cur: cursorAt(w.info.entries, ms), seek: true, pending: !!w.info.pending });
+
+/**
+ * Playback handed over in place from window `prev` to the buffered window `next`: it carries on
+ * where `carryOnAt` says, rather than seeking.
+ */
+export function handOver(prev: { key: string; info: Pick<WindowInfo, "seams"> }, next: { key: string; info: Pick<WindowInfo, "seams" | "entries" | "pending"> }): Playback {
+  const i = carryOnAt(prev.info, next.info);
+  return { key: next.key, cur: { i, ...positionAt(next.info.entries, i) }, seek: false, pending: !!next.info.pending, from: prev.key };
+}
+
+/**
+ * One animation frame of recorded playback: `s` stepped in window `w` (see `stepEntries`), or null
+ * when this frame should do nothing.
+ *
+ * A window other than the one playing starts with a seek to `at.target`. When the high-resolution
+ * order arrives (the window was `pending` and no longer is), playback shortly after a seek (a seek
+ * not yet carried out, or less than 10 seconds shown from the moment asked for) starts again from
+ * that moment, which may be one only the high-resolution file has; otherwise it carries on from where
+ * the base file is. A frame of the window just handed over from does nothing: the player may still
+ * run one before it has caught up with the hand-over, and it must not undo it.
+ */
+export function stepPlayback(
+  s: Playback | null, w: PlayWindow, base: MediaPort, high: MediaPort | null,
+  at: { target: number; shown: number }, o: { playing: boolean; rate: number; start?: (m: MediaPort) => void },
+): { s: Playback; step: Step } | null {
+  if (s && s.key !== w.key && s.from === w.key) return null;
+  if (s?.key !== w.key) s = seekTo(w, at.target);
+  else if (s.pending && !w.info.pending) {
+    const atSeek = s.cur.base != null || Math.abs(at.shown - at.target) < SEEK_SWAP;
+    s = { ...s, pending: false, cur: s.seek && atSeek ? cursorAt(w.info.entries, at.target) : cursorAtBase(w.info.entries, base.currentTime) };
+  }
+  const step = stepEntries(base, high, w.info.entries, s.cur, o);
+  return { s: { ...s, cur: step.cur }, step };
 }

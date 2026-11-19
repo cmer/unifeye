@@ -611,10 +611,16 @@ come first and are flagged. Wall-clock times come from the recorder's segment li
 seek picks the entry that shows the chosen moment, and the time on screen is read from the entry
 playing. The description also carries `seams`, the keyframe hashes of each file's first and last
 GOP. The recorder exports the same GOP byte for byte every time, so when a window's first base GOP is
-the window before's last, playing on skips the leads; otherwise the base lead plays too. The next
+the last GOP of either of the window before's files, playing on skips the leads; otherwise the base
+lead plays too (`startAfter` in `src/server/media/timeline.ts`, which saved clips share). The next
 window's files wait in hidden elements at that entry. These decisions live in
-`src/ui/recorded-playback.ts` (`stepEntries` runs on every animation frame); the player only wires
-them to its video elements. Choosing a clip's ends on the timeline follows the rules in `src/ui/trim.ts`.
+`src/ui/recorded-playback.ts`: one state object (`Playback`: the window playing, the cursor in its
+entries, whether it began with a seek, whether the high-resolution order is still to come) is stepped
+on every animation frame by `stepPlayback`, which starts a new window with a seek, swaps in the full
+order when it arrives (from the moment asked for within 10 seconds of a seek, else from where the
+base is), and plays the entries (`stepEntries`). A hand-over (`handOver`) records the window it came
+from, so a frame of that window that runs before the player catches up does nothing. `RecordedVideo`
+(`src/ui/recorded-video.tsx`, shared by the player and the wall) only wires them to its video elements. Choosing a clip's ends on the timeline follows the rules in `src/ui/trim.ts`.
 Dragging along the timeline does not seek: the video pauses and a full-size still from the recording
 follows the playhead (`StillFeed` in `src/ui/scrub-still.tsx`: one request at a time, at most one every
 250 ms, always for the latest moment). Letting go seeks once, and the still stays up until the video
@@ -700,10 +706,14 @@ The recorder builds a whole export before it sends the first byte, so one reques
 A clip longer than five minutes is therefore exported in five-minute pieces,
 `CLIP_EXPORT_PARALLEL` at a time (default 3), and joined with an FFmpeg stream copy
 (`exportPieces` in `src/server/media/recordings.ts`). Each piece starts with its lead, which the
-piece before ends with: a plain piece is joined from just past its lead when its first keyframe is
-the same GOP as the last one of the piece before (by keyframe hash), and an adaptive piece after the
-first is rendered without its leads. The first adaptive piece keeps the low channel's lead but not the
-high one's, which can be a moment from long before. A piece with nothing recorded is left out.
+piece before ends with. Where a piece carries on is decided as playback decides it (`startAfter`),
+from what the piece just before really was: past its leads when its first base keyframe is the same
+GOP as the last one of either of that piece's files (by keyframe hash), else from its base lead; the
+high lead is never kept, as it can be a moment from long before. A plain piece is joined from that
+point. An adaptive piece is rendered from it, which needs the piece before to be fetched (not
+rendered), so pieces still render side by side; only base keyframes count there, since the piece
+before may yet fall back to its low channel. A piece with nothing recorded, or one the recorder kept
+failing, is left out, and the piece after it then keeps its lead.
 
 The recorder can fail an export without meaning "nothing recorded": the UniFi adapter reports a 5xx,
 408 or 429 answer as `RecorderBusyError` and keeps 404, other refusals and near-empty bodies as

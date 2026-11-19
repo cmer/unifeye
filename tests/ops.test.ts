@@ -8,7 +8,8 @@ import { backupDatabase, pruneBackups, verifyDatabaseFile } from "@/server/db/ba
 import { runMigrations } from "@/server/db/migrate";
 import { restoreDatabase } from "@/server/ops/restore";
 import { makeFixture } from "@/server/testing/fixture";
-import { dayBounds, timeInput, zonedToUtc } from "@/ui/api";
+import { dayBounds, localZone, timeInput, zonedToUtc, zoneFor } from "@/ui/api";
+import { validZone } from "@/server/protect/types";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "unifeye-ops-"));
 /** How many migrations this build ships; the schema version of a freshly installed database. */
@@ -156,6 +157,17 @@ describe("time zones and daylight saving", () => {
     expect(["01:30:00", "03:30:00"]).toContain(timeInput(skipped, TZ));
   });
   it("UTC is exact", () => { expect(zonedToUtc(2026, 1, 2, 3, 4, 5, "UTC")).toBe(Date.UTC(2026, 0, 2, 3, 4, 5)); });
+  it("shows the recorder's zone unless the person picked another", () => {
+    expect(zoneFor(undefined, "Europe/Paris")).toBe("Europe/Paris");
+    expect(zoneFor("recorder", "Europe/Paris")).toBe("Europe/Paris");
+    expect(zoneFor("local", "Europe/Paris")).toBe(localZone());
+    expect(zoneFor("UTC", "Europe/Paris")).toBe("UTC");
+    expect(zoneFor(undefined, null)).toBe(localZone()); // recorder not heard from yet
+  });
+  it("accepts only zone names the runtime knows", () => {
+    expect(validZone("America/Toronto")).toBe("America/Toronto");
+    for (const bad of ["", "Not/AZone", 5, null, undefined]) expect(validZone(bad)).toBeNull();
+  });
 });
 
 // Helpers that open an existing database with the real services, without reseeding it.

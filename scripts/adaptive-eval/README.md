@@ -10,7 +10,9 @@ playback order. `docs/architecture.md` ("Recorded playback") describes the rules
 These scripts are not part of the product or of `pnpm test`. They call the module the way the product
 does (`placeStretch`, from `placeDataset` in `dataset.mts`) on saved exports, and compare the result
 and its trace with the clock each camera draws on its picture. The product
-never reads that clock (not every camera shows one); here it is only the answer key.
+never reads that clock (not every camera shows one); here it is only the answer key. The scripts find
+each keyframe's picture, and so its clock reading, through the trace (`baseFrames`, `high.keys`), the
+pairing the placement itself made, rather than pairing GOPs and pictures again.
 
 ## The footage
 
@@ -118,11 +120,12 @@ shows every half second, then any moment the picture stopped. It needs Playwrigh
 `PLAYWRIGHT` at Playwright's `index.mjs` (for example after `npm i --prefix ~/.cache/pw playwright`):
 
 ```sh
-MOCK_ADAPTIVE=mock-06 PLAYBACK_WINDOW_SECONDS=10 bash .claude/skills/qa-sweep/scripts/stack.sh start 4
+MOCK_ADAPTIVE=mock-06 PLAYBACK_WINDOW_SECONDS=15 bash .claude/skills/qa-sweep/scripts/stack.sh start 4
 PLAYWRIGHT=~/.cache/pw/node_modules/playwright/index.mjs node scripts/adaptive-eval/player-check.mjs http://localhost:3140
 bash .claude/skills/qa-sweep/scripts/stack.sh stop 4
 ```
 
-Ten-second windows make motion cross the handover between windows. The script's header says what the
-output should look like. Stack ports are shared by every checkout on the machine: pick a slot no other
+Fifteen-second windows make motion cross the handover between windows, and the window at second 15
+of each half minute opens inside the GOP the window before ended with (as on a real recorder). The
+script's header says what the output should look like. Stack ports are shared by every checkout on the machine: pick a slot no other
 session is using, or the stacks stop each other.

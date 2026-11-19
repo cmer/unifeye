@@ -25,13 +25,13 @@ const zero = () => ({ gops: 0, correct: 0, wrong: 0, missed: 0, insertOk: 0, unl
 const tot = zero(), margins: number[] = [];
 for (const d of sets) {
   const lo = labels(d, "lo"), hi = labels(d, "hi");
-  const { high, hi: hg, frames: lt, keys: kt, ms } = await placeDataset(d, settings);
-  const { matched: at, similar } = high;
+  const { high, hi: hg, frames: lt, ms } = await placeDataset(d, settings);
+  const { matched: at, similar, keys } = high;
   const m = lt.t.length, have = new Set(lo.filter((x) => x != null));
   const r = zero(), lines: string[] = [];
-  hg.gops.forEach((g, i) => {
+  hg.gops.forEach((_, i) => {
     r.gops++;
-    const k = kt.t.findIndex((t) => Math.abs(t - g.t) < 0.02), s = k < 0 ? null : hi[k];
+    const k = keys[i], s = k == null ? null : hi[k];
     if (s == null) { r.unlabelled++; return; }
     const present = have.has(s);
     if (present) r.present++;

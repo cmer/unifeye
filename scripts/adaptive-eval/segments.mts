@@ -10,16 +10,15 @@
  * about a second (except the first, which starts before the export), and the high lists were 6 to 30
  * seconds off.
  */
-import { gopsOf, thumbnails } from "@/server/protect/ffmpeg";
-import { args, fmt, labels } from "./dataset.mjs";
+import { args, fmt, labels, placeDataset } from "./dataset.mjs";
 
 const { sets, opts } = args(), which = (opts.which ?? "lo") as "lo" | "hi";
 for (const d of sets) {
   const ws = d.meta.startMs, we = d.meta.endMs, lab = labels(d, which);
-  const file = which === "lo" ? d.lo : d.hi, { gops } = await gopsOf(file);
-  // Low labels are per frame, high labels per keyframe: find each keyframe's reading.
-  const t = which === "lo" ? (await thumbnails(file, { keyframes: false, w: 8, h: 6 })).t : (await thumbnails(file, { keyframes: true, w: 8, h: 6 })).t;
-  const keys = gops.map((g) => { const j = t.findIndex((x) => Math.abs(x - g.t) < 0.02); return { t: g.t, c: j < 0 ? null : lab[j] ?? null }; });
+  // Low labels are per frame, high labels per keyframe: the placement's trace pairs each keyframe with its picture.
+  const { trace, lo, hi } = await placeDataset(d);
+  const { gops } = which === "lo" ? lo : hi, pic = which === "lo" ? trace.baseFrames : trace.high!.keys;
+  const keys = gops.map((g, k) => { const j = pic[k]; return { t: g.t, c: j == null ? null : lab[j] ?? null }; });
   const out: string[] = [];
   for (const [a, b] of d.segs[which]) {
     if (b < ws - 60_000 || a > we) continue;
