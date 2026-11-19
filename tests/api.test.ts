@@ -243,32 +243,38 @@ describe("long clip exports", () => {
     expect(readdirSync(dirname(file))).toEqual([basename(file)]); // no pieces or resized copies left behind
   }, 120_000);
 
-  it("keep every minute of an adaptive recording, at the high resolution", async () => {
+  /**
+   * An adaptive camera and a minute-aligned stretch of its recordings, at least a minute inside a
+   * recorded range at both ends of an 11-minute clip: a clip starting just after a gap has no lead,
+   * and one ending just before a gap misses its last GOP. The minute is also one of the same lag
+   * pattern each time (the simulated recorder's high stamps run late by an amount that depends on
+   * the half minute).
+   */
+  const adaptiveSetup = async () => {
     const cam = f.cam["Loading Dock"], protectId = f.db.select().from(schema.cameras).where(eq(schema.cameras.id, cam)).get()!.protectId, t = Date.now() - 2 * 3600e3;
     f.adapter.adaptive.add(protectId); // high resolution only in seconds 12.5-21.5 of every half minute
-    const rec = (await call(f.u.front, "GET", `/cameras/${cam}/recordings?from=${t - 3600e3}&to=${t}`)).data.ranges as [number, number][];
-    const [, b] = rec.find(([x, y]) => y - x >= 12 * 60_000)!, startMs = Math.floor((b - 11 * 60_000) / 60_000) * 60_000, endMs = startMs + 6 * 60_000;
+    const rec = (await call(f.u.front, "GET", `/cameras/${cam}/recordings?from=${t - 6 * 3600e3}&to=${t}`)).data.ranges as [number, number][];
+    const [a] = rec.find(([x, y]) => y - x >= 18 * 60_000)!;
+    let startMs = Math.ceil(a / 60_000 + 1) * 60_000;
+    while (Math.floor(startMs / 60_000) % 5 !== 4) startMs += 60_000;
+    f.s.recordings.retryDelaysMs = [10, 10];
+    return { cam, startMs, real: f.adapter.exportClip.bind(f.adapter), types: await import("@/server/protect/types") };
+  };
+  it("keep every minute of an adaptive recording, at the high resolution", async () => {
+    const { cam, startMs } = await adaptiveSetup(), endMs = startMs + 6 * 60_000;
     const { id } = (await call(f.u.front, "POST", "/exports", { body: { cameraId: cam, startMs, endMs } })).data;
     await wait(async () => (await call(f.u.front, "GET", `/exports/${id}`)).data.status !== "running", 110_000);
     expect((await call(f.u.front, "GET", `/exports/${id}`)).data.status).toBe("ready");
     const file = f.db.select().from(schema.exportJobs).where(eq(schema.exportJobs.id, id)).get()!.filePath!;
     const { probe, videoSizes } = await import("@/server/protect/ffmpeg");
     expect((await videoSizes(file)).sizes).toEqual([{ w: 1280, h: 720 }]);
-    // Six minutes, plus the low-resolution lead (the simulated recorder starts on the keyframe a
-    // second early); before, only the 108 s of high-resolution stretches came out.
-    expect((await probe(file)).duration).toBeCloseTo(6 * 60 + 1, 0);
+    // Six minutes, plus the half second of the low-resolution lead before the start (the simulated
+    // recorder's keyframes are half a second past each second); before, only the 108 s of
+    // high-resolution stretches came out.
+    expect((await probe(file)).duration).toBeCloseTo(6 * 60 + 0.5, 0);
     expect(readdirSync(dirname(file))).toEqual([basename(file)]);
   }, 120_000);
 
-  /** An adaptive camera and a minute-aligned stretch of its recordings. */
-  const adaptiveSetup = async () => {
-    const cam = f.cam["Loading Dock"], protectId = f.db.select().from(schema.cameras).where(eq(schema.cameras.id, cam)).get()!.protectId, t = Date.now() - 2 * 3600e3;
-    f.adapter.adaptive.add(protectId); // high resolution only in seconds 12-21 of every half minute
-    const rec = (await call(f.u.front, "GET", `/cameras/${cam}/recordings?from=${t - 3600e3}&to=${t}`)).data.ranges as [number, number][];
-    const [, b] = rec.find(([x, y]) => y - x >= 12 * 60_000)!, startMs = Math.floor((b - 11 * 60_000) / 60_000) * 60_000;
-    f.s.recordings.retryDelaysMs = [10, 10];
-    return { cam, startMs, real: f.adapter.exportClip.bind(f.adapter), types: await import("@/server/protect/types") };
-  };
   const finished = async (cam: string, startMs: number, endMs: number) => {
     const { id } = (await call(f.u.front, "POST", "/exports", { body: { cameraId: cam, startMs, endMs } })).data;
     await wait(async () => (await call(f.u.front, "GET", `/exports/${id}`)).data.status !== "running", 110_000);
@@ -282,9 +288,9 @@ describe("long clip exports", () => {
     vi.spyOn(f.adapter, "exportClip").mockImplementation((id, s0, e0, dest, o) => s0 === middle ? Promise.reject(new types.RecorderBusyError(503)) : real(id, s0, e0, dest, o));
     const { j, duration } = await finished(cam, startMs, startMs + 11 * 60_000);
     expect(j.status).toBe("ready"); expect(j.gap).toBe("busy");
-    // Five minutes and the last minute, each with the second before it (the simulated recorder starts
-    // on the keyframe a second early): with nothing before it, the last piece keeps its own.
-    expect(duration).toBeCloseTo(5 * 60 + 1 + 60 + 1, 0);
+    // Five minutes and the last minute, each with the half second before it (the simulated recorder
+    // starts on the keyframe half a second early): with nothing before it, the last piece keeps its own.
+    expect(duration).toBeCloseTo(5 * 60 + 0.5 + 60 + 0.5, 0);
   }, 120_000);
 
   it("don't repeat a moment where an adaptive piece is followed by a high-resolution one", async () => {
@@ -294,9 +300,12 @@ describe("long clip exports", () => {
     vi.spyOn(f.adapter, "exportClip").mockImplementation((id, s0, e0, dest, o) => s0 === second && o?.quality === "wall" ? Promise.reject(new types.NoRecordingError()) : real(id, s0, e0, dest, o));
     const { j, duration } = await finished(cam, startMs, startMs + 6 * 60_000);
     expect(j.status).toBe("ready");
-    // Five minutes and a second, then the high-resolution GOPs of the last minute (seconds 12-21 of
-    // each half minute), without the one the first piece already showed.
-    expect(duration).toBeCloseTo(5 * 60 + 1 + 2 * 9, 0);
+    // Five minutes and the half second before, then the high-resolution GOPs the recorder stamped in
+    // the last minute, without the one the first piece already showed. A high-resolution export goes
+    // by the recorder's stamps, which run late: of the 18 seconds of motion in that minute, the last
+    // few are stamped after it and the export leaves them out. Nothing is shown twice.
+    expect(duration).toBeGreaterThan(5 * 60 + 0.5 + 14);
+    expect(duration).toBeLessThan(5 * 60 + 0.5 + 2 * 9 + 0.5);
   }, 120_000);
 
   it("keep a stretch the recorder only has in low resolution", async () => {

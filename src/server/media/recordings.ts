@@ -14,7 +14,7 @@ import { joinParts, probe } from "../protect/ffmpeg";
 import { isNoRecording, isRecorderBusy, NoRecordingError, RecorderBusyError, type ProtectAdapter } from "../protect/types";
 import { badRequest, HttpError, log, newId, notFound } from "../util";
 import { SizeMatcher } from "./match-size";
-import { fetchRecorded, fetchRecordedFile, type Entry, type ExportChannel, type ListSegments, type Piece, type PieceOptions, type Recorded } from "./recorded";
+import { fetchRecorded, fetchRecordedFile, type Entry, type ExportChannel, type ListSegments, type ListStamps, type Piece, type PieceOptions, type Recorded } from "./recorded";
 import { startAfter, type Seams } from "./timeline";
 
 /**
@@ -144,6 +144,12 @@ export class Recordings {
     return (channel, signal) => this.adapter().recordedSegments(protectId, startMs, endMs, channel, signal);
   }
 
+  /** The recorder's time for each GOP of [startMs, endMs), for `fetchRecorded`; undefined when the adapter has none. */
+  private stamps(protectId: string, startMs: number, endMs: number): ListStamps | undefined {
+    const ad = this.adapter();
+    return ad.recordedStamps ? (channel, signal, reach) => ad.recordedStamps!(protectId, startMs - (reach?.beforeMs ?? 0), endMs + (reach?.afterMs ?? 0), channel, signal) : undefined;
+  }
+
   /**
    * The recorder's export of one channel of [startMs, endMs), for `fetchRecorded`. With `retry`, an
    * export that fails for any reason other than "nothing recorded" (the recorder answering with an
@@ -152,11 +158,11 @@ export class Recordings {
    * otherwise be missing from the clip.
    */
   private exporter(protectId: string, startMs: number, endMs: number, retry: boolean): ExportChannel {
-    return async (quality, dest, signal) => {
+    return async (quality, dest, signal, reach) => {
       const ad = this.adapter();
       for (let i = 0; ; i++) {
         try {
-          return await ad.exportClip(protectId, startMs, endMs, dest, { quality, signal });
+          return await ad.exportClip(protectId, startMs - (reach?.beforeMs ?? 0), endMs + (reach?.afterMs ?? 0), dest, { quality, signal });
         } catch (e) {
           if (!retry || signal.aborted || isNoRecording(e) || i >= this.retryDelaysMs.length) throw e;
           log("info", "the recorder could not export part of a clip; trying again", { protectId, startMs, quality, attempt: i + 1, error: e });
@@ -172,12 +178,12 @@ export class Recordings {
    */
   private async build(protectId: string, startMs: number, endMs: number, stem: string, signal: AbortSignal, onBase: (w: PlaybackWindow) => void): Promise<PlaybackWindow> {
     await mkdir(this.dir("playback"), { recursive: true, mode: 0o700 });
-    const tmp = `${stem}.${newId()}`, files = { focus: `${tmp}.f.part`, wall: `${tmp}.w.part` }, base = `${stem}.mp4`;
+    const tmp = `${stem}.${newId()}`, files = { focus: `${tmp}.f.part`, wall: `${tmp}.w.part`, context: `${tmp}.c.part` }, base = `${stem}.mp4`;
     const window = (r: Recorded, extra: Partial<WindowInfo> = {}): WindowInfo => ({ startMs, endMs, entries: r.entries, high: !!r.high, seams: r.seams, ...extra });
     let moved: Promise<void> | null = null;
     try {
       const r = await fetchRecorded(this.exporter(protectId, startMs, endMs, false), startMs, endMs, {
-        files, signal, segments: this.segments(protectId, startMs, endMs), context: { protectId },
+        files, signal, segments: this.segments(protectId, startMs, endMs), stamps: this.stamps(protectId, startMs, endMs), context: { protectId },
         // The base file is final once handed over: it takes its place now, so the player can start on it.
         onBase: (e) => { moved = rename(e.base, base).then(() => onBase({ info: window(e, { pending: true }), base, high: null })); moved.catch(() => {}); },
       });
@@ -188,17 +194,17 @@ export class Recordings {
       await rename(`${tmp}.json.part`, `${stem}.json`);
       return { info, base, high: r.high && `${stem}.hi.mp4` };
     } finally {
-      await Promise.all([files.focus, files.wall, `${tmp}.json.part`].map((p) => rm(p, { force: true })));
+      await Promise.all([files.focus, files.wall, files.context, `${tmp}.json.part`].map((p) => rm(p, { force: true })));
     }
   }
 
   /** One piece of a clip, as a single file covering the whole piece (`fetchRecordedFile`). */
   private async exportPiece(protectId: string, startMs: number, endMs: number, path: string, signal: AbortSignal, join: PieceOptions) {
-    const files = { focus: `${path}.f`, wall: `${path}.w` };
+    const files = { focus: `${path}.f`, wall: `${path}.w`, context: `${path}.c` };
     try {
-      return await fetchRecordedFile(this.exporter(protectId, startMs, endMs, true), startMs, endMs, path, { files, signal, ...join, segments: this.segments(protectId, startMs, endMs), context: { protectId } });
+      return await fetchRecordedFile(this.exporter(protectId, startMs, endMs, true), startMs, endMs, path, { files, signal, ...join, segments: this.segments(protectId, startMs, endMs), stamps: this.stamps(protectId, startMs, endMs), context: { protectId } });
     } finally {
-      await Promise.all([files.focus, files.wall].map((p) => rm(p, { force: true })));
+      await Promise.all([files.focus, files.wall, files.context].map((p) => rm(p, { force: true })));
     }
   }
 

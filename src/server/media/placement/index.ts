@@ -19,9 +19,12 @@
 import type { Entry, Gop, Segments } from "../timeline";
 import { clockOf, jumpsOf, keyTimes, type ClockCosts } from "./clock";
 import { buildEntries, type HoleWeights } from "./order";
-import { frameDiffs, matchGops, pairByTime, type MatchOptions, type Thumbs } from "./pictures";
+import { frameDiffs, likeness, matchGops, pairByTime, type MatchOptions, type Thumbs } from "./pictures";
+import { baseSpans, highTimes, mediaAt, orderByTime, usable, type LagSettings } from "./stamped";
 
 export type { Thumbs } from "./pictures";
+/** True when `stamps` can serve as the times of `gops`: one each, in order. */
+export { usable as stampsFit } from "./stamped";
 
 /** Every setting of the placement, in one place so a tuning run can change any of them. */
 export interface PlacementSettings {
@@ -35,6 +38,8 @@ export interface PlacementSettings {
   clock: ClockCosts;
   /** Choosing the hole for each high GOP the base lacks. */
   holes: HoleWeights;
+  /** With the recorder's stamp for every GOP: finding how late the high channel's stamps run (`LagSettings` explains each). */
+  lag: LagSettings;
 }
 
 export const PLACEMENT: PlacementSettings = {
@@ -43,7 +48,14 @@ export const PLACEMENT: PlacementSettings = {
   jumpRatio: 5,
   clock: { overflow: 20, emptySegment: 5, offJump: 1, gapSec: 8, anchorWeight: 2, anchorSlackSec: 3 },
   holes: { open: 1, close: 0.5, split: 0.2, weak: 0.5, scaleMs: 30_000 },
+  lag: { minSec: -1, maxSec: 36, stepSec: 0.2, absent: 0.7, breakCost: 0.3, stallSec: 5, grow: 0.27, drift: 0.01, shrink: 0.01, resetFromSec: 27, pauseSec: 20, resetToSec: 3, reset: 0.1, join: 0.6 },
 };
+
+/**
+ * How far past a stretch's end its high file should reach when stamps are used, in ms: the recorder
+ * stamps high-resolution GOPs late, so a GOP recorded inside the stretch can be stamped after it.
+ */
+export const highReachMs = (settings: PlacementSettings = PLACEMENT) => settings.lag.maxSec * 1000;
 
 /** The window [startMs, endMs) the files were exported for, in wall-clock ms. */
 export interface Window { startMs: number; endMs: number }
@@ -52,12 +64,25 @@ export interface Window { startMs: number; endMs: number }
  * The base file: its GOPs (`gopsOf`), its video's end in seconds, and the recorder's segment list
  * for its channel (null when the recorder gives none). `frames`, thumbnails of every frame at
  * `thumb` size, are needed to place a high file and let hidden time go where the picture jumps;
- * without them the base is placed by the segment list alone.
+ * without them the base is placed by the segment list alone. `stamps`, the recorder's wall-clock ms
+ * for each GOP's keyframe, replace the segment list and the guessing: the times are then exact.
  */
-export interface BaseFile { gops: Gop[]; end: number; segments: Segments | null; frames?: Thumbs }
+export interface BaseFile { gops: Gop[]; end: number; segments: Segments | null; frames?: Thumbs; stamps?: number[]; context?: Context }
 
-/** The high-resolution file of an adaptive recording: as `BaseFile`, with thumbnails of its keyframes. */
-export interface HighFile { gops: Gop[]; end: number; segments: Segments | null; keys: Thumbs }
+/**
+ * A longer export of the base's channel, reaching `highReachMs` before and after the stretch, with
+ * its stamps and thumbnails of every frame. With stamps, the high file's GOPs are compared with this
+ * instead of the base itself, so that a GOP recorded just outside the stretch is recognised as such
+ * (and left to the stretch it belongs to) rather than squeezed into this one. It is only looked at.
+ */
+export interface Context { gops: Gop[]; stamps: number[]; frames: Thumbs }
+
+/**
+ * The high-resolution file of an adaptive recording: as `BaseFile`, with thumbnails of its keyframes.
+ * Its `stamps` run late by a varying amount, so they are used only when the base has stamps too, and
+ * then the file may hold more than the window: GOPs recorded outside it are left out of the order.
+ */
+export interface HighFile { gops: Gop[]; end: number; segments: Segments | null; keys: Thumbs; stamps?: number[] }
 
 /** What the placement found, for logs and for measuring it (the order itself does not need it). */
 export interface Trace {
@@ -82,6 +107,8 @@ export interface Trace {
     matched: (number | null)[];
     /** How alike high GOP g's keyframe and the base frame at base media time s are: about 1 for the same picture. */
     similar: (g: number, s: number) => number;
+    /** With stamps: how many seconds each high GOP's stamp ran late. */
+    lag?: number[];
   };
 }
 
@@ -99,6 +126,28 @@ export function placeStretch(window: Window, base: BaseFile, high?: HighFile, se
     highGops: nulls(keyOf),
     highKeys: high ? high.keys.t.length - new Set(keyOf.filter((k) => k != null)).size : 0,
   };
+  if (usable(base.gops, base.stamps) && (!high || (usable(high.gops, high.stamps) && base.frames))) {
+    const spans = baseSpans(base.gops, base.stamps, settings.lag.join);
+    const trace = { jumps: [], baseTimes: base.stamps, baseFrames, unpaired };
+    if (!high || !base.frames) return { entries: orderByTime(startMs, endMs, spans), trace };
+    const ctx = base.context && usable(base.context.gops, base.context.stamps) ? base.context : null;
+    const frames = ctx ? ctx.frames : base.frames, seen = ctx ? baseSpans(ctx.gops, ctx.stamps, settings.lag.join) : spans;
+    // The frame (of the context, or else the base) showing a wall-clock time: the last one at or before it.
+    const frameAt = (ms: number) => {
+      const s = mediaAt(seen, ms);
+      if (s == null) return null;
+      let a = 0, b = frames.t.length - 1;
+      while (a < b) { const c = (a + b + 1) >> 1; if (frames.t[c] <= s + 1e-3) a = c; else b = c - 1; }
+      return a;
+    };
+    const like = likeness(high.keys, frames, settings.match);
+    const placed = highTimes(high.gops, high.stamps!, keyOf, frameAt, like, settings.lag);
+    const matched = placed.times.map((t, g) => (placed.seen[g] ? mediaAt(spans, t) : null));
+    // `similar` is asked in the base's media time; the pictures may be the context's.
+    const wall = clockOf(base.gops, base.stamps);
+    const similar = (g: number, s: number) => { const key = keyOf[g], f = key == null ? null : frameAt(wall(s)); return f == null ? 0 : like(key!, f); };
+    return { entries: orderByTime(startMs, endMs, spans, { gops: high.gops, times: placed.times }), trace: { ...trace, high: { times: placed.times, keys: keyOf, matched, similar, lag: placed.lag } } };
+  }
   const jumps = base.frames ? jumpsOf(frameDiffs(base.frames, settings.match.band), base.gops, baseFrames, settings.jumpRatio) : undefined;
   const baseTimes = keyTimes(startMs, endMs, base.gops, base.segments, { jumps }, settings.clock);
   const baseWall = clockOf(base.gops, baseTimes), order = { slack: settings.match.slack, holes: settings.holes };

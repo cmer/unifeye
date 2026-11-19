@@ -116,6 +116,13 @@ export interface ProtectAdapter {
    * the last keyframe at or before `startMs`. Throws NoRecordingError when nothing was recorded.
    */
   exportClip(protectCameraId: string, startMs: number, endMs: number, destPath: string, opts?: { quality?: "wall" | "focus"; signal?: AbortSignal }): Promise<void>;
+  /**
+   * The recorder's wall-clock ms for the keyframe of each GOP that `exportClip` of the same channel
+   * and stretch holds, in the same order. The low channel's follow the camera closely; the high
+   * channel's run late by a varying amount (see `placement/stamped.ts`). Null when the recorder
+   * cannot say. Left out by an adapter that has no such times.
+   */
+  recordedStamps?(protectCameraId: string, startMs: number, endMs: number, quality: "wall" | "focus", signal?: AbortSignal): Promise<number[] | null>;
   /** Newest first. The caller has already reduced `protectCameraIds` to authorized cameras. */
   listEvents(q: EventQuery): Promise<ProtectEvent[]>;
   getEvent(id: string): Promise<ProtectEvent | null>;

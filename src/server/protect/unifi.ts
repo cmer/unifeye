@@ -4,6 +4,7 @@ import { pipeline } from "node:stream/promises";
 import { Agent, request, type Dispatcher } from "undici";
 import { ProtectClient } from "unifi-protect";
 import { log } from "../util";
+import { readStamps } from "./playback-stream";
 import { checkRtsp, withLogin } from "./rtsp-check";
 import { NoRecordingError, ProtectUnavailableError, RecorderBusyError, type AdapterHealth, type CameraLogin, type DirectCheck, type EventQuery, type EventType, type LiveSource, type ProtectAdapter, type ProtectCamera, type ProtectEvent, type RecordingRanges, validZone } from "./types";
 
@@ -263,6 +264,23 @@ export class UnifiProtectAdapter implements ProtectAdapter {
       const rows = r.json<{ start?: unknown; end?: unknown }[]>();
       if (!Array.isArray(rows)) return null;
       return rows.filter((x) => typeof x?.start === "number" && typeof x.end === "number" && x.end >= x.start).map((x) => [x.start as number, x.end as number]);
+    } catch (e) {
+      if (signal?.aborted) throw e;
+      return null;
+    }
+  }
+
+  /**
+   * Protect's playback stream names each GOP's time (`playback-stream.ts`); like `playback-history` it
+   * is not part of the published API, so any failure gives null. A stamp outside the stretch asked for
+   * (but for the lead, which may come from long before) means the stream is not what this expects.
+   */
+  async recordedStamps(id: string, startMs: number, endMs: number, quality: "wall" | "focus", signal?: AbortSignal): Promise<number[] | null> {
+    const url = `wss://${this.o.host}/proxy/protect/ws/playback?camera=${encodeURIComponent(id)}&channel=${quality === "focus" ? 0 : 2}&end=${Math.floor(endMs)}&format=FMP4&lens=0&start=${Math.floor(startMs)}`;
+    try {
+      const stamps = await readStamps(url, { headers: await this.exportAuth(), dispatcher: this.exportAgent(), signal });
+      if (stamps?.some((t, k) => !(t < endMs + 60_000) || (k > 0 && t < startMs - 60_000))) { log("warn", "the recorder's playback stream gave times outside the stretch asked for; ignoring them", { id, startMs }); return null; }
+      return stamps;
     } catch (e) {
       if (signal?.aborted) throw e;
       return null;

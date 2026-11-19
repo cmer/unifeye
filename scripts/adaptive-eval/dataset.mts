@@ -34,6 +34,8 @@ export interface Dataset {
   lo: string;
   hi: string;
   segs: { lo: [number, number][]; hi: [number, number][] };
+  /** The recorder's stamp for each GOP of each file (Protect's playback stream), when captured: `stamps.json`. */
+  stamps: { lo: number[]; hi: number[] } | null;
   /** Local midnight of the window's day, in ms since the epoch: labels count seconds from here. */
   midnightMs: number;
 }
@@ -45,7 +47,7 @@ export function load(dir: string): Dataset {
   const read = (f: string) => JSON.parse(readFileSync(`${dir}/${f}`, "utf8"));
   const meta: Meta = read("meta.json");
   const local = meta.startMs + meta.utcOffsetMinutes * 60_000;
-  return { name: basename(dir), dir, meta, lo: `${dir}/lo.mp4`, hi: `${dir}/hi.mp4`, segs: read("segs.json"), midnightMs: local - (local % DAY) - meta.utcOffsetMinutes * 60_000 };
+  return { name: basename(dir), dir, meta, lo: `${dir}/lo.mp4`, hi: `${dir}/hi.mp4`, segs: read("segs.json"), stamps: existsSync(`${dir}/stamps.json`) ? read("stamps.json") : null, midnightMs: local - (local % DAY) - meta.utcOffsetMinutes * 60_000 };
 }
 
 /** The clock readings `label.mts` saved; fails with a hint when they are missing. */
@@ -93,7 +95,9 @@ export async function placeDataset(d: Dataset, settings: PlacementSettings = PLA
   const [lo, hi] = await Promise.all([gopsOf(d.lo), gopsOf(d.hi)]);
   const [frames, keys] = await Promise.all([thumbnails(d.lo, { keyframes: false, ...settings.thumb }), thumbnails(d.hi, { keyframes: true, ...settings.thumb })]);
   const t0 = performance.now();
-  const placed = placeStretch({ startMs: d.meta.startMs, endMs: d.meta.endMs }, { gops: lo.gops, end: lo.end, segments: d.segs.lo, frames }, { gops: hi.gops, end: hi.end, segments: d.segs.hi, keys }, settings);
+  // STAMPS=0 places without the recorder's stamps, as the product does when it cannot get them.
+  const st = process.env.STAMPS === "0" ? null : d.stamps;
+  const placed = placeStretch({ startMs: d.meta.startMs, endMs: d.meta.endMs }, { gops: lo.gops, end: lo.end, segments: d.segs.lo, frames, stamps: st?.lo }, { gops: hi.gops, end: hi.end, segments: d.segs.hi, keys, stamps: st?.hi }, settings);
   return { ...placed, high: placed.trace.high!, ms: performance.now() - t0, lo, hi, frames, keys };
 }
 

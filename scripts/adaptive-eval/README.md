@@ -33,7 +33,8 @@ Each dataset is one window of one camera (`dataset.mts` has the details):
 | --- | --- |
 | `lo.mp4`, `hi.mp4` | The recorder's exports of the window: channel 2 (low) and channel 0 (high) |
 | `segs.json` | The recorder's segment lists for both channels (`playback-history`) |
-| `meta.json` | Camera, window, UTC offset, and where the camera draws its clock |
+| `meta.json` | Camera, window, UTC offset, and where the camera draws its clock. `highExtendMs` (new captures) says the high file runs that long past the window |
+| `stamps.json` | Optional: the recorder's wall-clock ms for each GOP of each file (`{ lo, hi }`), read from Protect's playback stream. The high channel is stamped up to ~35 s late, so new captures export it 60 s past the window |
 | `labels_lo.json`, `labels_hi.json` | The clock read off every low frame and every high keyframe, in seconds since local midnight |
 
 ## Running
@@ -51,6 +52,8 @@ pnpm tsx scripts/adaptive-eval/placement.mts ../unifeye-test-footage/adaptive/d*
 | `clock.mts` | How far the keyframe times are from the clock, for the low file and for the high one. |
 | `segments.mts` | What the recorder's segment lists mean, against the clock (`which=hi` for the high channel). Rerun after a Protect update. |
 | `label.mts` | Reads the clocks and writes the two label files (macOS only; builds `ocr.swift` with `swiftc` on first use). |
+| `lag.mts` | With `stamps.json`: how close the time given to each high GOP is to the clock. `V=1` lists every GOP. |
+| `windows.mts` | With `stamps.json`: plays each dataset as the product does, one minute at a time with context either side, and counts clock seconds shown out of order, shown twice and recorded but never shown. `V=1` lists every entry. This is the number that matters for placement with stamps. |
 | `capture.mjs` | Captures a new dataset from the recorder (see below). |
 | `player-check.mjs` | Watches adaptive playback in headless Chrome on a mock-mode stack (no footage needed; see below). |
 
@@ -65,9 +68,22 @@ Protect 7.3). Placement changes should keep or beat these; record new numbers in
 | `order.mts` | 42 moments shown after a later one |
 | `clock.mts` | Low keyframe times within 4.1 s of the clock at the median, 16.1 s at p90, 35.7 s at worst |
 
+With the recorder's stamps (the product's normal path since 2026-11-18), measured that day on `d0`
+to `d13` (fourteen five-minute windows from twelve cameras, Protect 7.3.74):
+
+| Script | Result |
+| --- | --- |
+| `windows.mts` | 42 one-minute windows holding 1393 s of footage by the clock: 65 s shown out of order (about a dozen misplaced runs, nearly all in still scenes), 8 s shown twice, 86 s never shown. Shown time is within 0.4 s of the clock at the median and 5.5 s at p90. |
+| `lag.mts` | 731 high GOPs with a readable clock: 552 placed within 1.5 s of it, 650 within 4 s. The high channel's stamps ran late by 16 s at the median and 32.5 s at most. |
+
+Both counts include a few misread clocks (`d5` and `d11` have keyframe labels that are minutes off),
+and the two channels draw their clocks up to two seconds apart, so small steps are not all real.
+
 ## Tuning
 
-Every setting of the placement is in `PLACEMENT` (`src/server/media/placement/index.ts`), which
+The settings for placement with stamps are `PLACEMENT.lag` (`lag.absent=0.65` and so on); `STAMPS=0`
+runs `placement.mts`, `order.mts` and `clock.mts` the old way, as the product does when the recorder
+gives no stamps. Every setting of the placement is in `PLACEMENT` (`src/server/media/placement/index.ts`), which
 explains each one. `placement.mts`, `order.mts` and `clock.mts` take overrides by dotted path before
 the dataset folders, for example:
 
@@ -96,6 +112,10 @@ for exports and segment lists. It runs inside the Unifeye app container, which h
    ```sh
    ssh <server> 'cd <compose dir> && docker compose exec -T app node --input-type=module - <camera id> <start ms> 5 /tmp/adaptive-eval-new' < scripts/adaptive-eval/capture.mjs
    ```
+   The capture also writes `stamps.json`, and exports the high channel 60 s past the window
+   (`highExtendMs` in `meta.json`). For a dataset captured earlier, print its stamps (both channels over
+   exactly the window) with `... - stamps <camera id> <start ms> <end ms>` and check there are as many
+   as keyframes in each file (`ffprobe -select_streams v -show_entries packet=flags -of csv=p=0 file | grep -c K`).
 3. Copy it into the footage clone and delete it from the server in the same step. Never leave
    captures on the server:
    ```sh

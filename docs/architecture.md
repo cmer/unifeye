@@ -655,6 +655,34 @@ threshold it uses is in one settings object, `PLACEMENT`. Its other files (`pict
 `order.ts`) are its implementation; nothing else imports them, and its tests and
 `scripts/adaptive-eval` go through `placeStretch` too.
 
+- **The recorder's own times (stamps).** An export has no times inside, but Protect's playback
+  stream (the websocket its own timeline player uses, `/proxy/protect/ws/playback`) sends the same
+  GOPs one fragment each, and every fragment says when its first frame was recorded.
+  `recordedStamps` (`src/server/protect/playback-stream.ts`) reads only those times; the media still
+  comes from the export, whose GOPs they are matched with one to one (a fragment that starts without
+  a keyframe continues the GOP before it). The stream is not part of Protect's published API: when it
+  fails, or its count does not fit the export, everything below marked "without stamps" applies
+  instead. The mock recorder gives stamps too.
+  - The low channel's stamps follow the camera to within about a second and show every hole in the
+    recording, so they are the timeline: base times are exact, and a hole is a hole.
+  - The high channel's stamps cannot be used as they are. On third-party cameras the recorder's clock
+    for that channel runs ahead of the camera, so a GOP is stamped late (its lag): the lag grows as
+    footage is written and across stalls, and at about 32 seconds the recorder starts again near
+    zero, after leaving out about half a minute (measured with `scripts/adaptive-eval`; see
+    `docs/verification.md`). Protect's own player lays the high channel over the low one by these
+    stamps, so it shows high-resolution pictures from up to half a minute earlier.
+  - Placement with stamps (`placement/stamped.ts`) therefore finds one thing: how late each high
+    GOP's stamp runs. A search over the GOPs in order treats a run of GOPs that follow on as one rigid
+    piece, allows breaks, stalls and the recorder starting again as measured, and scores each GOP's
+    keyframe against the low frame at the time its lag gives it (or a fixed score where the low
+    channel has a hole). The order is then built by time alone: `over` where both channels have the
+    moment, `base` or `insert` where one does.
+  - A GOP recorded inside a window can be stamped after it, so the high channel is exported up to
+    `highReachMs` (the largest lag searched) past the window's end, and the pictures are compared
+    with a longer low-channel export reaching as far before and after (the context, only looked at).
+    High GOPs recorded before or after the window are left to the windows there, so each moment is
+    played by exactly one window. Only the part of the base's first GOP before the window is flagged
+    as its lead.
 - **Video clock.** Some cameras' low channel exports with a video clock that runs fast (a 60-second
   window holds about 38 seconds of video beside 60 seconds of audio), which made the picture race
   ahead and then freeze. The base export is retimed before anything reads it: the video frames are
@@ -672,12 +700,12 @@ threshold it uses is in one settings object, `PLACEMENT`. Its other files (`pict
   channel covers the window lost low-only seconds at the edges of motion. Without segment lists,
   channel 0 is exported first and the low channel added only when channel 0 comes back more than a
   second short and the low one is longer and smaller.
-- **Times.** The base's keyframes get wall-clock times by fitting its GOPs into the low channel's
+- **Times, without stamps.** The base's keyframes get wall-clock times by fitting its GOPs into the low channel's
   segments: a small search over which GOPs belong to which segment, with time hidden inside a
   segment placed where the picture jumps, or spread evenly when nothing says where.
   The high channel's segment lists are not reliable (off by 6 to 30 seconds on the recorder tested),
   so they serve only where pictures say nothing.
-- **Placing the high-resolution file.** Each high GOP is placed on the base by its picture:
+- **Placing the high-resolution file, without stamps.** Each high GOP is placed on the base by its picture:
   small grey thumbnails of every base frame and every high keyframe,
   without the top and bottom bands where cameras draw their clock and name, compared both as they
   are and minus each channel's usual picture. A search keeps placements moving forward, rewards runs

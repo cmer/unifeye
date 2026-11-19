@@ -3,7 +3,7 @@ import { isCodec, timedEncode } from "../protect/encoders";
 import { gopsOf, probe, renderEntries, retimeVideoToAudio, thumbnails, videoSizes, type MediaInfo } from "../protect/ffmpeg";
 import { isNoRecording, isRecorderBusy } from "../protect/types";
 import { log } from "../util";
-import { PLACEMENT, placeStretch, type Thumbs } from "./placement";
+import { highReachMs, PLACEMENT, placeStretch, stampsFit, type Context, type Thumbs } from "./placement";
 import { startAfter, type Entry, type Gop, type Seam, type Seams, type Segments } from "./timeline";
 
 export type { Entry } from "./timeline";
@@ -27,10 +27,28 @@ export type { Entry } from "./timeline";
  *   never retimed: its sound is stored apart from its picture and does not line up with it.
  * - Without segment lists (the recorder doesn't offer them), the files decide: channel 0 alone unless
  *   it comes back short and the low channel holds more at a smaller size.
+ * - When the recorder can name each GOP's time (`stamps`), an adaptive stretch is placed by those
+ *   times instead of by guesses: the low channel's are the timeline, and pictures only measure how
+ *   late the high channel's run. The high file is then exported past the stretch's end
+ *   (`highReachMs`), because a GOP recorded inside the stretch can be stamped after it; whatever was
+ *   recorded outside the stretch is left to the stretches there. To tell which GOPs those are, the
+ *   pictures are compared with a longer export of the low channel (`files.context`, the same reach
+ *   before and after), which is only looked at. If the stamps do not fit the files, or there is no
+ *   context, the stretch is fetched and placed the old way.
  */
 
-/** Writes the recorder's export of one channel to `dest`. The caller decides retries; errors are the adapter's. */
-export type ExportChannel = (channel: "focus" | "wall", dest: string, signal: AbortSignal) => Promise<void>;
+/** How much more than the stretch itself to ask for, before its start and after its end. */
+export interface Reach { beforeMs?: number; afterMs?: number }
+/**
+ * Writes the recorder's export of one channel to `dest`. The caller decides retries; errors are the
+ * adapter's.
+ */
+export type ExportChannel = (channel: "focus" | "wall", dest: string, signal: AbortSignal, reach?: Reach) => Promise<void>;
+/**
+ * The recorder's time for each GOP the export of one channel holds (with the same `reach`), or null
+ * when it cannot say.
+ */
+export type ListStamps = (channel: "focus" | "wall", signal: AbortSignal, reach?: Reach) => Promise<number[] | null>;
 /** The recorder's segment list for one channel around the stretch, or null when it has none to give. */
 export type ListSegments = (channel: "focus" | "wall", signal: AbortSignal) => Promise<Segments | null>;
 
@@ -67,15 +85,22 @@ export interface Recorded {
   seams: Seams;
   /** The low channel was needed but kept failing for reasons other than "nothing recorded", so time may be missing. */
   busy: boolean;
+  /** Where the base file's first GOP ends, in its media time. */
+  leadEnd?: number;
 }
 
 export interface FetchOptions {
-  /** Scratch paths for the two channels' exports. The caller deletes both afterwards. */
-  files: { focus: string; wall: string };
+  /**
+   * Scratch paths for the two channels' exports, and for the longer low-channel export that stamps
+   * need (`context`; without it stamps only time the low channel). The caller deletes them afterwards.
+   */
+  files: { focus: string; wall: string; context?: string };
   signal: AbortSignal;
   ops?: MediaOps;
   /** The recorder's segment lists, when it offers them. */
   segments?: ListSegments;
+  /** The recorder's time for each GOP, when it offers them (adaptive stretches only ask). */
+  stamps?: ListStamps;
   /**
    * Called once the base is ready, before the high channel is placed on it (which waits for the
    * larger high-resolution export), with entries for the base alone. Lets playback start sooner.
@@ -119,7 +144,9 @@ export async function fetchRecorded(exportChannel: ExportChannel, startMs: numbe
   const span = (endMs - startMs) / 1000, window = { startMs, endMs };
   const lists = opts.segments ? await Promise.all((["focus", "wall"] as const).map((c) => opts.segments!(c, signal).catch((e) => { if (signal.aborted) throw e; return null; }))) : [null, null];
   const segs = { focus: lists[0], wall: lists[1] };
-  const get = (channel: "focus" | "wall") => exportChannel(channel, files[channel], signal).then(() => files[channel]);
+  const get = (channel: "focus" | "wall", reach?: Reach) => exportChannel(channel, files[channel], signal, reach).then(() => files[channel]);
+  const stampsOf = (channel: "focus" | "wall", reach?: Reach): Promise<number[] | null> => (opts.stamps ? opts.stamps(channel, signal, reach).catch((e) => { if (signal.aborted) throw e; return null; }) : Promise.resolve(null));
+  const reach = opts.stamps && files.context ? highReachMs() : 0;
   /** A file played on its own (or as the base): clock repaired, GOPs read, entries for it alone. */
   const asBase = async (channel: "focus" | "wall") => {
     const path = files[channel];
@@ -128,15 +155,18 @@ export async function fetchRecorded(exportChannel: ExportChannel, startMs: numbe
     if (!g.gops.length) throw new Error("the export has no video");
     return { path, channel, ...g };
   };
-  const alone = (b: Awaited<ReturnType<typeof asBase>>, busy = false, frames?: Thumbs): Recorded => {
-    const { entries } = placeStretch(window, { gops: b.gops, end: b.end, segments: segs[b.channel], frames });
-    return { base: b.path, high: null, entries, seams: { base: seamOf(b.gops), high: null }, busy };
+  const alone = (b: Awaited<ReturnType<typeof asBase>>, busy = false, frames?: Thumbs, stamps?: number[] | null): Recorded => {
+    const { entries } = placeStretch(window, { gops: b.gops, end: b.end, segments: segs[b.channel], frames, stamps: stamps ?? undefined });
+    return { base: b.path, high: null, entries, seams: { base: seamOf(b.gops), high: null }, busy, leadEnd: b.gops[1]?.t ?? b.end };
   };
   /** Channel 0 first; the low channel when channel 0 has nothing or keeps failing. */
   const single = async (first: "focus" | "wall") => {
     try {
+      // The low channel of an adaptive camera has holes: its stamps say where. Channel 0 alone is not asked (its stamps run late).
+      const stamps = first === "wall" ? stampsOf("wall") : null;
+      stamps?.catch(() => {});
       await get(first);
-      return alone(await asBase(first));
+      return alone(await asBase(first), false, undefined, await stamps);
     } catch (e) {
       if (first === "wall" || signal.aborted || !(isNoRecording(e) || isRecorderBusy(e))) throw e;
       // Low channel failing too: "nothing recorded" keeps the first answer; anything else is the real problem.
@@ -149,8 +179,26 @@ export async function fetchRecorded(exportChannel: ExportChannel, startMs: numbe
   if (mode === "focus" || mode === "wall") return single(mode);
   // Both channels: the low one is the base. Without segment lists, channel 0 decides first.
   let focus: Promise<string | null>, wall: Promise<string | null>, busy = false, focusErr: unknown = null, wallErr: unknown = null;
+  let lowStamps: Promise<number[] | null> = Promise.resolve(null), highStamps: Promise<number[] | null> = Promise.resolve(null), reached = 0;
+  let around: Promise<Context | null> = Promise.resolve(null);
   if (mode === "both") {
-    focus = get("focus").catch((e) => { if (signal.aborted || !(isNoRecording(e) || isRecorderBusy(e))) throw e; focusErr = e; return null; });
+    reached = reach;
+    lowStamps = stampsOf("wall");
+    lowStamps.catch(() => {});
+    if (reach) {
+      const wide = { beforeMs: reach, afterMs: reach }, path = files.context!;
+      highStamps = stampsOf("focus", { afterMs: reach });
+      highStamps.catch(() => {});
+      // The low channel a while either side of the stretch, to compare the high GOPs with.
+      around = (async () => {
+        const [stamps] = await Promise.all([stampsOf("wall", wide), exportChannel("wall", path, signal, wide)]);
+        const g = await ops.gops(path, signal);
+        if (!stamps || !stampsFit(g.gops, stamps)) return null;
+        return { gops: g.gops, stamps, frames: await ops.thumbnails(path, { keyframes: false, ...PLACEMENT.thumb }, signal) };
+      })().catch((e) => { if (signal.aborted) throw e; log("warn", "could not fetch the low channel around a stretch", { ...context, startMs, error: e }); return null; });
+      around.catch(() => {});
+    }
+    focus = get("focus", reach ? { afterMs: reach } : undefined).catch((e) => { if (signal.aborted || !(isNoRecording(e) || isRecorderBusy(e))) throw e; focusErr = e; return null; });
     wall = get("wall").catch((e) => { if (signal.aborted) throw e; wallErr = e; return null; });
     focus.catch(() => {}); // awaited below; never left unhandled if the base fails first
   } else {
@@ -169,23 +217,39 @@ export async function fetchRecorded(exportChannel: ExportChannel, startMs: numbe
     // The low channel has nothing or kept failing: channel 0 alone, which then may miss time.
     busy = !isNoRecording(wallErr);
     if (!(await focus)) throw busy ? wallErr : focusErr;
+    // Played on its own, the high file must be the stretch's, not one reaching past it.
+    if (reached) await get("focus");
     return alone(await asBase("focus"), busy);
   }
   const b = await asBase("wall");
   const frames = await ops.thumbnails(b.path, { keyframes: false, ...PLACEMENT.thumb }, signal);
-  const early = alone(b, busy, frames);
+  const ls = await lowStamps, baseStamps = stampsFit(b.gops, ls ?? undefined) ? ls : null;
+  const early = alone(b, busy, frames, baseStamps);
   onBase?.(early);
-  const f = await focus;
+  let f = await focus;
   if (!f) return { ...early, busy: busy || isRecorderBusy(focusErr) };
-  const h = await ops.gops(f, signal);
-  // Channel 0 hands back the low picture where it has no high one: nothing to place.
+  let h = await ops.gops(f, signal), hs = await highStamps;
+  const ctx = await around;
+  if (reached && !(baseStamps && ctx && stampsFit(h.gops, hs ?? undefined))) {
+    // No usable stamps after all: the old placement needs the high file of the stretch itself.
+    log("warn", "the recorder's times do not fit its export; placing by pictures alone", { ...context, startMs, lowGops: b.gops.length, lowStamps: ls?.length ?? null, highGops: h.gops.length, highStamps: hs?.length ?? null, context: !!ctx });
+    hs = null;
+    f = await get("focus").catch((e) => { if (signal.aborted || !(isNoRecording(e) || isRecorderBusy(e))) throw e; focusErr = e; return null; });
+    if (!f) return { ...early, busy: busy || isRecorderBusy(focusErr) };
+    h = await ops.gops(f, signal);
+  }
+  // Channel 0 hands back the low picture where it has no high one: nothing to place. (A file that
+  // reaches past the stretch then starts with the base's GOPs and carries on with later ones.)
   const lowHashes = new Set(b.gops.map((g) => g.hash));
-  if (h.gops.length < 2 || h.gops.every((g) => lowHashes.has(g.hash))) return early;
+  if (h.gops.length < 2 || h.gops.slice(0, b.gops.length).every((g) => lowHashes.has(g.hash))) return early;
   const keys = await ops.thumbnails(f, { keyframes: true, ...PLACEMENT.thumb }, signal);
-  const { entries, trace } = placeStretch(window, { gops: b.gops, end: b.end, segments: segs.wall, frames }, { gops: h.gops, end: h.end, segments: segs.focus, keys });
-  const matched = trace.high!.matched.filter((a, g) => a != null && g > 0).length;
-  log("info", "adaptive recording placed", { ...context, startMs, lowGops: b.gops.length, highGops: h.gops.length, matched, unpaired: trace.unpaired });
-  return { base: b.path, high: f, entries, seams: { base: seamOf(b.gops), high: seamOf(h.gops) }, busy };
+  const { entries, trace } = placeStretch(window, { gops: b.gops, end: b.end, segments: segs.wall, frames, stamps: hs ? baseStamps! : undefined, context: hs && ctx ? ctx : undefined }, { gops: h.gops, end: h.end, segments: segs.focus, keys, stamps: hs ?? undefined });
+  const matched = trace.high!.matched.filter((a, g) => a != null && (hs || g > 0)).length;
+  log("info", "adaptive recording placed", { ...context, startMs, lowGops: b.gops.length, highGops: h.gops.length, matched, unpaired: trace.unpaired, ...(trace.high!.lag ? { stamped: true, lagSec: [Math.round(Math.min(...trace.high!.lag)), Math.round(Math.max(...trace.high!.lag))] } : {}) });
+  // A high file that reaches past the stretch ends with GOPs of later stretches: its seam is the last
+  // GOP stamped inside this one, which is the GOP the next stretch's export starts with.
+  const inside = hs ? h.gops.filter((_, k) => hs![k] < endMs) : h.gops;
+  return { base: b.path, high: f, entries, seams: { base: seamOf(b.gops), high: seamOf(inside.length ? inside : h.gops) }, busy };
 }
 
 /**
@@ -251,7 +315,14 @@ export async function fetchRecordedFile(exportChannel: ExportChannel, startMs: n
     }
   }
   await rename(r.base, path);
-  const info = await ops.probe(path, signal), base = r.entries.filter((e) => e.kind !== "insert");
+  // A plain piece is joined by cutting whole GOPs, so its whole first GOP is the lead here (with
+  // stamps, only the part before the stretch is flagged).
+  const info = await ops.probe(path, signal), base = r.entries.filter((e) => e.kind !== "insert").flatMap((e): Entry[] => {
+    const cut = r.leadEnd == null || e.lead ? 0 : Math.min(e.len, r.leadEnd - e.base);
+    if (cut <= 0.02) return [e];
+    const span = (cut / e.len) * e.span, head: Entry = { ...e, len: cut, span, lead: true };
+    return e.len - cut <= 0.02 ? [head] : [head, { ...e, base: e.base + cut, len: e.len - cut, at: e.at + span, span: e.span - span }];
+  });
   log("info", "clip piece ready", { ...context, startMs, fetchMs, combined: false, width: info.width });
   return { info, entries: base, rendered: false, seams: { base: r.seams.base, high: null }, busy: r.busy, coveredMs: coveredMs(base, startMs, endMs), combineMs: 0 };
 }
