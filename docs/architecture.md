@@ -629,6 +629,25 @@ Resting on one window while dragging for `SCRUB_PRELOAD_MS` (default 500, 0 off)
 description (`WindowWarmer`), which starts the export; moving to another window cancels it. After
 letting go it is kept for three seconds, so the seek joins the same export instead of starting over.
 
+The timeline's recorded ranges (`GET /api/cameras/:id/recordings`) come from the adapter's
+`recordingRanges`. The real adapter builds them from the recorder's segment lists for both channels,
+so they are `exact` for gaps of about 20 seconds and more; shorter holes are only known from the
+windows the player has loaded. Since entry times are exact, a gap between one entry's end and the next
+one's start is a hole: the recorder has nothing there, and playback runs straight on past it.
+`RecordedVideo` reports both. `windowHoles` (`src/ui/recorded-playback.ts`) lists a window's holes
+(gaps of 1.5 seconds or more between the entries that play, and at its edges; a window with nothing
+is one hole) once its final description arrives, and the player cuts them out of the timeline's bar
+(`cutHoles` in `src/ui/timeline.ts`), skipping those narrower than half a pixel. It keeps them only
+for windows within six hours of the latest one, and never asks for a description just to learn its
+holes, since that makes the recorder export video. `skipped` notices, step by step, when the time on
+screen moves on two seconds or more beyond what playing on at the current speed accounts for (never
+at the start, after a seek, when the high-resolution order arrives or while paused). The player then
+shows a short note ("8 seconds not recorded"); a skip of a minute or more pauses playback on a screen
+saying nothing was recorded until then, with Keep playing and Go live. When a whole window has
+nothing while playing on and the timeline shows footage starting within a minute, the player seeks on
+to it with the same note, but only once in a row: landing on nothing again shows the screen. Footage
+a minute or more away is offered as "Skip to". The wall leaves both callbacks out.
+
 ### Rewinding the wall
 
 The wall's Rewind button opens a timeline in place of its dock (`src/ui/wall-rewind.tsx`). It shows

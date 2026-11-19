@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Entry } from "@/server/media/timeline";
-import { canHandOver, carryOnAt, cursorAt, cursorAtBase, handOver, positionAt, seekTo, shouldArm, stepEntries, stepPlayback, windowStart, type MediaPort } from "@/ui/recorded-playback";
-import { DAY, fmtAgo, tickTimes, timelineBounds } from "@/ui/timeline";
+import { canHandOver, carryOnAt, cursorAt, cursorAtBase, handOver, positionAt, seekTo, shouldArm, skipped, stepEntries, stepPlayback, windowHoles, windowStart, type MediaPort, type Shown } from "@/ui/recorded-playback";
+import { cutHoles, DAY, fmtAgo, fmtSkipped, tickTimes, timelineBounds } from "@/ui/timeline";
 import { dragTrim, MIN_CLIP, nearestEnd, panTrim, startTrim, TRIM_SPAN, typeTrim, viewFor, zoomTrim, type Trim } from "@/ui/trim";
 
 /** A <video> element as far as playback can see one. Moving it is instant. */
@@ -241,6 +241,82 @@ describe("recorded playback across frames", () => {
     const base = el({ currentTime: 1 });
     expect(stepPlayback(s, B, base, null, at(ws2), playing)!.s.cur).toEqual({ i: 1 });
     expect(base.currentTime).toBe(1);
+  });
+});
+
+describe("time not recorded", () => {
+  /** A window whose base file has nothing from ws+9.5 s to ws+18 s. */
+  const H = { key: `${ws}:1`, info: { entries: [E("base", 0, 1, ws - 500, undefined, true), E("base", 1, 9, ws + 500), E("base", 10, 10, ws + 18_000)] } };
+  /** Steps `base` through frames `ms` apart at `rate`, returning every skip seen. */
+  function run(s: ReturnType<typeof seekTo>, base: ReturnType<typeof el>, frames: number, ms: number, rate: number, last: Shown | null = null) {
+    const skips: [number, number][] = [];
+    let at = 0;
+    for (let n = 0; n < frames; n++) {
+      const r = stepPlayback(s, H, base, null, { target: ws + 500, shown: 0 }, { playing: true, rate })!;
+      s = r.s;
+      const k = skipped(last, s, r.step.wall, at, { playing: true, rate });
+      last = k.last;
+      if (k.skip) skips.push(k.skip);
+      at += ms; base.currentTime += (ms / 1000) * rate;
+    }
+    return { skips, last, s };
+  }
+
+  it("says nothing for the small steps of playing on, at any speed, or for frames held back", () => {
+    for (const rate of [0.5, 1, 2, 4, 8]) expect(run(seekTo(H, ws + 500), el(), 60, 16, rate).skips).toEqual([]);
+    // A tab in the background: no frames for half a minute while the video played on.
+    expect(run(seekTo(H, ws + 500), el(), 2, 30_000, 1).skips).toEqual([]);
+  });
+
+  it("reports a hole inside a window once, from where playing on would be to where it lands", () => {
+    const { skips } = run(seekTo(H, ws + 500), el(), 12, 1000, 1);
+    expect(skips).toEqual([[ws + 9500, ws + 18_000]]);
+  });
+
+  it("reports a hole across a hand-over to the next window", () => {
+    const ws2 = ws + W, B = { key: `${ws2}:1`, info: { entries: [E("base", 0, 1, ws2 - 500, undefined, true), E("base", 1, 49, ws2 + 8000)], seams: { base: { first: "k9", last: "k20" }, high: null } } };
+    const s = handOver({ key: H.key, info: { seams: { base: { first: "k0", last: "k9" }, high: null } } }, B);
+    const last: Shown = { key: H.key, pending: false, wall: ws2 + 480, at: 0 };
+    expect(skipped(last, s, ws2 + 8000, 16, playing).skip).toEqual([ws2 + 496, ws2 + 8000]);
+    // A window after a seek, or the same window with its full order, starts afresh.
+    expect(skipped(last, seekTo(B, ws2 + 9000), ws2 + 9000, 16, playing)).toEqual({ last: { key: B.key, pending: false, wall: ws2 + 9000, at: 16 }, skip: null });
+    expect(skipped({ ...last, key: B.key, pending: true }, s, ws2 + 20_000, 16, playing).skip).toBeNull();
+  });
+
+  it("says nothing at the start, while paused, or for a wait to move the files", () => {
+    const s = seekTo(H, ws + 500);
+    expect(skipped(null, s, ws + 20_000, 0, playing)).toEqual({ last: { key: H.key, pending: false, wall: ws + 20_000, at: 0 }, skip: null });
+    const last: Shown = { key: H.key, pending: false, wall: ws + 1000, at: 0 };
+    expect(skipped(last, s, ws + 20_000, 16, { playing: false, rate: 1 })).toEqual({ last: null, skip: null });
+    // While nothing shows, time passes without playing on: the jump after it still counts.
+    const k = skipped(last, s, null, 5000, playing);
+    expect(k.last).toEqual({ ...last, at: 5000 });
+    expect(skipped(k.last, s, ws + 9000, 5016, playing).skip).toEqual([ws + 1016, ws + 9000]);
+  });
+
+  it("finds a window's holes: between entries, at its edges, past its leads", () => {
+    const es = [E("insert", 0, 1, ws - 300_000, 0, true), E("base", 0, 1, ws - 500, undefined, true), E("base", 1, 10, ws + 2000), E("base", 11, 5, ws + 13_000), E("base", 16, 10, ws + 30_000)];
+    // From the end of the lead, between entries 1.5 s apart or more, and after the last.
+    expect(windowHoles(ws, W, { entries: es })).toEqual([[ws + 500, ws + 2000], [ws + 18_000, ws + 30_000], [ws + 40_000, ws + W]]);
+    // A window fully recorded, entries running past its end, and one with nothing.
+    expect(windowHoles(ws, W, { entries })).toEqual([]);
+    expect(windowHoles(ws, W, { entries: [E("base", 0, 70, ws - 1000)] })).toEqual([]);
+    expect(windowHoles(ws, W, { entries: [E("base", 0, 1, ws, undefined, true)] })).toEqual([[ws + 1000, ws + W]]);
+    expect(windowHoles(ws, W, "none")).toEqual([[ws, ws + W]]);
+  });
+
+  it("cuts holes out of the timeline's recorded ranges", () => {
+    expect(cutHoles([[0, 100], [200, 300]], [[250, 400], [10, 20], [90, 210], [15, 18]])).toEqual([[0, 10], [20, 90], [210, 250]]);
+    expect(cutHoles([[0, 100]], [])).toEqual([[0, 100]]);
+  });
+
+  it("says how much was not recorded", () => {
+    expect(fmtSkipped(1200)).toBe("1 second not recorded");
+    expect(fmtSkipped(8400)).toBe("8 seconds not recorded");
+    expect(fmtSkipped(59_400)).toBe("59 seconds not recorded");
+    expect(fmtSkipped(59_600)).toBe("1 minute not recorded");
+    expect(fmtSkipped(89_000)).toBe("1 minute not recorded");
+    expect(fmtSkipped(170_000)).toBe("3 minutes not recorded");
   });
 });
 

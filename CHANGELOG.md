@@ -6,6 +6,12 @@ and uses it as the GitHub release notes.
 
 ## Unreleased
 
+### Added
+- When playback skips a few seconds the recorder didn't record, a short note says so.
+- Zoomed in, the timeline shows short breaks in the recording around the parts you've watched.
+- When playback reaches a minute or more with nothing recorded, it pauses and says when the
+  recording picks up again, with a button to keep playing. Shorter gaps are skipped on their own.
+
 ### Fixed
 - Recordings from cameras that record in two qualities (adaptive recording) no longer jump back and
   forth in time or repeat moments. Unifeye now reads the recorder's own time for every piece of

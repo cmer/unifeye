@@ -213,3 +213,48 @@ export function stepPlayback(
   const step = stepEntries(base, high, w.info.entries, s.cur, o);
   return { s: { ...s, cur: step.cur }, step };
 }
+
+/** How far ahead of where playing on would be (ms of wall-clock time) the time on screen must jump to count as skipping time not recorded. */
+const SKIP_MIN = 2000;
+
+/** The last step that showed a time: which window and order it played, the time shown, and when it ran (ms, any clock). */
+export interface Shown { key: string; pending: boolean; wall: number; at: number }
+
+/**
+ * Time not recorded that playback just skipped over, as [from, to] wall-clock ms: the time on screen
+ * moved on by 2 seconds or more beyond what playing on at `rate` since the last step accounts for
+ * (which covers every speed, frames held back and a tab in the background). Only while playing on in
+ * the same window and order, or into the window handed over to: never at the start, after a seek, when
+ * the high-resolution order arrives, or while paused. `last` is what to pass to the next step.
+ */
+export function skipped(last: Shown | null, s: Playback, wall: number | null, at: number, o: { playing: boolean; rate: number }): { last: Shown | null; skip: [number, number] | null } {
+  if (!o.playing) return { last: null, skip: null };
+  const now = (shown: number): Shown => ({ key: s.key, pending: s.pending, wall: shown, at });
+  if (!last || (last.key === s.key ? last.pending !== s.pending : s.from !== last.key)) return { last: wall == null ? null : now(wall), skip: null };
+  // Files still being moved into place: nothing to compare yet, and the wait isn't playing on.
+  if (wall == null) return { last: now(last.wall), skip: null };
+  const ahead = last.wall + (at - last.at) * o.rate;
+  return { last: now(wall), skip: wall - ahead >= SKIP_MIN ? [Math.min(wall, ahead), wall] : null };
+}
+
+/** The shortest gap between entries that counts as a hole. */
+const HOLE_MIN = 1500;
+
+/**
+ * Stretches of window [`ws`, `ws + W`) with nothing recorded, as [from, to] wall-clock ms: gaps of at
+ * least 1.5 seconds between the entries that play, and before the first and after the last. Leads are
+ * not played, but the window before showed them, so the time they cover at the window's start counts as
+ * recorded. A window with no recording is one hole.
+ */
+export function windowHoles(ws: number, W: number, info: Pick<WindowInfo, "entries"> | "none"): [number, number][] {
+  if (info === "none") return [[ws, ws + W]];
+  const out: [number, number][] = [];
+  let end = ws;
+  const gap = (to: number) => { const a = Math.max(ws, end), b = Math.min(ws + W, to); if (b - a >= HOLE_MIN) out.push([a, b]); };
+  for (const e of info.entries) {
+    if (!e.lead) gap(e.at);
+    end = Math.max(end, e.at + e.span);
+  }
+  gap(ws + W);
+  return out;
+}

@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { WindowInfo as WinInfo } from "@/server/media/recordings";
 import { api, mediaUrl } from "./api";
-import { canHandOver, carryOnAt, handOver, positionAt, shouldArm, stepPlayback, windowStart, type Playback } from "./recorded-playback";
+import { canHandOver, carryOnAt, handOver, positionAt, shouldArm, skipped, stepPlayback, windowHoles, windowStart, type Playback, type Shown } from "./recorded-playback";
 import { applySound, play, watchAudio } from "./sound";
 
 /** Wall-clock time, for event handlers and animation frames only (never called while rendering). */
@@ -32,6 +32,10 @@ export interface RecordedVideoProps {
   onMedia?: (el: HTMLVideoElement | null) => void;
   /** The video started playing (after a seek, or after a stall). */
   onPlaying?: () => void;
+  /** Playing on skipped from `fromMs` to `toMs`, which were not recorded (see `skipped`). */
+  onSkip?: (fromMs: number, toMs: number) => void;
+  /** What was not recorded in the window starting at `windowMs`, once its description is final (see `windowHoles`). */
+  onHoles?: (windowMs: number, holes: [number, number][]) => void;
 }
 
 /**
@@ -55,6 +59,8 @@ export function RecordedVideo(props: RecordedVideoProps) {
   const cur = useRef<Playback | null>(null);
   /** The wall-clock time on screen, and the last one reported (which re-renders the parent, so it is held back). */
   const shown = useRef(0), shownSet = useRef(0);
+  /** The last step that showed a time, to tell a skip over time not recorded (`skipped`). */
+  const last = useRef<Shown | null>(null);
   const video = useRef<HTMLVideoElement>(null), hiVideo = useRef<HTMLVideoElement>(null), nextVideo = useRef<HTMLVideoElement>(null);
 
   const ws = windowStart(pos, W);
@@ -79,6 +85,16 @@ export function RecordedVideo(props: RecordedVideoProps) {
     }
   }, [ws, armed, W, cameraId]);
   useEffect(() => { const reqs = infoReq.current; return () => { for (const ac of reqs.values()) ac.abort(); reqs.clear(); }; }, []);
+  // Each window's holes, reported once its description is final.
+  const holesSent = useRef(new Set<number>());
+  useEffect(() => {
+    for (const [k, i] of Object.entries(infos)) {
+      const at = Number(k);
+      // A window that failed to load is not marked: it may only be the recorder being busy, and the
+      // timeline's own ranges already show a minute with nothing recorded.
+      if (i !== "none" && !i.pending && !holesSent.current.has(at)) { holesSent.current.add(at); cb.current.onHoles?.(at, windowHoles(at, W, i)); }
+    }
+  }, [infos, W]);
   const missing = noRec || info === "none";
   useEffect(() => { cb.current.onMissing?.(missing); }, [missing]);
 
@@ -107,6 +123,9 @@ export function RecordedVideo(props: RecordedVideoProps) {
     const r = stepPlayback(cur.current, { key: String(ws), info: ok }, v, h, { target: pos, shown: shown.current }, { playing, rate: speed, start: (m) => play(m as HTMLVideoElement) });
     if (!r) return;
     cur.current = r.s;
+    const k = skipped(last.current, r.s, r.step.wall, performance.now(), { playing, rate: speed });
+    last.current = k.last;
+    if (k.skip) cb.current.onSkip?.(...k.skip);
     if (h) h.style.visibility = r.step.showHigh ? "visible" : "hidden";
     if (r.step.wall != null) {
       shown.current = r.step.wall;
