@@ -26,6 +26,7 @@ Package manager is pnpm; Node 22.20 or newer.
 | Production build (Next standalone plus the bundled CLI) | `pnpm build` |
 | Generate a migration after editing `src/server/db/schema.ts` | `pnpm db:generate` |
 | Release a version (`major`, `minor`, `patch` or `X.Y.Z`; `--dry-run` to preview) | `scripts/release.sh <version>` |
+| Add a changelog entry (see Changelog below) | `pnpm changelog add <added\|changed\|fixed\|removed> <short_change_name> "<text>"` |
 | Ops CLI: `migrate`, `backup`, `verify <file>`, `restore <file> [--force]` | `pnpm unifeye <command>` |
 | Throwaway full stack (sign-in, MediaMTX, app) on its own ports; Ctrl-C stops it. Real recorder: see the script's header | `.claude/skills/qa-sweep/scripts/stack.sh run <slot 1-9>` |
 
@@ -97,13 +98,14 @@ For example, "Waiting for the recorder…" is better than "Waiting for the recor
 
 ## Changelog
 
-`CHANGELOG.md` lists what changed in each release, written for the people who run and use Unifeye. Keep it current as you work:
+`CHANGELOG.md` lists what changed in each release, written for the people who run and use Unifeye. Never edit it directly: unreleased changes go in `.changelog/`, one file per change, so branches don't clash in `CHANGELOG.md`. Keep them current as you work:
 
-- When a change affects them (a feature, a fix, changed behaviour or wording they'd notice, a new setting or requirement), add a line under `## Unreleased` in the same commit. Group lines under `### Added`, `### Changed`, `### Fixed` or `### Removed`, in that order, creating the heading if it's missing.
-- One line per change, in plain language, saying what people see, not how the code does it. "Clips can be up to two hours long", not "Raise CLIP_MAX_SECONDS".
+- When a change affects them (a feature, a fix, changed behaviour or wording they'd notice, a new setting or requirement), add an entry in the same commit with `pnpm changelog add <added|changed|fixed|removed> <short_change_name> "<text>"`. It writes `.changelog/<yyyymmddhhmmss UTC>-<short_change_name>.md` in the one format every entry uses (see `.changelog/README.md`); if you write the file by hand, match it exactly.
+- One entry per change, in plain language, saying what people see, not how the code does it. "Clips can be up to two hours long", not "Raise CLIP_MAX_SECONDS".
 - Skip changes nobody can see: refactors, tests, build scripts, docs-only edits.
-- If a later change revises something already under Unreleased, edit that line instead of adding another.
-- Never add a version heading by hand. `scripts/release.sh` turns Unreleased into the version's section, and running servers compare themselves with the newest GitHub release (`src/server/version.ts`).
+- If a later change revises something already in `.changelog/`, edit that file (keep its name) instead of adding another.
+- `pnpm changelog check` validates every entry; `pnpm changelog notes` shows them as they'll appear.
+- Never add a version heading or an `## Unreleased` section by hand. `scripts/release.sh` writes the entries into `CHANGELOG.md` under the new version, grouped as Added, Changed, Fixed, Removed, and deletes the files. Running servers compare themselves with the newest GitHub release (`src/server/version.ts`).
 
 ## Tests
 

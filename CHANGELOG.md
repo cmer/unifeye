@@ -1,17 +1,4 @@
-# Changelog
-
-What changed in each release of Unifeye, for the people who run it and use it.
-`scripts/release.sh` turns the Unreleased section into the new version's section
-and uses it as the GitHub release notes.
-
-## Unreleased
-
-### Added
-- Scrolling or pinching on the timeline zooms it in and out.
-
-### Changed
-- Clicking “Now” at the end of the timeline goes back to live video.
-- The timeline is easier to grab: you no longer need to land right on the dot.
+# CHANGELOG
 
 ## 1.2.2 - 2026-11-18
 

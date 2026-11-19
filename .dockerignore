@@ -17,6 +17,7 @@ LLM
 .claude
 .agents
 *.md
+.changelog
 Dockerfile
 .dockerignore
 compose.yaml
