@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Entry } from "@/server/media/timeline";
 import { canHandOver, carryOnAt, cursorAt, cursorAtBase, handOver, positionAt, seekTo, shouldArm, skipped, stepEntries, stepPlayback, windowHoles, windowStart, type MediaPort, type Shown } from "@/ui/recorded-playback";
-import { cutHoles, DAY, fmtAgo, fmtSkipped, tickTimes, timelineBounds } from "@/ui/timeline";
+import { cutHoles, DAY, fmtAgo, fmtSkipped, nearestEvent, tickTimes, timelineBounds } from "@/ui/timeline";
 import { dragTrim, MIN_CLIP, nearestEnd, panTrim, startTrim, TRIM_SPAN, typeTrim, viewFor, zoomTrim, type Trim } from "@/ui/trim";
 
 /** A <video> element as far as playback can see one. Moving it is instant. */
@@ -407,5 +407,18 @@ describe("timeline range", () => {
     expect(fmtAgo(5 * H)).toBe("5 hr ago");
     expect(fmtAgo(5 * H + 12 * 60_000)).toBe("5 hr 12 min ago");
     expect(fmtAgo(3 * DAY)).toBeNull();
+  });
+});
+
+describe("picking an event dot", () => {
+  const evs = [{ id: "a", startMs: 1000 }, { id: "b", startMs: 1300 }, { id: "c", startMs: 5000 }];
+  it("picks the nearest dot within reach", () => {
+    expect(nearestEvent(evs, 1100, 200)?.id).toBe("a");
+    expect(nearestEvent(evs, 1200, 200)?.id).toBe("b");
+    expect(nearestEvent(evs, 4800, 200)?.id).toBe("c");
+  });
+  it("picks nothing between dots", () => {
+    expect(nearestEvent(evs, 3000, 200)).toBeUndefined();
+    expect(nearestEvent([], 3000, 200)).toBeUndefined();
   });
 });

@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { api, dayBounds, EVENT_COLOR, EVENT_LABEL, fmtShort, fmtTime, type ActivityEvent } from "./api";
 import { windowStart } from "./recorded-playback";
 import { WindowWarmer } from "./scrub-still";
-import { DAY, fmtAgo, tickTimes } from "./timeline";
+import { DAY, DOT_REACH_PX, fmtAgo, nearestEvent, tickTimes } from "./timeline";
 
 type Range = [number, number];
 /** How much time the timeline shows, widest first. 0 is the last 24 hours. */
@@ -185,11 +185,15 @@ export type RewindState = ReturnType<typeof useRewind>;
  * The timeline and its controls, in place of the wall's dock while rewinding. `dock` and `tools` are the
  * dock's own buttons (views, filter, full screen), kept on either side.
  */
-export function RewindBar({ rw, tz, dock, tools }: { rw: RewindState; tz: string; dock: React.ReactNode; tools: React.ReactNode }) {
+export function RewindBar({ rw, tz, prerollMs, dock, tools }: { rw: RewindState; tz: string; prerollMs: number; dock: React.ReactNode; tools: React.ReactNode }) {
   const { clock, t, pt, live, dragging, scrub } = rw;
   const [zoom, setZoom] = useState(0);
   const [view, setView] = useState<number | null>(null);
   const tl = useRef<HTMLDivElement>(null);
+  /** The event dot under the mouse, which clicking jumps to. */
+  const [hoverDot, setHoverDot] = useState<ActivityEvent | null>(null);
+  /** Pressed on an event dot: where the press began, so a little wobble before letting go still lands on the event. */
+  const pressedDot = useRef<number | null>(null);
   const lo = clock - DAY, hi = clock, span = ZOOMS[zoom][0];
   let a = lo, b = hi;
   // Zoomed in, the timeline shows a stretch around the playhead that holds still while the playhead is inside it.
@@ -207,18 +211,33 @@ export function RewindBar({ rw, tz, dock, tools }: { rw: RewindState; tz: string
   const ago = showLive ? null : fmtAgo(clock - pt);
   const ghost = "text-foreground";
   const f = (pt - a) / (b - a);
+  const shown = rw.events.filter((e) => e.startMs > a && e.startMs < b);
+  const dotAt = (el: HTMLElement, x: number, touch: boolean) => nearestEvent(shown, at(el, x), (DOT_REACH_PX[touch ? "touch" : "mouse"] * (b - a)) / el.clientWidth);
+  const hf = hoverDot ? (hoverDot.startMs - a) / (b - a) : 0;
 
   return (
     <div className="absolute inset-x-3 bottom-3 z-20 rounded-xl border bg-background/90 px-3 pt-2 pb-1.5 shadow-lg backdrop-blur-md">
       <div ref={tl} className="relative h-8 cursor-pointer touch-none select-none" role="slider" aria-label="Timeline" aria-valuemin={a} aria-valuemax={b} aria-valuenow={Math.round(pt)} aria-valuetext={fmtTime(pt, tz)} tabIndex={0}
-        onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); rw.startScrub(at(e.currentTarget, e.clientX)); }}
-        onPointerMove={(e) => { if (e.buttons && dragging) rw.scrubTo(at(e.currentTarget, e.clientX)); }}
+        onPointerDown={(e) => {
+          e.currentTarget.setPointerCapture(e.pointerId); setHoverDot(null);
+          const ev = dotAt(e.currentTarget, e.clientX, e.pointerType !== "mouse");
+          pressedDot.current = ev ? e.clientX : null;
+          rw.startScrub(ev ? ev.startMs - prerollMs : at(e.currentTarget, e.clientX));
+        }}
+        onPointerMove={(e) => {
+          if (e.buttons && dragging) {
+            if (pressedDot.current !== null && Math.abs(e.clientX - pressedDot.current) < 6) return;
+            pressedDot.current = null; rw.scrubTo(at(e.currentTarget, e.clientX));
+          } else if (e.pointerType === "mouse" && !dragging) setHoverDot(dotAt(e.currentTarget, e.clientX, false) ?? null);
+        }}
+        onPointerLeave={() => setHoverDot(null)}
         onPointerUp={rw.endScrub} onPointerCancel={rw.endScrub}
         onKeyDown={(e) => { if (e.key === "ArrowLeft") rw.seek(t - 10_000); else if (e.key === "ArrowRight") rw.seek(t + 10_000); else return; e.preventDefault(); }}>
         <div className="absolute inset-x-0 bottom-2 h-[5px] overflow-hidden rounded-full bg-foreground/15" title={rw.exact ? undefined : "Some gaps in the recording may not be shown"}>
           {rw.union.map(([s, e], i) => e > a && s < b ? <i key={i} className={`absolute inset-y-0 ${rw.exact ? "bg-foreground/70" : "bg-foreground/45"}`} style={{ left: pct(s), right: `calc(100% - ${pct(e)})` }} /> : null)}
         </div>
-        {rw.events.filter((e) => e.startMs > a && e.startMs < b).map((e) => <i key={e.id} title={`${EVENT_LABEL[e.type] ?? e.type}, ${fmtShort(e.startMs, tz)}`} className="absolute bottom-[17px] size-1.5 -translate-x-1/2 rounded-full" style={{ left: pct(e.startMs), background: EVENT_COLOR[e.type] ?? "#a3a3a3" }} />)}
+        {shown.map((e) => <i key={e.id} className={`pointer-events-none absolute bottom-[17px] size-1.5 -translate-x-1/2 rounded-full transition-transform ${hoverDot?.id === e.id ? "z-10 scale-[2] shadow-[0_0_0_1.5px_var(--background)]" : ""}`} style={{ left: pct(e.startMs), background: EVENT_COLOR[e.type] ?? "#a3a3a3" }} />)}
+        {hoverDot && !dragging && <span className={`pointer-events-none absolute bottom-8 rounded-md border bg-popover px-2 py-0.5 text-xs whitespace-nowrap text-popover-foreground tabular-nums shadow ${hf < 0.06 ? "" : hf > 0.94 ? "-translate-x-full" : "-translate-x-1/2"}`} style={{ left: pct(hoverDot.startMs) }}><span className="font-semibold">{EVENT_LABEL[hoverDot.type] ?? hoverDot.type}</span> · {hoverDot.cameraName} · {fmtTime(hoverDot.startMs, tz)}</span>}
         <i className={`pointer-events-none absolute bottom-[3px] size-[15px] -translate-x-1/2 rounded-full ${showLive ? "live-dot bg-red-500" : "bg-foreground shadow-[0_0_0_4px_color-mix(in_oklab,var(--foreground)_25%,transparent)]"}`} style={{ left: pct(pt) }} />
         {dragging && <span className={`pointer-events-none absolute bottom-8 rounded-md bg-foreground px-2 py-0.5 text-sm font-semibold whitespace-nowrap text-background tabular-nums shadow ${f < 0.06 ? "" : f > 0.94 ? "-translate-x-full" : "-translate-x-1/2"}`} style={{ left: pct(pt) }}>{toLive ? "Live" : fmtTime(pt, tz)}</span>}
       </div>
