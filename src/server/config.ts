@@ -157,6 +157,12 @@ const schema = z.object({
   /** Username Unifeye uses for the MediaMTX control API (checked by the same hook). */
   MEDIAMTX_API_SECRET: z.string().optional(),
   MAX_WALL_STREAMS: int(9, 1),
+  /**
+   * How many tiles on the wall play recorded video at once when someone rewinds it; the rest show a
+   * still every few seconds. Each one asks the recorder for an export every minute, so this is kept
+   * lower than the live limit.
+   */
+  WALL_PLAYBACK_STREAMS: int(4, 1),
   CLIP_MAX_SECONDS: int(7200, 5),
   /** A long clip is fetched from the recorder in 5-minute pieces, this many at a time. */
   CLIP_EXPORT_PARALLEL: int(3, 1),
@@ -176,6 +182,11 @@ const schema = z.object({
   VAAPI_DEVICE: z.string().optional(),
   PLAYBACK_WINDOW_SECONDS: int(60, 10),
   EVENT_PREROLL_SECONDS: int(5, 0),
+  /**
+   * How long the playhead must rest while someone drags a camera's timeline before that moment's
+   * recording starts loading, so letting go there plays sooner. 0 turns it off.
+   */
+  SCRUB_PRELOAD_MS: int(500, 0),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   /**
    * The commit this build was made from, shown in the diagnostics window. The image build sets it

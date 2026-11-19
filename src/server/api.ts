@@ -20,7 +20,7 @@ import { maybeSeedDemo, services, type Services } from "./services";
 import { badRequest, forbidden, HttpError, log, newId, notFound, safeEqual } from "./util";
 
 interface Ctx { req: Request; url: URL; p: Record<string, string>; s: Services; actor: Actor; session: SessionRow; user: UserRow; json: <T = Record<string, unknown>>() => Promise<T>; ip: string; requestId: string }
-interface Opts { public?: boolean; admin?: boolean; rate?: "auth" | "media" | "hls" | "write" }
+interface Opts { public?: boolean; admin?: boolean; rate?: "auth" | "media" | "hls" | "stills" | "write" }
 type Handler = (c: Ctx) => Promise<Response | object | void> | Response | object | void;
 const routes: { method: string; re: RegExp; keys: string[]; opts: Opts; fn: Handler }[] = [];
 function route(method: string, path: string, opts: Opts, fn: Handler) {
@@ -47,14 +47,20 @@ const quality = (v: string | null) => (v === "focus" ? "focus" : "wall") as "foc
  * signing out.
  */
 const LIMITS = { auth: 30, media: 600, write: 240, read: 1200, unauth: 600, speedtest: 10 };
-type RateClass = keyof typeof LIMITS | "hls";
+type RateClass = keyof typeof LIMITS | "hls" | "stills";
 /**
  * An HLS stream polls a video and a sound playlist and fetches a segment of each every 4 s or so:
  * about 60 requests a minute, more while hls.js re-checks a playlist that has not moved yet. Twice
  * that per stream the session may hold, so a full wall on HLS fits with room for reconnects.
  */
 const HLS_PER_STREAM = 120;
-const limitOf = (cls: RateClass) => (cls === "hls" ? maxStreams() * HLS_PER_STREAM : LIMITS[cls]);
+/**
+ * Still images (`/cameras/:id/snapshot`): a wall's tiles waiting for a stream, and stills from the
+ * recording while someone drags a timeline. Dragging across a wall asks for about ten a second in all,
+ * so stills get their own budget, sized from the stream limit, rather than crowding out playback.
+ */
+const STILLS_PER_STREAM = 60;
+const limitOf = (cls: RateClass) => (cls === "hls" ? maxStreams() * HLS_PER_STREAM : cls === "stills" ? maxStreams() * STILLS_PER_STREAM : LIMITS[cls]);
 const buckets = new Map<string, { n: number; reset: number }>();
 /** Fixed-window limiter. Enough to blunt brute force and runaway clients. */
 function rateLimit(key: string, cls: RateClass) {
@@ -67,7 +73,7 @@ function rateLimit(key: string, cls: RateClass) {
 /** One session's use of each signed-in class this minute, for the diagnostics route. */
 function rateUsage(key: string) {
   const t = Date.now();
-  return (["read", "write", "media", "hls"] as const).map((cls) => {
+  return (["read", "write", "media", "hls", "stills"] as const).map((cls) => {
     const b = buckets.get(`${cls}:${key}`), live = !!b && t <= b.reset;
     return { class: cls, used: live ? b!.n : 0, limit: limitOf(cls), resetSeconds: live ? Math.ceil((b!.reset - t) / 1000) : 0 };
   });
@@ -306,7 +312,7 @@ route("GET", "/me", {}, ({ s, actor, user, session }) => {
     mode: c.UNIFEYE_MODE,
     recorder: s.adapter.health().state,
     recorderTimeZone: s.adapter.timeZone(),
-    limits: { maxStreams: c.MAX_WALL_STREAMS, windowSeconds: c.PLAYBACK_WINDOW_SECONDS, prerollSeconds: c.EVENT_PREROLL_SECONDS, clipMaxSeconds: c.CLIP_MAX_SECONDS },
+    limits: { maxStreams: c.MAX_WALL_STREAMS, windowSeconds: c.PLAYBACK_WINDOW_SECONDS, prerollSeconds: c.EVENT_PREROLL_SECONDS, clipMaxSeconds: c.CLIP_MAX_SECONDS, scrubPreloadMs: c.SCRUB_PRELOAD_MS, wallPlaybackStreams: c.WALL_PLAYBACK_STREAMS },
   };
 });
 route("PUT", "/preferences", {}, async ({ s, actor, json: body }) => { const b = await body<{ key: string; value: unknown }>(); s.admin.setPreference(actor, b.key, b.value); });
@@ -325,7 +331,7 @@ route("GET", "/tags", {}, ({ s, actor }) => {
   const all = s.db.select().from(schema.tags).all();
   return { tags: (!actor.preview && s.policy.isAdmin(actor.userId) ? all : all.filter((t) => names.has(t.name))).map((t) => ({ id: t.id, name: t.name })).sort((a, b) => a.name.localeCompare(b.name)) };
 });
-route("GET", "/cameras/:id/snapshot", { rate: "media" }, async ({ s, actor, p, url, req }) => {
+route("GET", "/cameras/:id/snapshot", { rate: "stills" }, async ({ s, actor, p, url, req }) => {
   const cam = s.policy.camera(subjectOf(actor), p.id), at = url.searchParams.get("at");
   const img = await s.adapter.snapshot(cam.protectId, { width: Number(url.searchParams.get("w")) || 640, atMs: at ? num(at, "at") : undefined, signal: req.signal }).catch(() => { throw new HttpError(404, "no_image"); });
   return new Response(new Uint8Array(img), { headers: { "content-type": "image/jpeg", "cache-control": "private, no-store" } });

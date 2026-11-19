@@ -9,11 +9,12 @@ import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitl
 import { api, dateInput, dayBounds, EVENT_COLOR, EVENT_LABEL, fmtDay, fmtShort, fmtTime, mediaUrl, timeInput, zonedParts, zonedToUtc, type ActivityEvent, type Camera } from "./api";
 import { Empty, fail, RecMark, Select, useApp, useRecording } from "./app";
 import { LiveVideo, type LiveInfo, type Transport, type VideoSource } from "./live";
-import type { WindowInfo as WinInfo } from "@/server/media/recordings";
-import { canHandOver, carryOnAt, handOver, positionAt, shouldArm, stepPlayback, windowStart, type Playback } from "./recorded-playback";
+import { RecordedVideo } from "./recorded-video";
+import { windowStart } from "./recorded-playback";
 import { dragTrim, nearestEnd, panTrim, startTrim as newTrim, TRIM_SPAN, typeTrim as typedTrim, zoomedSpan, zoomTrim as zoomedTrim, type End, type Trim } from "./trim";
-import { applySound, claimSound, play, setSound, SoundButton, useSound, watchAudio } from "./sound";
+import { claimSound, setSound, SoundButton, useSound } from "./sound";
 import { fmtAgo, tickTimes, timelineBounds } from "./timeline";
+import { ScrubStill, WindowWarmer } from "./scrub-still";
 
 type Ranges = { ranges: [number, number][]; precision: "exact" | "bounds" };
 const ZONES: [string, string][] = [["recorder", "Recorder's time zone"], ["local", "My time zone"], ["UTC", "UTC"], ["America/Toronto", "Toronto"], ["America/Vancouver", "Vancouver"], ["America/Chicago", "Chicago"], ["Europe/London", "London"], ["Europe/Paris", "Paris"], ["Australia/Sydney", "Sydney"]];
@@ -60,7 +61,8 @@ export function Player({ cameraId }: { cameraId: string }) {
   const [zoomNote, setZoomNote] = useState<{ text: string; n: number } | null>(null);
   const [rec, setRec] = useState<Ranges | null>(null);
   const [events, setEvents] = useState<ActivityEvent[]>([]);
-  const [noRec, setNoRec] = useState(false);
+  /** Nothing recorded where the recorded video is (see `RecordedVideo`). */
+  const [missingRec, setMissingRec] = useState(false);
   const [jump, setJump] = useState(false);
   const [trim, setTrim] = useState<Trim | null>(null);
   const [job, setJob] = useState<Job | null>(null);
@@ -70,24 +72,21 @@ export function Player({ cameraId }: { cameraId: string }) {
   const stillMisses = useRef(0);
   const [noStills, setNoStills] = useState<string | null>(null);
   useEffect(() => { stillMisses.current = 0; }, [cameraId]);
+  /**
+   * Dragging along the timeline: the video holds still and a still from the recording follows the
+   * playhead. Letting go seeks once; the still stays up (`held`) until the video plays from there.
+   * `n` counts drags, so each one starts without the last one's picture.
+   */
+  const [scrub, setScrub] = useState<{ ms: number; held: boolean; n: number } | null>(null);
+  useEffect(() => { if (!scrub?.held) return; const i = setTimeout(() => setScrub(null), 8000); return () => clearTimeout(i); }, [scrub]);
   const [refresh, setRefresh] = useState(0);
-  /** Start of the window being buffered in the background so the next one starts without a black gap. */
-  const [armed, setArmed] = useState<number | null>(null);
-  /** Window descriptions by `${window start}:${seek count}`; "none" when the window has no recording. */
-  const [infos, setInfos] = useState<Record<string, WinInfo | "none">>({});
-  const infoReq = useRef(new Map<string, AbortController>()), handed = useRef(""), frame = useRef<() => void>(() => {});
-  /** Where recorded playback stands, stepped every animation frame (`stepPlayback`). */
-  const cur = useRef<Playback | null>(null);
-  /** The wall-clock time on screen, and the last one passed to `setT` (which re-renders, so it is held back). */
-  const shown = useRef(0), shownSet = useRef(0);
-  const hiVideo = useRef<HTMLVideoElement>(null);
   /** Whether the live stream and the recording carry sound (null while unknown), and the element the level meter listens to. */
   const [liveAudio, setLiveAudio] = useState<boolean | null>(null), [recAudio, setRecAudio] = useState<boolean | null>(null);
   const [liveEl, setLiveEl] = useState<HTMLVideoElement | null>(null), [recEl, setRecEl] = useState<HTMLVideoElement | null>(null);
   const soundOn = useSound() === cameraId;
   // Opening a camera while sound is on (it was playing for another one) brings the sound along.
   useEffect(() => claimSound(cameraId), [cameraId]);
-  const video = useRef<HTMLVideoElement>(null), nextVideo = useRef<HTMLVideoElement>(null), box = useRef<HTMLDivElement>(null), tl = useRef<HTMLDivElement>(null), lastMove = useRef(0), lastTrimSeek = useRef(0);
+  const box = useRef<HTMLDivElement>(null), tl = useRef<HTMLDivElement>(null), lastMove = useRef(0), lastTrimSeek = useRef(0);
 
   useEffect(() => { api<{ cameras: Camera[] }>("/cameras").then((r) => setCam(r.cameras.find((c) => c.id === cameraId) ?? "gone")).catch(fail); }, [cameraId, me.preview?.subject.id]);
 
@@ -113,7 +112,7 @@ export function Player({ cameraId }: { cameraId: string }) {
 
   useEffect(() => { const i = setInterval(() => { const n = Date.now(); setClock(n); if (live) setT(n); }, 1000); return () => clearInterval(i); }, [live]);
   const seek = useCallback((ms: number, play = true) => {
-    setNoRec(false);
+    setMissingRec(false);
     if (ms >= Date.now() - 5000) { setLive(true); setPinned(false); setT(Date.now()); setPlaying(true); return; }
     setLive(false); setT(ms); setTarget((p) => ({ ms, n: p.n + 1 })); if (play) setPlaying(true);
   }, []);
@@ -125,7 +124,7 @@ export function Player({ cameraId }: { cameraId: string }) {
   const limits = () => ({ now: now(), maxClip });
   const startTrim = () => {
     const tr = newTrim(t, live, limits());
-    setJump(false); setHover(null); setTrim(tr);
+    setJump(false); setHover(null); setScrub(null); setTrim(tr);
     seek(tr.a, false); setPlaying(false);
   };
   /** Dragging moves one end (see `dragTrim`), showing the frame there at most every 300 ms, and when the drag ends. */
@@ -171,70 +170,34 @@ export function Player({ cameraId }: { cameraId: string }) {
     try { const r = await api<{ id: string }>("/exports", { method: "POST", body: { cameraId, startMs: Math.round(trim.a), endMs: Math.round(trim.b) } }); setJob({ id: r.id, status: "running", error: null }); } catch (e) { fail(e); }
   };
 
-  const ws = windowStart(target.ms, W), curKey = `${ws}:${target.n}`, nextKey = `${ws + W}:${target.n}`;
-  const info = infos[curKey], nextInfo = armed === ws + W ? infos[nextKey] : undefined;
-  // Fetch the descriptions of this window and, once armed, the next. A description no longer wanted
-  // (after a seek) is cancelled, which also cancels its export on the server. The first answer comes
-  // as soon as the base file is ready; an adaptive window then says `pending`, and a second request
-  // brings the order with the high-resolution file.
-  useEffect(() => {
-    if (live || !target.ms) return;
-    const want = new Map([[curKey, ws], ...(armed === ws + W ? [[nextKey, ws + W] as const] : [])]), reqs = infoReq.current;
-    for (const [k, ac] of reqs) if (!want.has(k)) { ac.abort(); reqs.delete(k); }
-    for (const [k, at] of want) {
-      if (reqs.has(k)) continue;
-      const ac = new AbortController();
-      reqs.set(k, ac);
-      const get = (early: boolean) => api<WinInfo>(`/cameras/${cameraId}/playback/info?t=${at}${early ? "&early=1" : ""}`, { signal: ac.signal });
-      get(true).then((i) => {
-        setInfos((p) => ({ ...p, [k]: i }));
-        // Without the high-resolution order, the base plays on alone.
-        if (i.pending) get(false).then((f) => setInfos((p) => ({ ...p, [k]: f })), () => {});
-      }, () => { if (!ac.signal.aborted) setInfos((p) => ({ ...p, [k]: "none" })); });
-    }
-  }, [live, target.ms, curKey, nextKey, armed, ws, W, cameraId]);
-  useEffect(() => { const reqs = infoReq.current; return () => { for (const ac of reqs.values()) ac.abort(); reqs.clear(); }; }, []);
-  const missing = !live && (noRec || info === "none");
-  const url = (at: number, high = false) => mediaUrl(`/api/cameras/${cameraId}/playback?t=${at}${high ? "&layer=high" : ""}`);
-  const ok = info && info !== "none" ? info : null, withHigh = (i: WinInfo | null) => !!i?.high && !i.pending;
-  const src = !live && target.ms && ok ? url(ws) : undefined, hiSrc = src && withHigh(ok) ? url(ws, true) : undefined;
-  // The following window loads in hidden elements while this one plays (armed once it is fully recorded),
-  // each file already waiting where that window will start.
-  const nextOk = src && nextInfo && nextInfo !== "none" ? nextInfo : null;
-  const nextSrc = nextOk ? url(ws + W) : undefined, nextHiSrc = withHigh(nextOk) ? url(ws + W, true) : undefined;
-  const nextAt = ok && nextOk ? positionAt(nextOk.entries, carryOnAt(ok, nextOk)) : null;
-  /** At the end of a window, the buffered next one takes over in place (same keys, so React keeps the elements). */
-  const advance = () => {
-    if (handed.current === curKey) return;
-    handed.current = curKey;
-    const nx = ws + W;
-    if (ok && nextOk && canHandOver(nextSrc ? nextVideo.current : null, nx, now())) {
-      cur.current = handOver({ key: curKey, info: ok }, { key: nextKey, info: nextOk });
-      setT(nx); setTarget((p) => ({ ms: nx, n: p.n }));
-    } else seek(nx);
-  };
-  // Every animation frame: play the window's entries in order and hand over at their end (see `stepPlayback`).
-  useEffect(() => { frame.current = () => {
-    const v = video.current, h = hiVideo.current;
-    if (!v || live || !ok) return;
-    const r = stepPlayback(cur.current, { key: curKey, info: ok }, v, h, { target: target.ms, shown: shown.current }, { playing, rate: speed, start: (m) => play(m as HTMLVideoElement) });
-    if (!r) return;
-    cur.current = r.s;
-    if (h) h.style.visibility = r.step.showHigh ? "visible" : "hidden";
-    if (r.step.wall != null) {
-      shown.current = r.step.wall;
-      if (Math.abs(r.step.wall - shownSet.current) >= 250) { shownSet.current = r.step.wall; setT(r.step.wall); }
-    }
-    if (r.step.handOver) advance();
-  }; });
-  useEffect(() => { if (live) return; let id = 0; const tick = () => { frame.current(); id = requestAnimationFrame(tick); }; id = requestAnimationFrame(tick); return () => cancelAnimationFrame(id); }, [live]);
-  // Pausing takes effect at once, even where animation frames are held back (a tab in the background).
-  useEffect(() => { if (!playing) { video.current?.pause(); hiVideo.current?.pause(); } }, [playing, src]);
-  // Each recorded window is its own element: find out whether it has sound, and apply the sound setting to it.
-  useEffect(() => { const v = video.current; if (!v || live) return; setRecEl(v); return watchAudio(v, setRecAudio); }, [live, curKey, ready]);
-  useEffect(() => { const v = video.current; if (v && !live) applySound(v, soundOn && recAudio === true); }, [soundOn, recAudio, live, curKey, ready]);
+  const missing = !live && missingRec;
   const hasAudio = live ? liveAudio : recAudio;
   const nextRange = rec?.ranges.find(([a]) => a > t);
+  /**
+   * Whether the recorder kept anything at `ms`, as far as the timeline knows. Gaps are only known when
+   * exact, and the last few minutes count as recorded, since the timeline catches up with them only every few minutes.
+   */
+  const recorded = (ms: number) => !rec || rec.precision !== "exact" || ms > clock - 200_000 || rec.ranges.some(([s, e]) => ms >= s && ms < e);
+  /** A still that didn't load counts against the camera only where there should have been one. */
+  const stillResult = (ok: boolean, ms: number) => {
+    if (ok) stillMisses.current = 0;
+    else if (recorded(ms) && ms < now() - 60_000 && ++stillMisses.current >= 3) setNoStills(cameraId);
+  };
+  // Resting on a moment while dragging starts loading its stretch of recording (see `WindowWarmer`).
+  // The full window is asked for, so moving on cancels the high-resolution file too.
+  const [warmer] = useState(() => new WindowWarmer((at, signal) => api(`/cameras/${cameraId}/playback/info?t=${at}`, { signal }), { rest: me.limits.scrubPreloadMs }));
+  useEffect(() => () => warmer.stop(), [warmer]);
+  const scrubTo = (ms: number) => {
+    warmer.at(recorded(ms) && ms < now() - 10_000 ? windowStart(ms, W) : null);
+    setScrub((p) => (p ? { ...p, ms } : p));
+  };
+  const startScrub = (ms: number) => { setHover(null); setPlaying(false); setScrub((p) => ({ ms, held: false, n: (p?.n ?? 0) + 1 })); scrubTo(ms); };
+  /** Lets go at the moment last shown, not the one under the pointer now: the full-day timeline slides as time passes. */
+  const endScrub = (ms: number) => {
+    warmer.release();
+    seek(ms);
+    setScrub((p) => (p && ms < now() - 5000 ? { ...p, ms, held: true } : null));
+  };
 
   const zoomBy = (d: number) => {
     const z = clamp(zoom + d, 0, ZOOMS.length - 1);
@@ -282,7 +245,10 @@ export function Player({ cameraId }: { cameraId: string }) {
   // When the timeline reaches now, the right edge reads "Now" and labels too close to it are dropped. Today's midnight reads "Today".
   const toNow = b >= clock - 2000, today = dayBounds(clock, tz)[0];
   const ticks = tickTimes(a, b, step, tz).filter((m) => !toNow || (b - m) / (b - a) > 0.08);
-  const ago = live ? null : fmtAgo(clock - t);
+  /** Dragged far enough right that letting go goes live (see `seek`). */
+  const dragging = !!scrub && !scrub.held, toLive = dragging && scrub.ms >= clock - 5000;
+  const pt = dragging ? scrub.ms : t, showLive = dragging ? toLive : live;
+  const ago = showLive ? null : fmtAgo(clock - pt);
   const pct = (ms: number) => `${Math.min(100, Math.max(0, ((ms - a) / (b - a)) * 100))}%`;
   const at = (el: HTMLElement, clientX: number) => { const r = el.getBoundingClientRect(); return a + Math.min(1, Math.max(0, (clientX - r.left) / r.width)) * (b - a); };
   const down = me.recorder === "down";
@@ -290,14 +256,14 @@ export function Player({ cameraId }: { cameraId: string }) {
   return (
     <div ref={box} className="relative min-h-0 flex-1 overflow-hidden bg-black text-white">
       {live ? <LiveVideo cameraId={cameraId} quality="focus" active={!down} online={cam.online && !down} onTransport={setVia} sound={soundOn} onAudio={setLiveAudio} onMedia={setLiveEl} />
-        : [<video ref={video} key={curKey} src={src} playsInline muted className="absolute inset-0 size-full object-contain"
-            onTimeUpdate={() => { if (armed !== ws + W && shouldArm(ws, W, now())) setArmed(ws + W); }}
-            onError={() => setNoRec(true)} />,
-          hiSrc && <video ref={hiVideo} key={`${curKey}:hi`} src={hiSrc} preload="auto" playsInline muted aria-hidden style={{ visibility: "hidden" }} className="absolute inset-0 size-full object-contain" />,
-          nextSrc && <video ref={nextVideo} key={nextKey} src={nextSrc} preload="auto" playsInline muted aria-hidden className="invisible absolute inset-0 size-full object-contain"
-            onLoadedMetadata={(e) => { if (nextAt) e.currentTarget.currentTime = nextAt.base; }} />,
-          nextHiSrc && <video key={`${nextKey}:hi`} src={nextHiSrc} preload="auto" playsInline muted aria-hidden style={{ visibility: "hidden" }} className="absolute inset-0 size-full object-contain"
-            onLoadedMetadata={(e) => { if (nextAt?.high != null) e.currentTarget.currentTime = nextAt.high; }} />]}
+        : <RecordedVideo key={target.n} cameraId={cameraId} W={W} startMs={target.ms} playing={playing} speed={speed} sound={soundOn} onTime={setT} onEnd={seek}
+            onMissing={setMissingRec} onAudio={setRecAudio} onMedia={setRecEl} onPlaying={() => setScrub((p) => (p?.held ? null : p))} />}
+      {scrub && !down && !toLive && !(scrub.held && (missing || live)) && (
+        <div className="pointer-events-none absolute inset-0 bg-black/60">
+          {!recorded(scrub.ms) ? <div className="absolute inset-0 grid place-items-center bg-zinc-900 text-sm font-medium text-zinc-50">No recording at {fmtTime(scrub.ms, tz)}</div>
+            : noStills !== cameraId && scrub.ms < clock - 10_000 && <ScrubStill key={scrub.n} cameraId={cameraId} ms={scrub.ms} close={(b - a) / 600} onResult={stillResult} className="absolute inset-0 size-full object-contain" />}
+        </div>
+      )}
       {(missing || (live && !cam.online)) && !down && (
         <div className="absolute inset-0 grid place-items-center bg-zinc-900 p-6 text-center text-sm text-zinc-400">
           <div><div className="mb-1 font-medium text-zinc-50">{missing ? `No recording at ${fmtTime(t, tz)}` : "Camera offline"}</div>
@@ -311,7 +277,7 @@ export function Player({ cameraId }: { cameraId: string }) {
       <div className={`absolute inset-x-0 top-0 flex items-center gap-2.5 bg-gradient-to-b from-black/70 to-transparent px-4 pt-3.5 pb-10 transition-opacity ${idle ? "opacity-0" : ""}`}>
         <Button variant="ghost" size="icon" className={ghost} aria-label="Back to cameras" onClick={back}><ArrowLeft /></Button>
         <b className="truncate text-[15px] font-semibold">{cam.name}</b>
-        {live ? <LiveLabel info={via} /> : <span className="text-xs text-zinc-300">Recorded</span>}
+        {showLive ? <LiveLabel info={via} /> : <span className="text-xs text-zinc-300">Recorded</span>}
         <span className="flex-1" />
         {recording.has(cameraId) && <RecMark />}
         <Button variant="outline" className="border-white/30 bg-transparent text-white hover:bg-white/15 hover:text-white" onClick={() => setJump((j) => !j)}><CalendarDays />{fmtDay(t, tz)}</Button>
@@ -328,11 +294,11 @@ export function Player({ cameraId }: { cameraId: string }) {
       )}
       <div className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent px-4 pt-12 pb-[max(0.9rem,env(safe-area-inset-bottom))] transition-opacity ${idle ? "opacity-0" : ""}`}>
         {zoomNote && <div key={zoomNote.n} role="status" className="pointer-events-none absolute top-5 left-1/2 -translate-x-1/2 rounded-md bg-black/75 px-2.5 py-1 text-xs font-semibold whitespace-nowrap">{zoomNote.text}</div>}
-        <div ref={tl} className="relative h-8 cursor-pointer touch-none select-none" role="slider" aria-label="Timeline" aria-valuemin={a} aria-valuemax={b} aria-valuenow={Math.round(t)} aria-valuetext={fmtTime(t, tz)} tabIndex={0}
-          onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); const ms = at(e.currentTarget, e.clientX); if (trim) drag(nearestEnd(trim, ms), ms); else seek(ms); }}
-          onPointerUp={(e) => { if (trim?.grab) drag(trim.grab, at(e.currentTarget, e.clientX), true); }}
-          onPointerCancel={() => { if (trim?.grab) drag(trim.grab, trim[trim.grab], true); }}
-          onPointerMove={(e) => { const ms = at(e.currentTarget, e.clientX), y = e.currentTarget.getBoundingClientRect().top; if (trim) { if (e.buttons && trim.grab) drag(trim.grab, ms); } else if (e.buttons) seek(ms); if (e.pointerType === "mouse") setHover((h) => ({ x: e.clientX, y, ms, img: h && Math.abs(h.img - ms) < (b - a) / 150 ? h.img : ms })); }}
+        <div ref={tl} className="relative h-8 cursor-pointer touch-none select-none" role="slider" aria-label="Timeline" aria-valuemin={a} aria-valuemax={b} aria-valuenow={Math.round(pt)} aria-valuetext={fmtTime(pt, tz)} tabIndex={0}
+          onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); const ms = at(e.currentTarget, e.clientX); if (trim) drag(nearestEnd(trim, ms), ms); else startScrub(ms); }}
+          onPointerUp={(e) => { if (trim?.grab) drag(trim.grab, at(e.currentTarget, e.clientX), true); else if (dragging) endScrub(scrub.ms); }}
+          onPointerCancel={() => { if (trim?.grab) drag(trim.grab, trim[trim.grab], true); else if (dragging) endScrub(scrub.ms); }}
+          onPointerMove={(e) => { const ms = at(e.currentTarget, e.clientX), y = e.currentTarget.getBoundingClientRect().top; if (trim) { if (e.buttons && trim.grab) drag(trim.grab, ms); } else if (e.buttons && dragging) scrubTo(ms); if (e.pointerType === "mouse" && !dragging) setHover((h) => ({ x: e.clientX, y, ms, img: h && Math.abs(h.img - ms) < (b - a) / 150 ? h.img : ms })); }}
           onPointerLeave={() => setHover(null)}>
           <div className="absolute inset-x-0 bottom-2 h-[5px] overflow-hidden rounded-full bg-white/20" title={rec?.precision === "bounds" ? "Some gaps in the recording may not be shown" : undefined}>
             {!down && rec?.ranges.map(([s, e], i) => e > a && s < b ? <i key={i} className={`absolute inset-y-0 ${rec.precision === "exact" ? "bg-white/80" : "bg-white/50"}`} style={{ left: pct(s), right: `calc(100% - ${pct(e)})` }} /> : null)}
@@ -342,8 +308,9 @@ export function Player({ cameraId }: { cameraId: string }) {
             <i className="pointer-events-none absolute bottom-[1px] h-[19px] border-y-2 border-yellow-400 bg-yellow-400/30" style={{ left: pct(trim.a), right: `calc(100% - ${pct(trim.b)})` }} />
             {(["a", "b"] as const).map((g) => <i key={g} className="pointer-events-none absolute -bottom-0.5 h-[25px] w-3 -translate-x-1/2 rounded-[4px] bg-yellow-400 shadow" style={{ left: pct(trim[g]) }} />)}
             {trim.grab && <span className="pointer-events-none absolute bottom-8 -translate-x-1/2 rounded bg-yellow-400 px-1.5 py-px text-[11px] font-semibold whitespace-nowrap text-black" style={{ left: pct(trim[trim.grab]) }}>{fmtTime(trim[trim.grab], tz)}</span>}
-          </> : <i className={`pointer-events-none absolute bottom-[3px] size-[15px] -translate-x-1/2 rounded-full ${live ? "live-dot bg-red-500" : "bg-white shadow-[0_0_0_4px_rgba(255,255,255,.25)]"}`} style={{ left: pct(t) }} />}
-          {live && !trim && <span className="pointer-events-none absolute right-0 bottom-[25px] rounded bg-red-500 px-1 text-[10px] leading-[14px] font-bold tracking-wide">LIVE</span>}
+          </> : <i className={`pointer-events-none absolute bottom-[3px] size-[15px] -translate-x-1/2 rounded-full ${showLive ? "live-dot bg-red-500" : "bg-white shadow-[0_0_0_4px_rgba(255,255,255,.25)]"}`} style={{ left: pct(pt) }} />}
+          {dragging && (() => { const f = (scrub.ms - a) / (b - a); return <span className={`pointer-events-none absolute bottom-8 rounded-md bg-white px-2 py-0.5 text-sm font-semibold whitespace-nowrap text-black tabular-nums shadow ${f < 0.06 ? "" : f > 0.94 ? "-translate-x-full" : "-translate-x-1/2"}`} style={{ left: pct(scrub.ms) }}>{toLive ? "Live" : fmtTime(scrub.ms, tz)}</span>; })()}
+          {showLive && !trim && !dragging && <span className="pointer-events-none absolute right-0 bottom-[25px] rounded bg-red-500 px-1 text-[10px] leading-[14px] font-bold tracking-wide">LIVE</span>}
         </div>
         <div className="relative mt-0.5 h-4 text-[11px] text-zinc-400">{ticks.map((m) => { const f = (m - a) / (b - a); return <span key={m} className={`absolute top-0 whitespace-nowrap ${f < 0.04 ? "" : f > 0.96 ? "-translate-x-full" : "-translate-x-1/2"} ${m === today ? "font-semibold text-zinc-200" : ""}`} style={{ left: pct(m) }}>{m === today ? "Today" : fmtShort(m, tz)}</span>; })}
           {toNow && <span className="absolute top-0 right-0 font-semibold text-red-400">Now</span>}</div>
@@ -362,9 +329,9 @@ export function Player({ cameraId }: { cameraId: string }) {
           <Button variant="ghost" size="icon" className={ghost} aria-label="Back 10 seconds" onClick={() => seek(t - 10000)}><RotateCcw /></Button>
           <Button variant="ghost" size="icon" className={ghost} aria-label={playing ? "Pause" : "Play"} onClick={toggle}>{playing ? <Pause /> : <Play />}</Button>
           <Button variant="ghost" size="icon" className={ghost} aria-label="Forward 10 seconds" onClick={() => seek(t + 10000)}><RotateCw /></Button>
-          {live
-            ? <span className="ml-2 flex items-center gap-2 tabular-nums"><span className="flex items-center gap-1.5 text-xs font-bold tracking-wide"><i className="size-2 rounded-full bg-red-500" />LIVE</span><span className="text-base text-zinc-400">{fmtTime(t, tz)}</span></span>
-            : <span className="ml-2 text-base font-semibold tabular-nums">{fmtTime(t, tz)}{ago && <span className="font-normal text-zinc-400 max-sm:hidden"> · {ago}</span>}</span>}
+          {showLive
+            ? <span className="ml-2 flex items-center gap-2 tabular-nums"><span className="flex items-center gap-1.5 text-xs font-bold tracking-wide"><i className="size-2 rounded-full bg-red-500" />LIVE</span><span className="text-base text-zinc-400">{fmtTime(live ? t : clock, tz)}</span></span>
+            : <span className="ml-2 text-base font-semibold tabular-nums">{fmtTime(pt, tz)}{ago && <span className="font-normal text-zinc-400 max-sm:hidden"> · {ago}</span>}</span>}
           <span className="flex-1" />
           {!live && <Button variant="outline" size="sm" className="mr-1 rounded-full border-white/30 bg-transparent text-white hover:bg-white/15 hover:text-white" onClick={() => seek(Date.now())}><i className="size-1.5 rounded-full bg-zinc-400" />Go live</Button>}
           <Button variant="ghost" size="icon" className={ghost} aria-label="Zoom out" title="Zoom out (−)" disabled={zoom === 0} onClick={() => zoomBy(-1)}><ZoomOut /></Button>
@@ -372,13 +339,13 @@ export function Player({ cameraId }: { cameraId: string }) {
           {!live && <select aria-label="Playback speed" value={speed} onChange={(e) => setSpeed(Number(e.target.value))} className="h-9 rounded-lg bg-transparent px-1 text-sm text-white outline-none hover:bg-white/15 [&>option]:text-black">{[0.5, 1, 2, 4, 8].map((x) => <option key={x} value={x}>{x}×</option>)}</select>}
           {me.subject.canExportClips && <Button variant="ghost" className={ghost} disabled={down} onClick={startTrim}><Download /><span className="max-sm:hidden">Save clip</span></Button>}
           <SoundButton cameraId={cameraId} has={hasAudio} media={live ? liveEl : recEl} recorded={!live} />
-          <Button variant="ghost" size="icon" className={ghost} aria-label="Full screen" onClick={() => { const el = box.current!, v = video.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null; if (document.fullscreenElement) void document.exitFullscreen(); else if (el.requestFullscreen) el.requestFullscreen().catch(() => toast("Full screen isn't available")); else v?.webkitEnterFullscreen?.(); }}><Maximize /></Button>
+          <Button variant="ghost" size="icon" className={ghost} aria-label="Full screen" onClick={() => { const el = box.current!, v = (live ? null : recEl) as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null; if (document.fullscreenElement) void document.exitFullscreen(); else if (el.requestFullscreen) el.requestFullscreen().catch(() => toast("Full screen isn't available")); else v?.webkitEnterFullscreen?.(); }}><Maximize /></Button>
         </div>
         )}
       </div>
       {hover && !down && (
         <div className="pointer-events-none fixed z-30 w-36 -translate-x-1/2 rounded-lg border bg-popover p-1 text-center text-xs text-popover-foreground shadow-xl" style={{ left: Math.max(hover.x, 80), top: hover.y - (noStills === cameraId ? 36 : 108) }}>
-          {noStills !== cameraId && <div className="mb-0.5 aspect-video overflow-hidden rounded bg-black"><img alt="" key={Math.round(hover.img / 1000)} src={mediaUrl(`/api/cameras/${cameraId}/snapshot?w=240&at=${Math.round(hover.img)}`)} className="size-full object-cover" onLoad={() => { stillMisses.current = 0; }} onError={(e) => { e.currentTarget.style.display = "none"; if (++stillMisses.current >= 3) setNoStills(cameraId); }} /></div>}
+          {noStills !== cameraId && <div className="mb-0.5 aspect-video overflow-hidden rounded bg-black"><img alt="" key={Math.round(hover.img / 1000)} src={mediaUrl(`/api/cameras/${cameraId}/snapshot?w=240&at=${Math.round(hover.img)}`)} className="size-full object-cover" onLoad={() => stillResult(true, hover.img)} onError={(e) => { e.currentTarget.style.display = "none"; stillResult(false, hover.img); }} /></div>}
           {fmtTime(hover.ms, tz)}
         </div>
       )}

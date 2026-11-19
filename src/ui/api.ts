@@ -17,7 +17,7 @@ export interface Me {
   recorder: "connected" | "connecting" | "down";
   /** The recorder's time zone, which matches the clock on its video. Null until the recorder has answered. */
   recorderTimeZone: string | null;
-  limits: { maxStreams: number; windowSeconds: number; prerollSeconds: number; clipMaxSeconds: number };
+  limits: { maxStreams: number; windowSeconds: number; prerollSeconds: number; clipMaxSeconds: number; scrubPreloadMs: number; wallPlaybackStreams: number };
 }
 export interface ActivityEvent { id: string; cameraId: string; cameraName: string; type: string; startMs: number; endMs: number | null; hasThumbnail: boolean }
 export class ApiError extends Error {
