@@ -30,8 +30,10 @@ export class MockProtectAdapter implements ProtectAdapter {
    * resolution ("focus") only in seconds 12.5 to 21.5 of every half minute, and low resolution ("wall")
    * everywhere except seconds 15.5 to 18.5 of every half minute. An export of one channel holds that
    * channel's GOPs (one second each, starting half a second past each whole second, see `keys`)
-   * joined, starting with the last one before the requested start. The picture and sound depend only on wall-clock time, so both channels show the
-   * same moment alike, as real ones do.
+   * joined, starting with the last one before the requested start. The picture and sound depend only
+   * on when a GOP was recorded, so both channels show the same moment alike, as real ones do. The
+   * recorder's times (`recordedStamps`) run late on the high channel (`stampOf`), and like a real
+   * recorder its exports and segment lists go by those times.
    */
   adaptive = new Set((process.env.MOCK_ADAPTIVE ?? "").split(",").filter(Boolean));
   cameras: MockCamera[] = MOCK_CAMERAS.map((c) => ({ ...c }));
@@ -154,7 +156,8 @@ export class MockProtectAdapter implements ProtectAdapter {
     // A segment runs from its first keyframe to its last.
     if (this.adaptive.has(id)) {
       const parts = MockProtectAdapter.channelParts(this.ranges(c, fromMs - 30 * 60_000, toMs + 1000), quality);
-      return parts.map(([a, b]) => MockProtectAdapter.keys(a, b).filter((k) => k < toMs)).filter((k) => k.length).map((k) => [k[0], k[k.length - 1]]);
+      const stamped = parts.map(([a, b]) => MockProtectAdapter.keys(a, b).map((k) => MockProtectAdapter.stampOf(k, quality)).filter((s) => s < toMs));
+      return stamped.filter((s) => s.length).map((s) => [s[0], s[s.length - 1]]);
     }
     const parts = quality === "focus" ? r : [];
     return parts.map(([a, b]) => [Math.ceil(a / 1000) * 1000, Math.max(Math.ceil(a / 1000) * 1000, Math.ceil(b / 1000) * 1000 - 1000)]);
@@ -204,12 +207,44 @@ export class MockProtectAdapter implements ProtectAdapter {
     for (let k = Math.ceil((a - 500) / 1000) * 1000 + 500; k + 1000 <= b; k += 1000) out.push(k);
     return out;
   }
+  /**
+   * The recorder's stamp for a GOP recorded at `k`. The low channel's is its real time. The high
+   * channel's runs late, as a real recorder's does (see `placement/stamped.ts`): 3 to 11 seconds at
+   * the start of a motion stretch (different from one half minute to the next), half a second more
+   * for every second into it. Stamps keep their order, and a GOP recorded just before a playback
+   * window can be stamped inside it.
+   */
+  static stampOf(k: number, quality: "wall" | "focus"): number {
+    if (quality === "wall") return k;
+    const m = Math.floor(k / 30_000) * 30_000;
+    return k + 3000 + 2000 * (Math.floor(m / 30_000) % 5) + (k - m - 12_500) / 2;
+  }
+  /**
+   * The GOPs an export of [startMs, endMs) holds: real keyframe times (`keys`) and their stamps.
+   * Like a real recorder, the range is in stamp time: the last GOP stamped before the start, then
+   * every one stamped before the end. Tests use `keys` to tell what each GOP shows.
+   */
+  adaptiveGops(id: string, startMs: number, endMs: number, quality: "wall" | "focus"): { keys: number[]; stamps: number[] } {
+    const c = this.cam(id);
+    // A stamp is never early, so every GOP stamped before the end was recorded before it.
+    const parts = MockProtectAdapter.channelParts(this.ranges(c, startMs - 10 * 60_000, endMs + 1000), quality);
+    const all = parts.flatMap(([a, b]) => MockProtectAdapter.keys(a, b)), stamps = all.map((k) => MockProtectAdapter.stampOf(k, quality));
+    const first = Math.max(0, stamps.findLastIndex((s) => s < startMs));
+    let last = first;
+    while (last < all.length && stamps[last] < endMs) last++;
+    return { keys: all.slice(first, last), stamps: stamps.slice(first, last) };
+  }
+  /** Only adaptive cameras have stamps here: the others are exported in one piece, from their recorded ranges. */
+  async recordedStamps(id: string, startMs: number, endMs: number, quality: "wall" | "focus"): Promise<number[] | null> {
+    this.guard();
+    this.cam(id);
+    if (!this.adaptive.has(id)) return null;
+    const { stamps } = this.adaptiveGops(id, startMs, endMs, quality);
+    return stamps.length ? stamps : null;
+  }
   private async adaptiveClip(c: MockCamera, startMs: number, endMs: number, destPath: string, opts: { quality?: "wall" | "focus"; signal?: AbortSignal }) {
-    const quality = opts.quality ?? "wall", parts = MockProtectAdapter.channelParts(this.ranges(c, startMs - 10 * 60_000, endMs + 1000), quality);
-    // The last GOP starting before the start, then every one before the end.
-    const keys = parts.flatMap(([a, b]) => MockProtectAdapter.keys(a, b));
-    const first = keys.findLastIndex((k) => k < startMs), picked = keys.slice(Math.max(0, first)).filter((k) => k < endMs);
-    if (!picked.length || (first < 0 && picked[0] >= endMs)) throw new NoRecordingError();
+    const quality = opts.quality ?? "wall", picked = this.adaptiveGops(c.protectId, startMs, endMs, quality).keys;
+    if (!picked.length) throw new NoRecordingError();
     // Like the recorder, every export holds the same GOP byte for byte. x264 numbers its keyframes 0, 1,
     // 0, 1… in encode order and stamps the first with its settings, so the picture is encoded with each
     // GOP at a place of the same parity as its second (a filler GOP goes in where needed and is cut out

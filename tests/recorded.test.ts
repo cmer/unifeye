@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import type { MediaInfo } from "@/server/protect/ffmpeg";
 import { NoRecordingError, RecorderBusyError } from "@/server/protect/types";
-import { channelsFor, coveredMs, fetchRecorded, fetchRecordedFile, type Entry, type ExportChannel, type ListSegments, type MediaOps, type Recorded } from "@/server/media/recorded";
-import type { Thumbs } from "@/server/media/placement";
+import { channelsFor, coveredMs, fetchRecorded, fetchRecordedFile, type Entry, type ExportChannel, type ListSegments, type ListStamps, type MediaOps, type Reach, type Recorded } from "@/server/media/recorded";
+import { highReachMs, type Thumbs } from "@/server/media/placement";
 import type { Gop, Seams } from "@/server/media/timeline";
 
 /**
@@ -278,5 +278,128 @@ describe("fetchRecordedFile", () => {
     expect(r).toMatchObject({ busy: true, rendered: false });
     expect(r.entries.filter((e) => e.lead)).toMatchObject([{ kind: "base", len: 1 }]);
     expect(readFileSync(path, "utf8")).toBe("focus");
+  });
+});
+
+describe("fetchRecorded with the recorder's times", () => {
+  /**
+   * A recorder that names each GOP's time (its stamp), as Protect's playback stream does: GOPs of 1 s
+   * recorded at `keys` on each channel, the high channel's stamped `lagMs` late. An export (and its
+   * stamps) of [start, end), widened by its reach, holds the GOPs stamped inside it, led by the last
+   * one stamped before it.
+   */
+  function stamping(keys: Record<Channel, number[]>, o: { lagMs?: number; stamps?: (ch: Channel, s: number[], reach?: Reach) => number[] | null; fail?: (ch: Channel, reach?: Reach) => Error | null } = {}) {
+    const exported: [Channel, Reach | undefined][] = [], stamped: [Channel, Reach | undefined][] = [], byPath = new Map<string, Fake>(), byName = new Map<string, Fake>();
+    const stampOf = (ch: Channel, k: number) => k + (ch === "focus" ? o.lagMs ?? 6000 : 0);
+    const pick = (ch: Channel, reach?: Reach) => {
+      const a = A - (reach?.beforeMs ?? 0), b = B + (reach?.afterMs ?? 0), all = keys[ch], s = all.map((k) => stampOf(ch, k));
+      const first = Math.max(0, s.findLastIndex((x) => x < a));
+      const n = s.slice(first).findIndex((x) => x >= b);
+      const end = n < 0 ? all.length : first + Math.max(1, n);
+      return { keys: all.slice(first, end), stamps: s.slice(first, end) };
+    };
+    const exporter: ExportChannel = async (ch, dest, _signal, reach) => {
+      exported.push([ch, reach]);
+      const err = o.fail?.(ch, reach);
+      if (err) throw err;
+      const { keys: ks } = pick(ch, reach);
+      if (!ks.length) throw new NoRecordingError();
+      writeFileSync(dest, ch);
+      byPath.set(dest, channel(ch, ks.map((k) => [k, 1]), ch === "focus" ? 1920 : 640));
+      if (!reach) byName.set(ch, byPath.get(dest)!);
+    };
+    const stamps: ListStamps = async (ch, _signal, reach) => {
+      stamped.push([ch, reach]);
+      const s = pick(ch, reach).stamps;
+      return o.stamps ? o.stamps(ch, s, reach) : s;
+    };
+    // By path, or by what the file says (a piece is renamed into place).
+    const of = (p: string) => { const f = byPath.get(p) ?? byName.get(readFileSync(p, "utf8")); if (!f) throw new Error("no such file"); return f; };
+    const ops: MediaOps = {
+      probe: async (p) => of(p).info,
+      retime: async () => false,
+      gops: async (p) => ({ gops: of(p).gops, end: of(p).end }),
+      thumbnails: async (p, { keyframes }) => of(p).thumbs(keyframes),
+      render: async () => { throw new Error("not used"); },
+    };
+    /** Segment lists in each channel's own time, as the recorder gives them. */
+    const runsOf = (ch: Channel): [number, number][] => {
+      const out: [number, number][] = [];
+      for (const k of keys[ch]) { const s = stampOf(ch, k), r = out[out.length - 1]; if (r && s - r[1] <= 1500) r[1] = s; else out.push([s, s]); }
+      return out;
+    };
+    const segments: ListSegments = async (ch) => runsOf(ch);
+    return { exporter, stamps, ops, segments, exported, stamped, of };
+  }
+  const every = (a: number, b: number) => Array.from({ length: Math.round((b - a) / 1000) }, (_, k) => a + k * 1000);
+  // Low resolution all along but for 10 s of motion; high resolution around that hole, a lead long
+  // before, and a run recorded just after the window (stamped inside the high file's reach).
+  const LOW_KEYS = [...every(A - 120_000, A + 20_000), ...every(A + 30_000, B + 120_000)];
+  const HIGH_KEYS = [A - 300_000, ...every(A + 15_000, A + 35_000), ...every(B + 5000, B + 10_000)];
+  const R = highReachMs();
+  const withContext = () => { const fl = files(); return { ...fl, context: `${fl.wall}.c` }; };
+  const run = (r: ReturnType<typeof stamping>, fl: { focus: string; wall: string; context?: string }, o: { stamps?: boolean; onBase?: (e: Recorded) => void } = {}) =>
+    fetchRecorded(r.exporter, A, B, { files: fl, signal, ops: r.ops, segments: r.segments, stamps: o.stamps === false ? undefined : r.stamps, onBase: o.onBase });
+  /** kind, seconds into the window and seconds long of each entry, to the tenth. */
+  const timed = (es: Entry[]) => es.map((e) => [e.kind, Math.round((e.at - A) / 100) / 10, Math.round(e.span / 100) / 10, !!e.lead]);
+
+  it("exports the high channel past the stretch and the low one around it, and places by the stamps", async () => {
+    const r = stamping({ wall: LOW_KEYS, focus: HIGH_KEYS }), fl = withContext();
+    let early: Recorded | null = null;
+    const got = await run(r, fl, { onBase: (e) => { early = e; } });
+    const wide = { beforeMs: R, afterMs: R };
+    expect(r.exported).toEqual(expect.arrayContaining([["focus", { afterMs: R }], ["wall", undefined], ["wall", wide]]));
+    expect(r.exported).toHaveLength(3);
+    expect(r.stamped).toEqual(expect.arrayContaining([["focus", { afterMs: R }], ["wall", undefined], ["wall", wide]]));
+    expect(got).toMatchObject({ base: fl.wall, high: fl.focus, busy: false });
+    // The high file holds the run recorded after the window, which plays in the window after.
+    expect(r.of(fl.focus).gops.length).toBe(1 + 20 + 5);
+    expect(timed(got.entries)).toEqual([
+      ["base", -1, 1, true], ["base", 0, 15, false], ["over", 15, 5, false], ["insert", 20, 10, false], ["over", 30, 5, false], ["base", 35, 25, false],
+    ]);
+    // The base was dated by its stamps before the high file was placed.
+    expect(timed(early!.entries)).toEqual([["base", -1, 1, true], ["base", 0, 20, false], ["base", 30, 30, false]]);
+  });
+
+  it("re-exports the high channel without reach and places the old way when its stamps don't fit", async () => {
+    const old = stamping({ wall: LOW_KEYS, focus: HIGH_KEYS }), plain = await run(old, files(), { stamps: false });
+    const short = stamping({ wall: LOW_KEYS, focus: HIGH_KEYS }, { stamps: (ch, s) => (ch === "focus" ? s.slice(1) : s) });
+    const contextFails = stamping({ wall: LOW_KEYS, focus: HIGH_KEYS }, { fail: (ch, reach) => (ch === "wall" && reach ? new RecorderBusyError(503) : null) });
+    const lowWrong = stamping({ wall: LOW_KEYS, focus: HIGH_KEYS }, { stamps: (ch, s, reach) => (ch === "wall" && !reach ? [...s].reverse() : s) });
+    for (const r of [short, contextFails, lowWrong]) {
+      const fl = withContext(), got = await run(r, fl);
+      expect(r.exported.filter(([ch]) => ch === "focus")).toEqual([["focus", { afterMs: R }], ["focus", undefined]]);
+      expect(r.of(fl.focus).gops.length).toBe(1 + 20);
+      expect(got.entries).toEqual(plain.entries);
+    }
+  });
+
+  it("changes nothing without a file for the context or without stamps", async () => {
+    const old = stamping({ wall: LOW_KEYS, focus: HIGH_KEYS }), plain = await run(old, files(), { stamps: false });
+    expect(old.exported).toEqual(expect.arrayContaining([["focus", undefined], ["wall", undefined]]));
+    expect(old.stamped).toEqual([]);
+    const r = stamping({ wall: LOW_KEYS, focus: HIGH_KEYS }), got = await run(r, files());
+    expect(r.exported.map(([, reach]) => reach)).toEqual([undefined, undefined]);
+    expect(got.entries).toEqual(plain.entries);
+  });
+
+  it("dates the low channel by its stamps when it is exported alone", async () => {
+    // The high channel lists nothing near the window, so the low one is played alone; its segment
+    // list hides the hole, which the stamps show.
+    const r = stamping({ wall: LOW_KEYS, focus: [A - 900_000] }), fl = withContext();
+    const got = await fetchRecorded(r.exporter, A, B, { files: fl, signal, ops: r.ops, segments: async (ch) => (ch === "wall" ? [[A - 120_000, B + 119_000]] : [[A - 894_000, A - 894_000]]), stamps: r.stamps });
+    expect(r.exported).toEqual([["wall", undefined]]);
+    expect(r.stamped).toEqual([["wall", undefined]]);
+    expect(got).toMatchObject({ base: fl.wall, high: null });
+    expect(timed(got.entries)).toEqual([["base", -1, 1, true], ["base", 0, 20, false], ["base", 30, 30, false]]);
+  });
+
+  // A plain piece of a clip is kept whole, so the piece before ends with all of its last GOP, and
+  // the join cuts the next piece's whole lead GOP (`startAfter`).
+  it("flags the whole first GOP of a plain piece as its lead, as the piece before shows all of it", async () => {
+    const r = stamping({ wall: LOW_KEYS.map((k) => k - 500), focus: [A - 900_000] });
+    const piece = await fetchRecordedFile(r.exporter, A, B, join(dir, "plain-stamped.mp4"), { files: withContext(), signal, ops: r.ops, segments: async (ch) => (ch === "wall" ? [[A - 120_500, B + 118_500]] : [[A - 894_000, A - 894_000]]), stamps: r.stamps });
+    expect(piece.rendered).toBe(false);
+    expect(piece.entries.filter((e) => e.lead).reduce((s, e) => s + e.len, 0)).toBeCloseTo(1, 3);
   });
 });

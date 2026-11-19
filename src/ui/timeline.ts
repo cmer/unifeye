@@ -27,3 +27,24 @@ export function fmtAgo(ms: number): string | null {
   if (!m) return `${Math.max(1, Math.floor(ms / 1000))} sec ago`;
   return h ? `${h} hr${m % 60 ? ` ${m % 60} min` : ""} ago` : `${m} min ago`;
 }
+
+/** "8 seconds not recorded", "3 minutes not recorded": the length of a stretch playback skipped over. */
+export function fmtSkipped(ms: number): string {
+  const s = Math.max(1, Math.round(ms / 1000)), m = Math.round(s / 60);
+  return s < 60 ? `${s} second${s === 1 ? "" : "s"} not recorded` : `${m} minute${m === 1 ? "" : "s"} not recorded`;
+}
+
+/** Recorded ranges with the holes cut out of them: what the timeline's bar draws. Both are [from, to] ms. */
+export function cutHoles(ranges: [number, number][], holes: [number, number][]): [number, number][] {
+  const hs = [...holes].sort((x, y) => x[0] - y[0]), out: [number, number][] = [];
+  for (const [s, e] of ranges) {
+    let at = s;
+    for (const [hs0, he] of hs) {
+      if (he <= at || hs0 >= e) continue;
+      if (hs0 > at) out.push([at, hs0]);
+      at = he;
+    }
+    if (at < e) out.push([at, e]);
+  }
+  return out;
+}

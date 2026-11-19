@@ -181,6 +181,16 @@ export function matchGops(keys: Thumbs, low: Thumbs, gops: { t: number; len: num
   return { at, similar: (g, s) => { const r = rowOf.get(g); return r == null ? 0 : S[r * m + frameAt(s)]; } };
 }
 
+/**
+ * How alike every high keyframe and every low frame are, as `(key, frame) => score` by their indexes
+ * in `keys` and `low`: about 1 for the same picture.
+ */
+export function likeness(keys: Thumbs, low: Thumbs, o: Pick<MatchOptions, "band" | "motion">): (key: number, frame: number) => number {
+  if (!keys.t.length || !low.t.length) return () => 0;
+  const S = scores(keys, low, o), m = low.t.length;
+  return (key, frame) => S[key * m + frame];
+}
+
 /** How much each frame differs from the one before it (0 for the first), on the whole picture. */
 export function frameDiffs(f: Thumbs, band: number): number[] {
   const { whole } = vectors(f, band);

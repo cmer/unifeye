@@ -142,6 +142,30 @@ gateway) is pinned separately in
   `skipLead`).
   `tests/playback.test.ts` checks a mock adaptive window's order second by second, its early answer
   and the cache, with real files.
+- Placing adaptive recordings by the recorder's stamps (2026-11-18, production UNVR, Protect 7.3.74,
+  read-only; fourteen labelled five-minute windows from twelve third-party cameras, `d0` to `d13` in
+  `cmer/unifeye-test-footage`, with the stamps Protect's playback stream gave for both channels).
+  What the footage shows: the playback stream sends the same GOPs as an export, one fragment each
+  (a GOP is cut in two where one of the recorder's files ends; the second half has no keyframe), and
+  a one-minute window arrives in under half a second. The low channel's stamps run 0.2 to 2.7 s past
+  the camera's drawn clock, steady within a camera, and show every hole. The high channel's stamps
+  ran late by 16 s at the median and never more than 32.5 s: the lag grows across stalls (by about a
+  quarter of the stall), and every time it reached 28 to 34 s the next footage came 32 to 48 s later
+  with a lag of 2 to 5 s (27 such resets seen). In these windows the cameras' clocks show footage for
+  about half of the time; the rest is on neither channel, and exports of those moments answer "not
+  found". Placement with stamps, played one minute at a time as the product does
+  (`scripts/adaptive-eval/windows.mts`): of 1393 s of footage in 42 windows, 65 s were shown out of
+  order (about a dozen misplaced runs, nearly all where the scene is still and any moment looks like
+  another), 8 s twice and 86 s never; 650 of 731 high GOPs were placed within 4 s of their clock
+  (`lag.mts`). The same windows fetched through `fetchRecorded` and the UniFi adapter from the app
+  container (five consecutive minutes of one camera): about 2 s per window, the base ready after
+  0.7 to 1.2 s, no moment shown after a later one. In headless Chrome on a local stack in
+  real mode against the same recorder (one camera, about a minute and a half from one seek): playback
+  ran at the speed of the clock, the high-resolution picture came up over the low one and carried on
+  alone where the low channel had a hole, each skip showed its note ("3 seconds not recorded",
+  "10 seconds not recorded"), the zoomed-in timeline showed the breaks of the minutes played, and
+  playing into a gap of over a minute stopped on "Nothing recorded until ..." with its skip button.
+  Not checked on any other Protect version, on a phone, or on the wall.
 - Placing adaptive recordings on real exports (read-only exports of eight five-minute windows from six
   adaptive-recording cameras on the production UNVR, 2026-11-18; 330 high GOPs beside about 19 minutes
   of low-resolution video). The cameras' burned-in clocks, read by OCR, were used to check results

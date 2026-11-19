@@ -4,6 +4,7 @@ import { pipeline } from "node:stream/promises";
 import { Agent, request, type Dispatcher } from "undici";
 import { ProtectClient } from "unifi-protect";
 import { log } from "../util";
+import { readStamps } from "./playback-stream";
 import { checkRtsp, withLogin } from "./rtsp-check";
 import { NoRecordingError, ProtectUnavailableError, RecorderBusyError, type AdapterHealth, type CameraLogin, type DirectCheck, type EventQuery, type EventType, type LiveSource, type ProtectAdapter, type ProtectCamera, type ProtectEvent, type RecordingRanges, validZone } from "./types";
 
@@ -19,6 +20,8 @@ function directUrls(config: unknown): { main: string; sub: string } | null {
 }
 
 interface RawEvent { id: string; type: string; start: number; end?: number | null; camera?: string; cameraId?: string; smartDetectTypes?: string[]; /** `e-<event id>` on current recorders; older ones sent `thumbnailId`. */ thumbnail?: string | null; thumbnailId?: string | null; modelKey?: string }
+/** How long a GOP runs past its keyframe at most, and how late the recorder stamps high-resolution footage at most. */
+const GOP_TAIL_MS = 5000, HIGH_LATE_MS = 34_000;
 const SMART: Record<string, EventType> = { person: "person", vehicle: "vehicle", package: "package", animal: "animal", licensePlate: "licensePlate" };
 
 /**
@@ -245,10 +248,40 @@ export class UnifiProtectAdapter implements ProtectAdapter {
     return checkRtsp(urls.sub, login);
   }
 
+  private rangeCache = new Map<string, { at: number; r: Promise<RecordingRanges> }>();
+  /**
+   * Where the recorder holds footage, from its segment lists for both channels joined. The lists
+   * leave out gaps shorter than about 20 s, and the high channel's times run late by up to about half
+   * a minute (see `placement/stamped.ts`), so its segments are taken to start that much earlier: a
+   * gap listed here is one where neither channel has anything. Without the lists, only the outer
+   * limits are known. Answers are kept for a minute, since the timeline and the wall ask often.
+   */
   async recordingRanges(id: string, fromMs: number, toMs: number): Promise<RecordingRanges> {
     const cam = (await this.listCameras()).find((x) => x.protectId === id);
     const a = Math.max(fromMs, cam?.recordingStartMs ?? Infinity), b = Math.min(toMs, cam?.recordingEndMs ?? Date.now(), Date.now());
-    return { ranges: a < b ? [[a, b]] : [], precision: "bounds" };
+    const bounds: RecordingRanges = { ranges: a < b ? [[a, b]] : [], precision: "bounds" };
+    if (!(a < b)) return bounds;
+    const key = `${id}:${Math.floor(a / 60_000)}:${Math.floor(b / 60_000)}`, hit = this.rangeCache.get(key);
+    if (hit && Date.now() - hit.at < 60_000) return hit.r;
+    const r = (async (): Promise<RecordingRanges> => {
+      const [low, high] = await Promise.all([this.recordedSegments(id, a, b, "wall"), this.recordedSegments(id, a, b, "focus")]);
+      if (!low || !high || !(low.length + high.length)) return bounds;
+      // A segment ends on its last keyframe, whose GOP runs on for a few seconds.
+      const all = [...low.map(([s, e]) => [s, e + GOP_TAIL_MS]), ...high.map(([s, e]) => [s - HIGH_LATE_MS, e + GOP_TAIL_MS])].sort((x, y) => x[0] - y[0]);
+      const ranges: [number, number][] = [];
+      for (const [s0, e0] of all) {
+        const s = Math.max(a, s0), e = Math.min(b, e0), p = ranges[ranges.length - 1];
+        if (e <= s) continue;
+        if (p && s <= p[1]) p[1] = Math.max(p[1], e); else ranges.push([s, e]);
+      }
+      // What was recorded in the last few minutes may not be listed yet.
+      const fresh = Math.max(a, b - 5 * 60_000), last = ranges[ranges.length - 1];
+      if (b > Date.now() - 60_000) { if (last && last[1] >= fresh) last[1] = b; else ranges.push([fresh, b]); }
+      return { ranges, precision: "exact" };
+    })().catch(() => bounds);
+    this.rangeCache.set(key, { at: Date.now(), r });
+    if (this.rangeCache.size > 200) for (const [k, v] of this.rangeCache) if (Date.now() - v.at >= 60_000) this.rangeCache.delete(k);
+    return r;
   }
 
   /**
@@ -263,6 +296,23 @@ export class UnifiProtectAdapter implements ProtectAdapter {
       const rows = r.json<{ start?: unknown; end?: unknown }[]>();
       if (!Array.isArray(rows)) return null;
       return rows.filter((x) => typeof x?.start === "number" && typeof x.end === "number" && x.end >= x.start).map((x) => [x.start as number, x.end as number]);
+    } catch (e) {
+      if (signal?.aborted) throw e;
+      return null;
+    }
+  }
+
+  /**
+   * Protect's playback stream names each GOP's time (`playback-stream.ts`); like `playback-history` it
+   * is not part of the published API, so any failure gives null. A stamp outside the stretch asked for
+   * (but for the lead, which may come from long before) means the stream is not what this expects.
+   */
+  async recordedStamps(id: string, startMs: number, endMs: number, quality: "wall" | "focus", signal?: AbortSignal): Promise<number[] | null> {
+    const url = `wss://${this.o.host}/proxy/protect/ws/playback?camera=${encodeURIComponent(id)}&channel=${quality === "focus" ? 0 : 2}&end=${Math.floor(endMs)}&format=FMP4&lens=0&start=${Math.floor(startMs)}`;
+    try {
+      const stamps = await readStamps(url, { headers: await this.exportAuth(), dispatcher: this.exportAgent(), signal });
+      if (stamps?.some((t, k) => !(t < endMs + 60_000) || (k > 0 && t < startMs - 60_000))) { log("warn", "the recorder's playback stream gave times outside the stretch asked for; ignoring them", { id, startMs }); return null; }
+      return stamps;
     } catch (e) {
       if (signal?.aborted) throw e;
       return null;

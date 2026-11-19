@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PLACEMENT, placeStretch, type Thumbs } from "@/server/media/placement";
+import { PLACEMENT, placeStretch, stampsFit, type Thumbs } from "@/server/media/placement";
 import type { Entry, Gop } from "@/server/media/timeline";
 
 /**
@@ -262,5 +262,145 @@ describe("placing an adaptive recording", () => {
     const blind = placeStretch(WINDOW, asBase(lo, { pictures: false })).trace;
     expect(blind.baseFrames.every((j) => j == null)).toBe(true);
     expect(blind.unpaired.baseGops).toBe(0);
+  });
+});
+
+describe("placing with the recorder's times", () => {
+  // The recorder's times (stamps) for every GOP: the low channel's are the true times; the high
+  // channel's run late by some lag, which the placement must find from the pictures.
+  const late = (c: Channel, lagMs: (g: number) => number) => c.truth.map((t, g) => t + lagMs(g));
+  const stamped = (c: Channel, stamps: number[] = c.truth, o: { pictures?: boolean } = {}) => ({ ...asBase(c, { segments: null, ...o }), stamps });
+  const highWith = (c: Channel, stamps: number[]) => ({ ...asHigh(c, null), stamps });
+  /** Where each high GOP was placed, against when it was recorded, in ms (the worst). */
+  const worstOff = (times: number[], c: Channel, gops: number[]) => Math.max(...gops.map((g) => Math.abs(times[g] - c.truth[g])));
+  const range = (a: number, b: number) => Array.from({ length: b - a }, (_, k) => a + k);
+  /** The moments shown after the leads (true times, every tenth of a second) step back by at most this much. */
+  const forward = (es: Entry[], lo: Channel, hi?: Channel) => expect(worstStepBack(shown(es, lo, hi))).toBeLessThanOrEqual(0.15);
+
+  describe("for the base alone", () => {
+    it("takes each GOP's time and span from its stamp, and leaves holes between GOPs that don't follow on", () => {
+      const lo = channel("lo", busy(), [[A - 400, 20], [A + 30_000, 30]], 1);
+      for (const pictures of [true, false]) {
+        const { entries, trace } = placeStretch(WINDOW, stamped(lo, lo.truth, { pictures }));
+        expect(trace.baseTimes).toEqual(lo.truth);
+        expect(entries.map((e) => [e.kind, round(e.base), round(e.len), e.at, e.span, !!e.lead])).toEqual([
+          ["base", 0, 0.4, A - 400, 400, true], ["base", 0.4, 19.6, A, 19_600, false], ["base", 20, 30, A + 30_000, 30_000, false],
+        ]);
+      }
+    });
+
+    it("lets GOPs stamped a little early or late run up to each other, without slivers of missing or doubled time", () => {
+      const lo = channel("lo", busy(), [[A - 400, 20], [A + 30_000, 30]], 1);
+      const jitter = lo.truth.map((t, g) => t + [0, 150, -120, 80, -200][g % 5]);
+      const { entries } = placeStretch(WINDOW, stamped(lo, jitter, { pictures: false }));
+      const played = entries.filter((e) => !e.lead);
+      // One entry for each recorded run, each covering its run exactly.
+      expect(played.map((e) => [e.at, round(e.base), round(e.len)])).toEqual([[A, round((A - jitter[0]) / (jitter[1] - jitter[0])), round(20 - (A - jitter[0]) / (jitter[1] - jitter[0]))], [jitter[20], 20, 30]]);
+      expect(played[0].at + played[0].span).toBe(jitter[19] + 1000);
+      expect(played[1].at + played[1].span).toBe(jitter[49] + 1000);
+    });
+
+    it("flags the part of the first GOP before the window as the lead, and nothing else", () => {
+      const lo = channel("lo", busy(), [[A - 700, 3], [A + 5000, 56]], 1);
+      const { entries } = placeStretch(WINDOW, stamped(lo));
+      const leads = entries.filter((e) => e.lead);
+      expect(leads.map((e) => [e.kind, e.base, round(e.len), e.at, e.at + e.span])).toEqual([["base", 0, 0.7, A - 700, A]]);
+      expect(entries.findIndex((e) => e.lead)).toBe(0);
+      expect(entries[1]).toMatchObject({ kind: "base", at: A, base: expect.closeTo(0.7, 6) });
+      // Nothing past the window plays.
+      const last = entries[entries.length - 1];
+      expect(last.at + last.span).toBe(A + 60_000);
+    });
+  });
+
+  describe("for an adaptive recording", () => {
+    // Low resolution misses 10 s of motion; high resolution (2 s GOPs) runs from 5 s before that
+    // hole to 1 s after, and its lead was recorded long before.
+    const LOW: [number, number][] = [[A - 500, 21], [A + 30_000, 30]];
+    const HIGH: [number, number][] = [[A - 300_000, 1], [A + 15_000, 8]];
+
+    it("lays the high file over the base at the moment it was recorded, though its stamps run late", () => {
+      const lo = channel("lo", busy(), LOW, 1), hi = channel("hi", busy(), HIGH, 2);
+      const { entries, trace } = placeStretch(WINDOW, stamped(lo), highWith(hi, late(hi, () => 7000)));
+      expect(worstOff(trace.high!.times, hi, range(1, 9))).toBeLessThanOrEqual(100);
+      expect(trace.high!.lag!.slice(1).every((l) => Math.abs(l - 7) <= 0.1)).toBe(true);
+      // Over the base where both hold the moment, alone in the base's hole, base alone elsewhere.
+      const played = entries.filter((e) => !e.lead);
+      expect(played.map((e) => e.kind)).toEqual(["base", "over", "insert", "over", "base"]);
+      const at = (k: string) => played.filter((e) => e.kind === k).map((e) => [Math.round((e.at - A) / 100) / 10, Math.round(e.span / 100) / 10]);
+      expect(at("over")).toEqual([[15, 5.5], [30, 1]]);
+      expect(at("insert")).toEqual([[20.5, 9.5]]);
+      // The high lead was recorded long before the window: the stretch then shows it, not this one.
+      expect(entries.some((e) => e.high != null && e.high < 2)).toBe(false);
+      forward(entries, lo, hi);
+    });
+
+    it("inserts the high GOPs that fall in a hole of the base at their time, in order", () => {
+      // The base misses 20.5-40 s. The high file has 16-26 s and 32-42 s; across its own hole the
+      // stamps run 1.5 s later, and only the second run's last GOP shows a moment the base has.
+      const lo = channel("lo", busy(), [[A - 500, 21], [A + 40_000, 20]], 1), hi = channel("hi", busy(), [[A - 300_000, 1], [A + 16_000, 5], [A + 32_000, 5]], 2);
+      const { entries, trace } = placeStretch(WINDOW, stamped(lo), highWith(hi, late(hi, (g) => (g <= 5 ? 6000 : 7500))));
+      expect(worstOff(trace.high!.times, hi, range(1, 11))).toBeLessThanOrEqual(250);
+      const inserts = entries.filter((e) => e.kind === "insert");
+      const half = (x: number) => Math.round(x * 2) / 2;
+      expect(inserts.map((e) => [half((e.at - A) / 1000), half(e.high!), half(e.len)])).toEqual([[20.5, 6.5, 5.5], [32, 12, 8]]);
+      // The base waits where its hole is.
+      expect(inserts.every((e) => e.base === 21)).toBe(true);
+      forward(entries, lo, hi);
+    });
+
+    it("leaves out high GOPs recorded before the window or after it, though stamped inside it", () => {
+      // A high run recorded just before the window and stamped inside it, and one recorded at its end
+      // and stamped past it (the high file reaches past the window for those).
+      const runs: [number, number][] = [[A - 6000, 3], [A + 15_000, 8], [A + 58_000, 3]];
+      const lo = channel("lo", busy(), LOW, 1), hi = channel("hi", busy(), runs, 2);
+      // The low channel a while either side of the window, with its pictures.
+      const wide = channel("lo", busy(), [[A - 36_000, 56], [A + 30_000, 66]], 1);
+      const context = { gops: wide.gops, stamps: wide.truth, frames: wide.frames() };
+      const stamps = late(hi, () => 8000);
+      expect(stamps[0]).toBeGreaterThan(A);
+      const { entries, trace } = placeStretch(WINDOW, { ...stamped(lo), context }, highWith(hi, stamps));
+      expect(worstOff(trace.high!.times, hi, range(0, hi.gops.length))).toBeLessThanOrEqual(250);
+      const highs = entries.filter((e) => e.high != null);
+      // Nothing of the first run (media 0-6 s) nor of the last run's GOPs after the window (media 24-28 s).
+      expect(highs.every((e) => e.high! >= 6 - 1e-6 && e.high! + e.len <= 24 + 1e-6)).toBe(true);
+      // The last run's first GOP (58-60 s) plays over the base.
+      expect(highs[highs.length - 1]).toMatchObject({ kind: "over", at: expect.closeTo(A + 58_000, -2), high: expect.closeTo(22, 1) });
+      forward(entries, lo, hi);
+    });
+
+    it("follows a lag that grows along a run and starts again after a break", () => {
+      // Two motion stretches: in each the lag grows by a quarter second a GOP; the second starts
+      // again near zero.
+      const lo = channel("lo", busy(), [[A - 500, 13], [A + 20_000, 22], [A + 50_000, 10]], 1);
+      const hi = channel("hi", busy(), [[A - 300_000, 1], [A + 10_000, 6], [A + 40_000, 6]], 2);
+      const stamps = late(hi, (g) => (g === 0 ? 0 : g <= 6 ? 20_000 + 250 * g : 2000 + 250 * (g - 6)));
+      const { entries, trace } = placeStretch(WINDOW, stamped(lo), highWith(hi, stamps));
+      expect(worstOff(trace.high!.times, hi, range(1, 13))).toBeLessThanOrEqual(250);
+      expect(entries.filter((e) => e.kind === "insert").map((e) => Math.round((e.at - A) / 100) / 10)).toEqual([12.5, 42]);
+      forward(entries, lo, hi);
+    });
+  });
+
+  it("uses stamps only when there is one for each GOP, in order", () => {
+    const gops = channel("lo", busy(), [[A, 4]], 1).gops;
+    expect(stampsFit(gops, [A, A + 1000, A + 2000, A + 3000])).toBe(true);
+    for (const bad of [undefined, [], [A, A + 1000, A + 2000], [A, A + 1000, A + 2000, A + 3000, A + 4000], [A, A + 1000, A + 1000, A + 3000], [A, A + 2000, A + 1000, A + 3000], [A, NaN, A + 2000, A + 3000]]) expect(stampsFit(gops, bad)).toBe(false);
+    expect(stampsFit([], [])).toBe(false);
+  });
+
+  it("places the old way when the stamps don't fit the files", () => {
+    const lo = channel("lo", busy(), [[A, 20], [A + 30_000, 30]], 1), hi = channel("hi", busy(), [[A - 300_000, 1], [A + 15_000, 8], [A + 41_000, 3]], 2);
+    const plain = placeStretch(WINDOW, asBase(lo)), both = placeStretch(WINDOW, asBase(lo), asHigh(hi));
+    const same = (p: ReturnType<typeof placeStretch>, q: ReturnType<typeof placeStretch>) => expect([p.entries, p.trace.baseTimes, p.trace.high?.times]).toEqual([q.entries, q.trace.baseTimes, q.trace.high?.times]);
+    // Base stamps one short, or out of order.
+    for (const stamps of [lo.truth.slice(1), [...lo.truth].reverse()]) {
+      same(placeStretch(WINDOW, { ...asBase(lo), stamps }), plain);
+      same(placeStretch(WINDOW, { ...asBase(lo), stamps }, { ...asHigh(hi), stamps: late(hi, () => 5000) }), both);
+    }
+    // Good base stamps, but none that fit for the high file: the high file can't be timed by them.
+    for (const stamps of [undefined, late(hi, () => 5000).slice(2)]) expect(placeStretch(WINDOW, { ...asBase(lo), stamps: lo.truth }, { ...asHigh(hi), stamps }).entries).toEqual(both.entries);
+    // Without base pictures there is nothing to measure the high file's lag with.
+    expect(placeStretch(WINDOW, { ...asBase(lo, { pictures: false }), stamps: lo.truth }, { ...asHigh(hi), stamps: late(hi, () => 5000) }).entries).toEqual(placeStretch(WINDOW, asBase(lo, { pictures: false }), asHigh(hi)).entries);
   });
 });

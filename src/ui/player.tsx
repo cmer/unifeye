@@ -13,7 +13,7 @@ import { RecordedVideo } from "./recorded-video";
 import { windowStart } from "./recorded-playback";
 import { dragTrim, nearestEnd, panTrim, startTrim as newTrim, TRIM_SPAN, typeTrim as typedTrim, zoomedSpan, zoomTrim as zoomedTrim, type End, type Trim } from "./trim";
 import { claimSound, setSound, SoundButton, useSound } from "./sound";
-import { fmtAgo, tickTimes, timelineBounds } from "./timeline";
+import { cutHoles, fmtAgo, fmtSkipped, tickTimes, timelineBounds } from "./timeline";
 import { ScrubStill, WindowWarmer } from "./scrub-still";
 
 type Ranges = { ranges: [number, number][]; precision: "exact" | "bounds" };
@@ -32,6 +32,10 @@ const fmtSpan = (ms: number) => { const m = Math.round(ms / 60_000); return m >=
 /** How much time the timeline shows, widest first. 0 is everything (see `timelineBounds`). */
 const ZOOMS: [number, string][] = [[0, "Whole day"], [6 * 3600_000, "6 hours"], [3600_000, "1 hour"], [600_000, "10 minutes"]];
 /** Spacing between timeline labels: the first that gives at most six across. */
+/** A skip over time not recorded this long or longer pauses playback and says so, rather than playing on. */
+const LONG_GAP = 60_000;
+/** Holes from loaded windows are kept this far either side of the latest one. */
+const HOLES_KEPT = 6 * 3600_000;
 const TICKS = [60_000, 120_000, 300_000, 600_000, 900_000, 1800_000, 3600_000, 7200_000, 3 * 3600_000, 6 * 3600_000];
 
 /**
@@ -63,6 +67,15 @@ export function Player({ cameraId }: { cameraId: string }) {
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   /** Nothing recorded where the recorded video is (see `RecordedVideo`). */
   const [missingRec, setMissingRec] = useState(false);
+  /** A short note over the video that playback skipped time not recorded; `n` restarts it for each skip. */
+  const [skipNote, setSkipNote] = useState<{ text: string; n: number } | null>(null);
+  useEffect(() => { if (!skipNote) return; const i = setTimeout(() => setSkipNote(null), 2500); return () => clearTimeout(i); }, [skipNote]);
+  /** Playback paused after skipping a long stretch not recorded; it has reached `to`. */
+  const [gap, setGap] = useState<{ to: number } | null>(null);
+  /** What the windows played so far did not record, by window start (see `RecordedVideo`'s `onHoles`). */
+  const [holes, setHoles] = useState<Record<number, [number, number][]>>({});
+  /** The last moment an automatic skip past nothing recorded went to, so landing on nothing again stops there. */
+  const autoSkip = useRef<number | null>(null);
   const [jump, setJump] = useState(false);
   const [trim, setTrim] = useState<Trim | null>(null);
   const [job, setJob] = useState<Job | null>(null);
@@ -91,6 +104,15 @@ export function Player({ cameraId }: { cameraId: string }) {
   useEffect(() => { api<{ cameras: Camera[] }>("/cameras").then((r) => setCam(r.cameras.find((c) => c.id === cameraId) ?? "gone")).catch(fail); }, [cameraId, me.preview?.subject.id]);
 
   const ready = cam !== null && cam !== "gone";
+  /** The timeline's width in pixels, so holes too narrow to see are left out. */
+  const [tlWidth, setTlWidth] = useState(1000);
+  useEffect(() => {
+    const el = tl.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([e]) => setTlWidth(e.contentRect.width || 1000));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ready]);
   const { rolling, lo, hi } = timelineBounds(t, clock, pinned, tz);
   // The last 24 hours are fetched from the top of the hour, so the request changes once an hour rather than every second.
   const fetchFrom = rolling ? Math.floor(lo / 3600_000) * 3600_000 : lo, fetchTo = rolling ? 0 : hi;
@@ -112,7 +134,7 @@ export function Player({ cameraId }: { cameraId: string }) {
 
   useEffect(() => { const i = setInterval(() => { const n = Date.now(); setClock(n); if (live) setT(n); }, 1000); return () => clearInterval(i); }, [live]);
   const seek = useCallback((ms: number, play = true) => {
-    setMissingRec(false);
+    setMissingRec(false); setGap(null);
     if (ms >= Date.now() - 5000) { setLive(true); setPinned(false); setT(Date.now()); setPlaying(true); return; }
     setLive(false); setT(ms); setTarget((p) => ({ ms, n: p.n + 1 })); if (play) setPlaying(true);
   }, []);
@@ -178,6 +200,23 @@ export function Player({ cameraId }: { cameraId: string }) {
    * exact, and the last few minutes count as recorded, since the timeline catches up with them only every few minutes.
    */
   const recorded = (ms: number) => !rec || rec.precision !== "exact" || ms > clock - 200_000 || rec.ranges.some(([s, e]) => ms >= s && ms < e);
+  const noteSkip = (ms: number) => setSkipNote((p) => ({ text: fmtSkipped(ms), n: (p?.n ?? 0) + 1 }));
+  /** Playing on skipped time not recorded: a note for a short stretch, a pause for a long one. */
+  const skipped = (from: number, to: number) => {
+    if (to - from < LONG_GAP) { noteSkip(to - from); return; }
+    setSkipNote(null); setPlaying(false); setGap({ to });
+  };
+  /**
+   * A window with nothing recorded, while playing on: footage starting within a minute is skipped to.
+   * Only once in a row: when that lands on nothing again, the screen says so instead.
+   */
+  const onMissing = (m: boolean) => {
+    setMissingRec(m);
+    if (!m || live || !playing || !nextRange || nextRange[0] - t >= LONG_GAP || autoSkip.current === t) return;
+    const to = nextRange[0] + 1000;
+    autoSkip.current = to; noteSkip(nextRange[0] - t); seek(to);
+  };
+  const addHoles = (ws: number, h: [number, number][]) => setHoles((p) => Object.fromEntries([...Object.entries(p).filter(([k]) => Math.abs(Number(k) - ws) < HOLES_KEPT), [ws, h]]));
   /** A still that didn't load counts against the camera only where there should have been one. */
   const stillResult = (ok: boolean, ms: number) => {
     if (ok) stillMisses.current = 0;
@@ -191,7 +230,7 @@ export function Player({ cameraId }: { cameraId: string }) {
     warmer.at(recorded(ms) && ms < now() - 10_000 ? windowStart(ms, W) : null);
     setScrub((p) => (p ? { ...p, ms } : p));
   };
-  const startScrub = (ms: number) => { setHover(null); setPlaying(false); setScrub((p) => ({ ms, held: false, n: (p?.n ?? 0) + 1 })); scrubTo(ms); };
+  const startScrub = (ms: number) => { setHover(null); setGap(null); setPlaying(false); setScrub((p) => ({ ms, held: false, n: (p?.n ?? 0) + 1 })); scrubTo(ms); };
   /** Lets go at the moment last shown, not the one under the pointer now: the full-day timeline slides as time passes. */
   const endScrub = (ms: number) => {
     warmer.release();
@@ -206,7 +245,7 @@ export function Player({ cameraId }: { cameraId: string }) {
   };
   useEffect(() => { if (!zoomNote) return; const i = setTimeout(() => setZoomNote(null), 1200); return () => clearTimeout(i); }, [zoomNote]);
   const back = () => (history.length > 1 ? history.back() : nav("/"));
-  const toggle = () => { if (live) { seek(Date.now() - 6000, false); setPlaying(false); } else setPlaying((p) => !p); };
+  const toggle = () => { setGap(null); if (live) { seek(Date.now() - 6000, false); setPlaying(false); } else setPlaying((p) => !p); };
   useEffect(() => {
     const move = () => { lastMove.current = Date.now(); setIdle(false); };
     const key = (e: KeyboardEvent) => {
@@ -252,28 +291,33 @@ export function Player({ cameraId }: { cameraId: string }) {
   const pct = (ms: number) => `${Math.min(100, Math.max(0, ((ms - a) / (b - a)) * 100))}%`;
   const at = (el: HTMLElement, clientX: number) => { const r = el.getBoundingClientRect(); return a + Math.min(1, Math.max(0, (clientX - r.left) / r.width)) * (b - a); };
   const down = me.recorder === "down";
+  // The bar shows recorded time with the holes of loaded windows cut out, those wide enough to see.
+  const halfPx = (b - a) / tlWidth / 2;
+  const bar = rec ? cutHoles(rec.ranges.filter(([s, e]) => e > a && s < b), Object.values(holes).flat().filter(([s, e]) => e > a && s < b && e - s >= halfPx)) : [];
 
   return (
     <div ref={box} className="relative min-h-0 flex-1 overflow-hidden bg-black text-white">
       {live ? <LiveVideo cameraId={cameraId} quality="focus" active={!down} online={cam.online && !down} onTransport={setVia} sound={soundOn} onAudio={setLiveAudio} onMedia={setLiveEl} />
         : <RecordedVideo key={target.n} cameraId={cameraId} W={W} startMs={target.ms} playing={playing} speed={speed} sound={soundOn} onTime={setT} onEnd={seek}
-            onMissing={setMissingRec} onAudio={setRecAudio} onMedia={setRecEl} onPlaying={() => setScrub((p) => (p?.held ? null : p))} />}
+            onMissing={onMissing} onSkip={skipped} onHoles={addHoles} onAudio={setRecAudio} onMedia={setRecEl} onPlaying={() => setScrub((p) => (p?.held ? null : p))} />}
       {scrub && !down && !toLive && !(scrub.held && (missing || live)) && (
         <div className="pointer-events-none absolute inset-0 bg-black/60">
           {!recorded(scrub.ms) ? <div className="absolute inset-0 grid place-items-center bg-zinc-900 text-sm font-medium text-zinc-50">No recording at {fmtTime(scrub.ms, tz)}</div>
             : noStills !== cameraId && scrub.ms < clock - 10_000 && <ScrubStill key={scrub.n} cameraId={cameraId} ms={scrub.ms} close={(b - a) / 600} onResult={stillResult} className="absolute inset-0 size-full object-contain" />}
         </div>
       )}
-      {(missing || (live && !cam.online)) && !down && (
+      {(missing || (live && !cam.online) || gap) && !down && (
         <div className="absolute inset-0 grid place-items-center bg-zinc-900 p-6 text-center text-sm text-zinc-400">
-          <div><div className="mb-1 font-medium text-zinc-50">{missing ? `No recording at ${fmtTime(t, tz)}` : "Camera offline"}</div>
+          <div><div className="mb-1 font-medium text-zinc-50">{missing ? (nextRange && nextRange[0] - t >= LONG_GAP ? `Nothing recorded until ${fmtShort(nextRange[0], tz)}` : `No recording at ${fmtTime(t, tz)}`) : gap ? `Nothing recorded until ${fmtTime(gap.to, tz)}` : "Camera offline"}</div>
             <div className="mt-4 flex justify-center gap-2">
+              {!missing && gap && <Button variant="outline" className="border-white/30 bg-transparent text-white" onClick={() => { setGap(null); setPlaying(true); }}>Keep playing</Button>}
               {missing && nextRange && <Button variant="outline" className="border-white/30 bg-transparent text-white" onClick={() => seek(nextRange[0] + 1000)}>Skip to {fmtShort(nextRange[0], tz)}</Button>}
-              {!missing && rec?.ranges.length ? <Button variant="outline" className="border-white/30 bg-transparent text-white" onClick={() => seek(rec.ranges[rec.ranges.length - 1][1] - 60000)}>Watch last recording</Button> : null}
-              {missing && <Button variant="outline" className="border-white/30 bg-transparent text-white" onClick={() => seek(Date.now())}>Go live</Button>}
+              {!missing && !gap && rec?.ranges.length ? <Button variant="outline" className="border-white/30 bg-transparent text-white" onClick={() => seek(rec.ranges[rec.ranges.length - 1][1] - 60000)}>Watch last recording</Button> : null}
+              {(missing || gap) && <Button variant="outline" className="border-white/30 bg-transparent text-white" onClick={() => seek(Date.now())}>Go live</Button>}
             </div></div>
         </div>
       )}
+      {skipNote && !live && <div key={skipNote.n} role="status" className="pointer-events-none absolute top-16 left-1/2 -translate-x-1/2 rounded-md bg-black/75 px-2.5 py-1 text-sm font-medium whitespace-nowrap">{skipNote.text}</div>}
       <div className={`absolute inset-x-0 top-0 flex items-center gap-2.5 bg-gradient-to-b from-black/70 to-transparent px-4 pt-3.5 pb-10 transition-opacity ${idle ? "opacity-0" : ""}`}>
         <Button variant="ghost" size="icon" className={ghost} aria-label="Back to cameras" onClick={back}><ArrowLeft /></Button>
         <b className="truncate text-[15px] font-semibold">{cam.name}</b>
@@ -301,7 +345,7 @@ export function Player({ cameraId }: { cameraId: string }) {
           onPointerMove={(e) => { const ms = at(e.currentTarget, e.clientX), y = e.currentTarget.getBoundingClientRect().top; if (trim) { if (e.buttons && trim.grab) drag(trim.grab, ms); } else if (e.buttons && dragging) scrubTo(ms); if (e.pointerType === "mouse" && !dragging) setHover((h) => ({ x: e.clientX, y, ms, img: h && Math.abs(h.img - ms) < (b - a) / 150 ? h.img : ms })); }}
           onPointerLeave={() => setHover(null)}>
           <div className="absolute inset-x-0 bottom-2 h-[5px] overflow-hidden rounded-full bg-white/20" title={rec?.precision === "bounds" ? "Some gaps in the recording may not be shown" : undefined}>
-            {!down && rec?.ranges.map(([s, e], i) => e > a && s < b ? <i key={i} className={`absolute inset-y-0 ${rec.precision === "exact" ? "bg-white/80" : "bg-white/50"}`} style={{ left: pct(s), right: `calc(100% - ${pct(e)})` }} /> : null)}
+            {!down && rec && bar.map(([s, e], i) => <i key={i} className={`absolute inset-y-0 ${rec.precision === "exact" ? "bg-white/80" : "bg-white/50"}`} style={{ left: pct(s), right: `calc(100% - ${pct(e)})` }} />)}
           </div>
           {!down && events.filter((e) => e.startMs > a && e.startMs < b).map((e) => <i key={e.id} title={`${EVENT_LABEL[e.type] ?? e.type}, ${fmtShort(e.startMs, tz)}`} className="absolute bottom-[17px] size-1.5 -translate-x-1/2 rounded-full" style={{ left: pct(e.startMs), background: EVENT_COLOR[e.type] ?? "#a3a3a3" }} />)}
           {trim ? <>
