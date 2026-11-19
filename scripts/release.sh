@@ -12,17 +12,17 @@
 #   --yes       Don't ask before releasing.
 #
 # What it does:
-#   1. Checks: clean tree, at origin/main, the tag is new, gh is signed in, and CHANGELOG.md
-#      has entries under "## Unreleased".
-#   2. Sets "version" in package.json and turns the Unreleased section into "X.Y.Z - date",
-#      leaving an empty Unreleased section above it.
+#   1. Checks: clean tree, at origin/main, the tag is new, gh is signed in, and .changelog/ has
+#      well-formed entries (see scripts/changelog.mjs).
+#   2. Sets "version" in package.json, writes the .changelog/ entries into CHANGELOG.md as
+#      "## X.Y.Z - date" and deletes them.
 #   3. Runs typecheck, lint and the tests.
 #   4. Commits "Release vX.Y.Z", creates the annotated tag vX.Y.Z and pushes both to main.
 #   5. Creates the GitHub release, with that version's CHANGELOG.md section as its notes.
 #
 # The current version is the newest vX.Y.Z tag, or package.json's version before the first tag.
-# Nothing is committed or pushed until the checks pass; a failure before that puts package.json
-# and CHANGELOG.md back. It runs from any checkout or worktree whose HEAD is origin/main.
+# Nothing is committed or pushed until the checks pass; a failure before that puts package.json,
+# CHANGELOG.md and .changelog/ back. It runs from any checkout or worktree whose HEAD is origin/main.
 #
 # Running servers learn about the release from GitHub's "latest release" (src/server/version.ts)
 # and show it in Diagnostics. Drafts and prereleases don't count as latest.
@@ -31,6 +31,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 CHANGELOG=CHANGELOG.md
+ENTRIES=.changelog
 REMOTE="${REMOTE:-origin}"
 BRANCH=main
 
@@ -76,7 +77,7 @@ if [[ -n "$PREV_TAG" ]]; then
 fi
 git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && die "tag $TAG already exists"
 
-# The body of a CHANGELOG.md section ("Unreleased" or a version), blank lines trimmed.
+# The body of a CHANGELOG.md version section, blank lines trimmed.
 changelog_section() {
   awk -v h="## $1" '
     index($0, h) == 1 && (length($0) == length(h) || substr($0, length(h) + 1, 1) == " ") { on = 1; next }
@@ -88,8 +89,10 @@ changelog_section() {
 # ---- preflight
 step "Checking"
 problems=()
-[[ -f "$CHANGELOG" ]] && grep -q '^## Unreleased$' "$CHANGELOG" || die "$CHANGELOG needs an \"## Unreleased\" section"
-[[ -n "$(changelog_section Unreleased | tr -d '[:space:]')" ]] || problems+=("nothing under \"## Unreleased\" in $CHANGELOG; add this release's changes first")
+[[ -f "$CHANGELOG" ]] || die "$CHANGELOG is missing"
+UNRELEASED="$(node scripts/changelog.mjs notes)" || die "fix the $ENTRIES/ entries above first"
+! grep -q '^## Unreleased' "$CHANGELOG" || problems+=("$CHANGELOG has an \"## Unreleased\" section; move each of its lines into a $ENTRIES/ file and delete the section")
+[[ -n "$UNRELEASED" ]] || problems+=("no entries in $ENTRIES/; add this release's changes first (node scripts/changelog.mjs add ...)")
 [[ -z "$(git status --porcelain)" ]] || problems+=("the working tree isn't clean; commit or stash first")
 [[ "$(git rev-parse HEAD)" == "$(git rev-parse "$REMOTE/$BRANCH")" ]] || problems+=("HEAD isn't $REMOTE/$BRANCH; releases are cut from the tip of $BRANCH (git switch --detach $REMOTE/$BRANCH)")
 command -v gh >/dev/null || problems+=("GitHub CLI not found (brew install gh)")
@@ -97,8 +100,8 @@ gh auth status >/dev/null 2>&1 || problems+=("GitHub CLI isn't signed in; run: g
 
 echo "    ${CURRENT}${PREV_TAG:+ ($PREV_TAG)} -> $VERSION${PRERELEASE[0]:+ (prerelease)}${DRAFT[0]:+ (draft)}"
 echo
-echo "    Release notes, from $CHANGELOG:"
-changelog_section Unreleased | sed 's/^/    | /'
+echo "    Release notes, from $ENTRIES/:"
+printf '%s\n' "$UNRELEASED" | sed 's/^/    | /'
 
 if [[ $DRY == 1 ]]; then
   echo
@@ -121,7 +124,7 @@ fi
 # ---- version and changelog (undone on failure until committed)
 START="$(git rev-parse HEAD)"
 COMMITTED=0
-restore() { [[ $COMMITTED == 1 ]] || git checkout --quiet -- package.json "$CHANGELOG"; }
+restore() { [[ $COMMITTED == 1 ]] || git checkout --quiet -- package.json "$CHANGELOG" "$ENTRIES"; }
 trap restore EXIT
 node -e '
   const fs = require("fs"), s = fs.readFileSync("package.json", "utf8");
@@ -129,9 +132,8 @@ node -e '
   if (JSON.parse(out).version !== process.argv[1]) throw new Error("could not set the version in package.json");
   fs.writeFileSync("package.json", out);
 ' "$VERSION"
-# "## Unreleased" stays at the top, empty, above the new version's section.
-awk -v v="## $VERSION - $(date +%Y-%m-%d)" '$0 == "## Unreleased" && !done { print; print ""; print v; done = 1; next } { print }' "$CHANGELOG" > "$CHANGELOG.tmp"
-mv "$CHANGELOG.tmp" "$CHANGELOG"
+# The .changelog/ entries become the new version's section, above the previous release, and are deleted.
+node scripts/changelog.mjs apply "$VERSION" "$(date +%Y-%m-%d)"
 
 # ---- checks
 step "Running typecheck, lint and tests"
@@ -141,7 +143,7 @@ pnpm test
 
 # ---- commit, tag, push
 step "Tagging $TAG"
-git add package.json "$CHANGELOG"
+git add package.json "$CHANGELOG" "$ENTRIES"
 git commit --quiet -m "Release $TAG"
 COMMITTED=1
 git tag -a "$TAG" -m "$TAG"

@@ -13,7 +13,7 @@ import { RecordedVideo } from "./recorded-video";
 import { windowStart } from "./recorded-playback";
 import { dragTrim, nearestEnd, panTrim, startTrim as newTrim, TRIM_SPAN, typeTrim as typedTrim, zoomedSpan, zoomTrim as zoomedTrim, type End, type Trim } from "./trim";
 import { claimSound, setSound, SoundButton, useSound } from "./sound";
-import { cutHoles, DOT_REACH_PX, fmtAgo, fmtSkipped, nearestEvent, tickTimes, timelineBounds } from "./timeline";
+import { cutHoles, DOT_REACH_PX, fmtAgo, fmtSkipped, nearestEvent, tickTimes, timelineBounds, wheelZoomSteps } from "./timeline";
 import { ScrubStill, WindowWarmer } from "./scrub-still";
 
 type Ranges = { ranges: [number, number][]; precision: "exact" | "bounds" };
@@ -175,13 +175,22 @@ export function Player({ cameraId }: { cameraId: string }) {
     setTrim((tr) => tr && zoomedTrim(tr, factor, frac, at));
   };
   const panTrimBy = (frac: number) => { const at = now(); setTrim((tr) => tr && panTrim(tr, frac, at)); };
+  /** Steps through the zoom levels (`ZOOMS`). */
+  const zoomBy = (d: number) => {
+    const z = clamp(zoom + d, 0, ZOOMS.length - 1);
+    if (z === zoom) return;
+    setZoom(z); setView(null); setZoomNote((p) => ({ text: z || !rolling ? ZOOMS[z][1] : "24 hours", n: (p?.n ?? 0) + 1 }));
+  };
   // On the timeline while choosing a clip, the wheel or a pinch zooms around the pointer and a sideways scroll pans.
-  // A native listener, because React's wheel handler can't stop the page from scrolling or zooming.
+  // Otherwise it steps through the zoom levels, like the buttons. A native listener, because React's wheel
+  // handler can't stop the page from scrolling or zooming.
+  const [wheelSteps] = useState(() => wheelZoomSteps());
   useEffect(() => {
     const el = tl.current;
-    if (!el || !trim) return;
+    if (!el) return;
     const wheel = (e: WheelEvent) => {
       e.preventDefault();
+      if (!trim) { const d = wheelSteps(e); if (d) zoomBy(d); return; }
       if (trim.grab) return;
       const r = el.getBoundingClientRect(), px = e.deltaMode === 1 ? 16 : 1;
       if (!e.ctrlKey && Math.abs(e.deltaX) > Math.abs(e.deltaY)) { panTrimBy((e.deltaX * px) / r.width); return; }
@@ -241,11 +250,6 @@ export function Player({ cameraId }: { cameraId: string }) {
     setScrub((p) => (p && ms < now() - 5000 ? { ...p, ms, held: true } : null));
   };
 
-  const zoomBy = (d: number) => {
-    const z = clamp(zoom + d, 0, ZOOMS.length - 1);
-    if (z === zoom) return;
-    setZoom(z); setView(null); setZoomNote((p) => ({ text: z || !rolling ? ZOOMS[z][1] : "24 hours", n: (p?.n ?? 0) + 1 }));
-  };
   useEffect(() => { if (!zoomNote) return; const i = setTimeout(() => setZoomNote(null), 1200); return () => clearTimeout(i); }, [zoomNote]);
   const back = () => (history.length > 1 ? history.back() : nav("/"));
   const toggle = () => { setGap(null); if (live) { seek(Date.now() - 6000, false); setPlaying(false); } else setPlaying((p) => !p); };
@@ -346,7 +350,7 @@ export function Player({ cameraId }: { cameraId: string }) {
       )}
       <div className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent px-4 pt-12 pb-[max(0.9rem,env(safe-area-inset-bottom))] transition-opacity ${idle ? "opacity-0" : ""}`}>
         {zoomNote && <div key={zoomNote.n} role="status" className="pointer-events-none absolute top-5 left-1/2 -translate-x-1/2 rounded-md bg-black/75 px-2.5 py-1 text-xs font-semibold whitespace-nowrap">{zoomNote.text}</div>}
-        <div ref={tl} className="relative h-8 cursor-pointer touch-none select-none" role="slider" aria-label="Timeline" aria-valuemin={a} aria-valuemax={b} aria-valuenow={Math.round(pt)} aria-valuetext={fmtTime(pt, tz)} tabIndex={0}
+        <div ref={tl} className="relative h-8 cursor-pointer touch-none select-none before:absolute before:inset-x-0 before:-top-4 before:-bottom-5 before:content-['']" role="slider" aria-label="Timeline" aria-valuemin={a} aria-valuemax={b} aria-valuenow={Math.round(pt)} aria-valuetext={fmtTime(pt, tz)} tabIndex={0}
           onPointerDown={(e) => {
             e.currentTarget.setPointerCapture(e.pointerId); const ms = at(e.currentTarget, e.clientX);
             if (trim) { drag(nearestEnd(trim, ms), ms); return; }
@@ -380,8 +384,9 @@ export function Player({ cameraId }: { cameraId: string }) {
           {dragging && (() => { const f = (scrub.ms - a) / (b - a); return <span className={`pointer-events-none absolute bottom-8 rounded-md bg-white px-2 py-0.5 text-sm font-semibold whitespace-nowrap text-black tabular-nums shadow ${f < 0.06 ? "" : f > 0.94 ? "-translate-x-full" : "-translate-x-1/2"}`} style={{ left: pct(scrub.ms) }}>{toLive ? "Live" : fmtTime(scrub.ms, tz)}</span>; })()}
           {showLive && !trim && !dragging && <span className="pointer-events-none absolute right-0 bottom-[25px] rounded bg-red-500 px-1 text-[10px] leading-[14px] font-bold tracking-wide">LIVE</span>}
         </div>
-        <div className="relative mt-0.5 h-4 text-[11px] text-zinc-400">{ticks.map((m) => { const f = (m - a) / (b - a); return <span key={m} className={`absolute top-0 whitespace-nowrap ${f < 0.04 ? "" : f > 0.96 ? "-translate-x-full" : "-translate-x-1/2"} ${m === today ? "font-semibold text-zinc-200" : ""}`} style={{ left: pct(m) }}>{m === today ? "Today" : fmtShort(m, tz)}</span>; })}
-          {toNow && <span className="absolute top-0 right-0 font-semibold text-red-400">Now</span>}</div>
+        <div className="pointer-events-none relative mt-0.5 h-4 text-[11px] text-zinc-400">{ticks.map((m) => { const f = (m - a) / (b - a); return <span key={m} className={`absolute top-0 whitespace-nowrap ${f < 0.04 ? "" : f > 0.96 ? "-translate-x-full" : "-translate-x-1/2"} ${m === today ? "font-semibold text-zinc-200" : ""}`} style={{ left: pct(m) }}>{m === today ? "Today" : fmtShort(m, tz)}</span>; })}
+          {toNow && (live ? <span className="absolute top-0 right-0 font-semibold text-red-400">Now</span>
+            : <button type="button" className="pointer-events-auto absolute -top-1 -right-2 cursor-pointer rounded px-2 py-1 font-semibold text-red-400 hover:text-red-300" onClick={() => seek(Date.now())}>Now</button>)}</div>
         {trim ? (
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {(["a", "b"] as const).map((g) => <input key={g} type="time" step={1} aria-label={g === "a" ? "Clip starts" : "Clip ends"} value={timeInput(trim[g], tz)} onChange={(e) => typeTrim(g, e.target.value)} className="h-9 rounded-lg border border-white/30 bg-transparent px-2 text-sm text-white tabular-nums outline-none [color-scheme:dark] focus-visible:border-white" />)}

@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { api, dayBounds, EVENT_COLOR, EVENT_LABEL, fmtShort, fmtTime, type ActivityEvent } from "./api";
 import { windowStart } from "./recorded-playback";
 import { WindowWarmer } from "./scrub-still";
-import { DAY, DOT_REACH_PX, fmtAgo, nearestEvent, tickTimes } from "./timeline";
+import { DAY, DOT_REACH_PX, fmtAgo, nearestEvent, tickTimes, wheelZoomSteps } from "./timeline";
 
 type Range = [number, number];
 /** How much time the timeline shows, widest first. 0 is the last 24 hours. */
@@ -194,6 +194,16 @@ export function RewindBar({ rw, tz, prerollMs, dock, tools }: { rw: RewindState;
   const [hoverDot, setHoverDot] = useState<ActivityEvent | null>(null);
   /** Pressed on an event dot: where the press began, so a little wobble before letting go still lands on the event. */
   const pressedDot = useRef<number | null>(null);
+  const zoomBy = (d: number) => setZoom((z) => { const n = Math.min(Math.max(z + d, 0), ZOOMS.length - 1); if (n !== z) setView(null); return n; });
+  // The wheel or a pinch on the timeline steps through the zoom levels. A native listener, so the page doesn't scroll or zoom.
+  const [wheelSteps] = useState(() => wheelZoomSteps());
+  useEffect(() => {
+    const el = tl.current;
+    if (!el) return;
+    const wheel = (e: WheelEvent) => { e.preventDefault(); const d = wheelSteps(e); if (d) zoomBy(d); };
+    el.addEventListener("wheel", wheel, { passive: false });
+    return () => el.removeEventListener("wheel", wheel);
+  }, [wheelSteps]);
   const lo = clock - DAY, hi = clock, span = ZOOMS[zoom][0];
   let a = lo, b = hi;
   // Zoomed in, the timeline shows a stretch around the playhead that holds still while the playhead is inside it.
@@ -217,7 +227,7 @@ export function RewindBar({ rw, tz, prerollMs, dock, tools }: { rw: RewindState;
 
   return (
     <div className="absolute inset-x-3 bottom-3 z-20 rounded-xl border bg-background/90 px-3 pt-2 pb-1.5 shadow-lg backdrop-blur-md">
-      <div ref={tl} className="relative h-8 cursor-pointer touch-none select-none" role="slider" aria-label="Timeline" aria-valuemin={a} aria-valuemax={b} aria-valuenow={Math.round(pt)} aria-valuetext={fmtTime(pt, tz)} tabIndex={0}
+      <div ref={tl} className="relative h-8 cursor-pointer touch-none select-none before:absolute before:inset-x-0 before:-top-3 before:-bottom-4 before:content-['']" role="slider" aria-label="Timeline" aria-valuemin={a} aria-valuemax={b} aria-valuenow={Math.round(pt)} aria-valuetext={fmtTime(pt, tz)} tabIndex={0}
         onPointerDown={(e) => {
           e.currentTarget.setPointerCapture(e.pointerId); setHoverDot(null);
           const ev = dotAt(e.currentTarget, e.clientX, e.pointerType !== "mouse");
@@ -241,8 +251,9 @@ export function RewindBar({ rw, tz, prerollMs, dock, tools }: { rw: RewindState;
         <i className={`pointer-events-none absolute bottom-[3px] size-[15px] -translate-x-1/2 rounded-full ${showLive ? "live-dot bg-red-500" : "bg-foreground shadow-[0_0_0_4px_color-mix(in_oklab,var(--foreground)_25%,transparent)]"}`} style={{ left: pct(pt) }} />
         {dragging && <span className={`pointer-events-none absolute bottom-8 rounded-md bg-foreground px-2 py-0.5 text-sm font-semibold whitespace-nowrap text-background tabular-nums shadow ${f < 0.06 ? "" : f > 0.94 ? "-translate-x-full" : "-translate-x-1/2"}`} style={{ left: pct(pt) }}>{toLive ? "Live" : fmtTime(pt, tz)}</span>}
       </div>
-      <div className="relative h-4 text-[11px] text-muted-foreground">{ticks.map((m) => { const g = (m - a) / (b - a); return <span key={m} className={`absolute top-0 whitespace-nowrap ${g < 0.04 ? "" : g > 0.96 ? "-translate-x-full" : "-translate-x-1/2"} ${m === today ? "font-semibold text-foreground" : ""}`} style={{ left: pct(m) }}>{m === today ? "Today" : fmtShort(m, tz)}</span>; })}
-        {toNow && <span className="absolute top-0 right-0 font-semibold text-red-500">Now</span>}</div>
+      <div className="pointer-events-none relative h-4 text-[11px] text-muted-foreground">{ticks.map((m) => { const g = (m - a) / (b - a); return <span key={m} className={`absolute top-0 whitespace-nowrap ${g < 0.04 ? "" : g > 0.96 ? "-translate-x-full" : "-translate-x-1/2"} ${m === today ? "font-semibold text-foreground" : ""}`} style={{ left: pct(m) }}>{m === today ? "Today" : fmtShort(m, tz)}</span>; })}
+        {toNow && (live ? <span className="absolute top-0 right-0 font-semibold text-red-500">Now</span>
+          : <button type="button" className="pointer-events-auto absolute -top-1 -right-2 cursor-pointer rounded px-2 py-1 font-semibold text-red-500 hover:text-red-400" onClick={rw.close}>Now</button>)}</div>
       <div className="mt-1 flex items-center gap-0.5 overflow-x-auto">
         {dock}
         <Button variant="ghost" size="icon" className={ghost} aria-label="Back 10 seconds" onClick={() => rw.seek(t - 10_000)}><RotateCcw /></Button>
@@ -254,8 +265,8 @@ export function RewindBar({ rw, tz, prerollMs, dock, tools }: { rw: RewindState;
         <span className="min-w-2 flex-1" />
         {!live && <Button variant="outline" size="sm" className="mr-1 shrink-0 rounded-full" onClick={rw.close}><i className="size-1.5 rounded-full bg-muted-foreground" />Go live</Button>}
         {!live && <select aria-label="Playback speed" value={rw.speed} onChange={(e) => rw.setSpeed(Number(e.target.value))} className="h-8 shrink-0 rounded-lg bg-transparent px-1 text-sm outline-none hover:bg-accent max-sm:hidden">{[0.5, 1, 2, 4].map((x) => <option key={x} value={x}>{x}×</option>)}</select>}
-        <Button variant="ghost" size="icon" className={`${ghost} max-sm:hidden`} aria-label="Zoom out" title="Zoom out" disabled={zoom === 0} onClick={() => { setZoom((z) => z - 1); setView(null); }}><ZoomOut /></Button>
-        <Button variant="ghost" size="icon" className={`${ghost} max-sm:hidden`} aria-label="Zoom in" title="Zoom in" disabled={zoom === ZOOMS.length - 1} onClick={() => { setZoom((z) => z + 1); setView(null); }}><ZoomIn /></Button>
+        <Button variant="ghost" size="icon" className={`${ghost} max-sm:hidden`} aria-label="Zoom out" title="Zoom out" disabled={zoom === 0} onClick={() => zoomBy(-1)}><ZoomOut /></Button>
+        <Button variant="ghost" size="icon" className={`${ghost} max-sm:hidden`} aria-label="Zoom in" title="Zoom in" disabled={zoom === ZOOMS.length - 1} onClick={() => zoomBy(1)}><ZoomIn /></Button>
         {tools}
       </div>
     </div>

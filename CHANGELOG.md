@@ -1,10 +1,4 @@
-# Changelog
-
-What changed in each release of Unifeye, for the people who run it and use it.
-`scripts/release.sh` turns the Unreleased section into the new version's section
-and uses it as the GitHub release notes.
-
-## Unreleased
+# CHANGELOG
 
 ## 1.2.2 - 2026-11-18
 
