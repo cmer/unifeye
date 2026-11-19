@@ -49,6 +49,16 @@ export function cutHoles(ranges: [number, number][], holes: [number, number][]):
   return out;
 }
 
+/** How far from an event dot, in pixels, the pointer still picks it: wider for a finger. */
+export const DOT_REACH_PX = { mouse: 8, touch: 16 };
+
+/** The event whose dot is nearest `ms` and no further than `reach` from it, if any. */
+export function nearestEvent<E extends { startMs: number }>(events: E[], ms: number, reach: number): E | undefined {
+  let best: E | undefined;
+  for (const e of events) if (Math.abs(e.startMs - ms) <= reach && (!best || Math.abs(e.startMs - ms) < Math.abs(best.startMs - ms))) best = e;
+  return best;
+}
+
 /**
  * Turns wheel and pinch events into zoom steps for a timeline with a few fixed zoom levels: 1 to zoom
  * in (wheel up, pinch out), -1 to zoom out, 0 for nothing yet. Scrolling adds up until it is a deliberate

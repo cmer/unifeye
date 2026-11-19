@@ -183,7 +183,7 @@ export function Wall({ viewId }: { viewId?: string }) {
           </div>
         </>
       )}
-      {rw.open ? <RewindBar rw={rw} tz={tz} dock={<><SidebarOpener /><span className="contents max-lg:hidden">{dockTabs}</span><i className="mx-1 h-5 w-px shrink-0 bg-border" /></>} tools={<><i className="mx-1 h-5 w-px shrink-0 bg-border" />{dockTools}</>} />
+      {rw.open ? <RewindBar rw={rw} tz={tz} prerollMs={me.limits.prerollSeconds * 1000} dock={<><SidebarOpener /><span className="contents max-lg:hidden">{dockTabs}</span><i className="mx-1 h-5 w-px shrink-0 bg-border" /></>} tools={<><i className="mx-1 h-5 w-px shrink-0 bg-border" />{dockTools}</>} />
         : <div className="absolute bottom-4 left-1/2 z-20 flex max-w-[calc(100%-1.5rem)] -translate-x-1/2 items-center gap-0.5 overflow-x-auto rounded-xl border bg-background/90 p-1 shadow-lg backdrop-blur-md">
           {dockLeft}
           {dockViews && <i className="mx-1 h-5 w-px shrink-0 bg-border" />}

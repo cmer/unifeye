@@ -13,7 +13,7 @@ import { RecordedVideo } from "./recorded-video";
 import { windowStart } from "./recorded-playback";
 import { dragTrim, nearestEnd, panTrim, startTrim as newTrim, TRIM_SPAN, typeTrim as typedTrim, zoomedSpan, zoomTrim as zoomedTrim, type End, type Trim } from "./trim";
 import { claimSound, setSound, SoundButton, useSound } from "./sound";
-import { cutHoles, fmtAgo, fmtSkipped, tickTimes, timelineBounds, wheelZoomSteps } from "./timeline";
+import { cutHoles, DOT_REACH_PX, fmtAgo, fmtSkipped, nearestEvent, tickTimes, timelineBounds, wheelZoomSteps } from "./timeline";
 import { ScrubStill, WindowWarmer } from "./scrub-still";
 
 type Ranges = { ranges: [number, number][]; precision: "exact" | "bounds" };
@@ -80,7 +80,10 @@ export function Player({ cameraId }: { cameraId: string }) {
   const [trim, setTrim] = useState<Trim | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [idle, setIdle] = useState(false);
-  const [hover, setHover] = useState<{ x: number; y: number; ms: number; img: number } | null>(null);
+  /** The pointer over the timeline. Near an event dot, `ev` is that event and `ms` its start. */
+  const [hover, setHover] = useState<{ x: number; y: number; ms: number; img: number; ev?: ActivityEvent } | null>(null);
+  /** Pressed on an event dot: where the press began, so a little wobble before letting go still lands on the event. */
+  const pressedDot = useRef<number | null>(null);
   // Most third-party cameras give no picture from a recording. After three misses in a row, show only the time.
   const stillMisses = useRef(0);
   const [noStills, setNoStills] = useState<string | null>(null);
@@ -295,6 +298,11 @@ export function Player({ cameraId }: { cameraId: string }) {
   const pct = (ms: number) => `${Math.min(100, Math.max(0, ((ms - a) / (b - a)) * 100))}%`;
   const at = (el: HTMLElement, clientX: number) => { const r = el.getBoundingClientRect(); return a + Math.min(1, Math.max(0, (clientX - r.left) / r.width)) * (b - a); };
   const down = me.recorder === "down";
+  const shown = down ? [] : events.filter((e) => e.startMs > a && e.startMs < b);
+  /** The event dot within reach of the pointer. */
+  const dotAt = (ms: number, touch: boolean) => nearestEvent(shown, ms, (DOT_REACH_PX[touch ? "touch" : "mouse"] * (b - a)) / tlWidth);
+  /** Where clicking an event goes: a few seconds before it starts, as from the activity list. */
+  const evStart = (e: ActivityEvent) => e.startMs - me.limits.prerollSeconds * 1000;
   // The bar shows recorded time with the holes of loaded windows cut out, those wide enough to see.
   const halfPx = (b - a) / tlWidth / 2;
   const bar = rec ? cutHoles(rec.ranges.filter(([s, e]) => e > a && s < b), Object.values(holes).flat().filter(([s, e]) => e > a && s < b && e - s >= halfPx)) : [];
@@ -343,15 +351,31 @@ export function Player({ cameraId }: { cameraId: string }) {
       <div className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent px-4 pt-12 pb-[max(0.9rem,env(safe-area-inset-bottom))] transition-opacity ${idle ? "opacity-0" : ""}`}>
         {zoomNote && <div key={zoomNote.n} role="status" className="pointer-events-none absolute top-5 left-1/2 -translate-x-1/2 rounded-md bg-black/75 px-2.5 py-1 text-xs font-semibold whitespace-nowrap">{zoomNote.text}</div>}
         <div ref={tl} className="relative h-8 cursor-pointer touch-none select-none before:absolute before:inset-x-0 before:-top-4 before:-bottom-5 before:content-['']" role="slider" aria-label="Timeline" aria-valuemin={a} aria-valuemax={b} aria-valuenow={Math.round(pt)} aria-valuetext={fmtTime(pt, tz)} tabIndex={0}
-          onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); const ms = at(e.currentTarget, e.clientX); if (trim) drag(nearestEnd(trim, ms), ms); else startScrub(ms); }}
+          onPointerDown={(e) => {
+            e.currentTarget.setPointerCapture(e.pointerId); const ms = at(e.currentTarget, e.clientX);
+            if (trim) { drag(nearestEnd(trim, ms), ms); return; }
+            const ev = dotAt(ms, e.pointerType !== "mouse");
+            pressedDot.current = ev ? e.clientX : null;
+            startScrub(ev ? evStart(ev) : ms);
+          }}
           onPointerUp={(e) => { if (trim?.grab) drag(trim.grab, at(e.currentTarget, e.clientX), true); else if (dragging) endScrub(scrub.ms); }}
           onPointerCancel={() => { if (trim?.grab) drag(trim.grab, trim[trim.grab], true); else if (dragging) endScrub(scrub.ms); }}
-          onPointerMove={(e) => { const ms = at(e.currentTarget, e.clientX), y = e.currentTarget.getBoundingClientRect().top; if (trim) { if (e.buttons && trim.grab) drag(trim.grab, ms); } else if (e.buttons && dragging) scrubTo(ms); if (e.pointerType === "mouse" && !dragging) setHover((h) => ({ x: e.clientX, y, ms, img: h && Math.abs(h.img - ms) < (b - a) / 150 ? h.img : ms })); }}
+          onPointerMove={(e) => {
+            const ms = at(e.currentTarget, e.clientX), y = e.currentTarget.getBoundingClientRect().top;
+            if (trim) { if (e.buttons && trim.grab) drag(trim.grab, ms); } else if (e.buttons && dragging) {
+              if (pressedDot.current !== null && Math.abs(e.clientX - pressedDot.current) < 6) return;
+              pressedDot.current = null; scrubTo(ms);
+            }
+            if (e.pointerType !== "mouse" || dragging) return;
+            const ev = trim ? undefined : dotAt(ms, false), to = ev ? ev.startMs : ms;
+            const x = ev ? e.clientX - ((ms - ev.startMs) / (b - a)) * e.currentTarget.clientWidth : e.clientX;
+            setHover((h) => ({ x, y, ms: to, ev, img: h && Math.abs(h.img - to) < (b - a) / 150 ? h.img : to }));
+          }}
           onPointerLeave={() => setHover(null)}>
           <div className="absolute inset-x-0 bottom-2 h-[5px] overflow-hidden rounded-full bg-white/20" title={rec?.precision === "bounds" ? "Some gaps in the recording may not be shown" : undefined}>
             {!down && rec && bar.map(([s, e], i) => <i key={i} className={`absolute inset-y-0 ${rec.precision === "exact" ? "bg-white/80" : "bg-white/50"}`} style={{ left: pct(s), right: `calc(100% - ${pct(e)})` }} />)}
           </div>
-          {!down && events.filter((e) => e.startMs > a && e.startMs < b).map((e) => <i key={e.id} title={`${EVENT_LABEL[e.type] ?? e.type}, ${fmtShort(e.startMs, tz)}`} className="absolute bottom-[17px] size-1.5 -translate-x-1/2 rounded-full" style={{ left: pct(e.startMs), background: EVENT_COLOR[e.type] ?? "#a3a3a3" }} />)}
+          {shown.map((e) => <i key={e.id} className={`pointer-events-none absolute bottom-[17px] size-1.5 -translate-x-1/2 rounded-full transition-transform ${hover?.ev?.id === e.id ? "z-10 scale-[2] shadow-[0_0_0_1.5px_white]" : ""}`} style={{ left: pct(e.startMs), background: EVENT_COLOR[e.type] ?? "#a3a3a3" }} />)}
           {trim ? <>
             <i className="pointer-events-none absolute bottom-[1px] h-[19px] border-y-2 border-yellow-400 bg-yellow-400/30" style={{ left: pct(trim.a), right: `calc(100% - ${pct(trim.b)})` }} />
             {(["a", "b"] as const).map((g) => <i key={g} className="pointer-events-none absolute -bottom-0.5 h-[25px] w-3 -translate-x-1/2 rounded-[4px] bg-yellow-400 shadow" style={{ left: pct(trim[g]) }} />)}
@@ -395,7 +419,7 @@ export function Player({ cameraId }: { cameraId: string }) {
       {hover && !down && (
         <div className="pointer-events-none fixed z-30 w-36 -translate-x-1/2 rounded-lg border bg-popover p-1 text-center text-xs text-popover-foreground shadow-xl" style={{ left: Math.max(hover.x, 80), top: hover.y - (noStills === cameraId ? 36 : 108) }}>
           {noStills !== cameraId && <div className="mb-0.5 aspect-video overflow-hidden rounded bg-black"><img alt="" key={Math.round(hover.img / 1000)} src={mediaUrl(`/api/cameras/${cameraId}/snapshot?w=240&at=${Math.round(hover.img)}`)} className="size-full object-cover" onLoad={() => stillResult(true, hover.img)} onError={(e) => { e.currentTarget.style.display = "none"; stillResult(false, hover.img); }} /></div>}
-          {fmtTime(hover.ms, tz)}
+          {hover.ev ? <><span className="font-semibold">{EVENT_LABEL[hover.ev.type] ?? hover.ev.type}</span> · {fmtTime(hover.ms, tz)}</> : fmtTime(hover.ms, tz)}
         </div>
       )}
       {job && trim && <ClipDialog name={cam.name} startMs={trim.a} endMs={trim.b} first={job} onClose={(saved) => { setJob(null); if (saved) setTrim(null); }} />}
