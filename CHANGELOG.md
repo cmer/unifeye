@@ -6,6 +6,8 @@ and uses it as the GitHub release notes.
 
 ## Unreleased
 
+## 1.2.1 - 2026-11-18
+
 ### Fixed
 - When Unifeye is added to the Dock from Safari, the title bar now matches the light or dark look you
   picked in Unifeye, instead of following the Mac's setting.
