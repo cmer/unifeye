@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   camerasFor, cameraIdIn, fmtMbps, perStreamMbps, clearDiagnostics, clockOffset, codecName, filterCandidates, formatReport, groupRefusals, inboundVideo, mayReleaseHls, median,
   browserRow, isOutdated, parsePlaylist, parseUserAgent, pickTestStream, problemLog, recordProblem, recordRequestFailure, refusalsSince, refusalText, REFUSAL_WINDOW_MS,
-  selectedPair, shortenPath, verdict, versionRow, type Stat,
+  relayRow, relayTransport, routeLabel, transportLabel, selectedPair, shortenPath, verdict, versionRow, type RelayProbe, type Stat,
 } from "@/ui/diagnostics";
 
 beforeEach(() => clearDiagnostics());
@@ -218,5 +218,58 @@ describe("the Version row", () => {
   it("takes no colour when nobody knows, and leaves the commit out when there is none", () => {
     expect(versionRow({ version: "0.3.0", commit: null, update: u("unknown") })).toMatchObject({ status: "info", value: "Unifeye 0.3.0", detail: "Couldn\u2019t check for a newer version" });
     expect(versionRow({ ...base, update: u("off") }).detail).toBeUndefined();
+  });
+});
+
+describe("the Video relay row", () => {
+  const UDP = "turn:turn.example.com:3478?transport=udp", TCP = "turn:turn.example.com:3478?transport=tcp", TLS = "turns:turn.example.com:443?transport=tcp";
+  const probe = (url: string, ok: boolean, ms = 80, error?: string): RelayProbe => ({ url, ok, ms, ...(error ? { error } : {}) });
+  const up = { answering: true, relayOnly: false };
+  it("names the way each address is reached", () => {
+    expect([UDP, TCP, TLS].map(relayTransport)).toEqual(["UDP", "TCP", "TLS"]);
+  });
+  it("is left out when there is no relay", () => {
+    expect(relayRow(null, null)).toBeNull();
+    expect(relayRow(undefined, null)).toBeNull();
+    expect(relayRow([], up)).toBeNull();
+  });
+  it("waits for the browser's check", () => {
+    expect(relayRow(undefined, up)!.row.status).toBe("pending");
+  });
+  it("lists every way through when they all work", () => {
+    const r = relayRow([probe(UDP, true, 40), probe(TCP, true, 60), probe(TLS, true, 120)], up)!;
+    expect(r.row).toMatchObject({ status: "ok", value: "Reachable over UDP, TCP and TLS", detail: "Answered in 120 ms" });
+    expect(r.problems).toEqual([]);
+  });
+  it("says when only TLS gets through", () => {
+    const r = relayRow([probe(UDP, false, 5000, "701 STUN host lookup received error."), probe(TCP, false, 5000), probe(TLS, true, 300)], up)!;
+    expect(r.row.status).toBe("ok");
+    expect(r.row.value).toBe("Reachable over TLS");
+    expect(r.row.detail).toContain("UDP is blocked here");
+    expect(r.row.tech!.join("\n")).toContain("701 STUN host lookup");
+  });
+  it("names a way that didn't work, such as TLS with a bad certificate", () => {
+    expect(relayRow([probe(UDP, true, 40), probe(TCP, true, 60), probe(TLS, false, 5000)], up)!.row).toMatchObject({ status: "ok", value: "Reachable over UDP and TCP", detail: "Answered in 60 ms · Not over TLS" });
+  });
+  it("labels a relayed connection as going through the relay", () => {
+    expect(routeLabel({ localType: "relay", remoteType: "srflx", relayProtocol: "tls", protocol: "udp" } as never)).toBe("through the relay (TLS)");
+    expect(transportLabel({ localType: "relay", protocol: "udp" } as never)).toBe("relay");
+    expect(routeLabel({ localType: "host", remoteType: "host", protocol: "udp" } as never)).toBe("direct (host)");
+    expect(transportLabel({ localType: "host", protocol: "tcp" } as never)).toBe("TCP");
+  });
+  it("blames the network when the browser can't reach a relay that answers Unifeye", () => {
+    const r = relayRow([probe(UDP, false, 5000), probe(TLS, false, 5000)], up)!;
+    expect(r.row).toMatchObject({ status: "bad", value: "Can't reach it from here" });
+    expect(r.problems).toEqual(["turn_unreachable"]);
+  });
+  it("says the relay is down when Unifeye's own check fails", () => {
+    expect(relayRow([probe(UDP, false, 5000)], { answering: false, relayOnly: true })!).toMatchObject({ row: { status: "bad", value: "Not answering" }, problems: ["turn_down"] });
+    expect(relayRow([probe(UDP, true)], { answering: false, relayOnly: false })!.row.detail).toBe("This browser can reach it, but Unifeye can't.");
+  });
+  it("still reports what the browser found if the server's answer is missing", () => {
+    expect(relayRow([probe(UDP, true)], undefined)!.row.status).toBe("ok");
+  });
+  it("puts a relay problem ahead of the WebRTC one it causes", () => {
+    expect(verdict(["webrtc_blocked", "turn_unreachable"], { running: false }).title).toBe("This network blocks the video relay");
   });
 });

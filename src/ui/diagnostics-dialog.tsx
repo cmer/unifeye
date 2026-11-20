@@ -14,25 +14,28 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { testAutoplay, type Autoplay } from "./autoplay-probe";
+import { iceSettings, rtcConfiguration } from "./ice";
 import { api, ApiError, fmtShort, previewToken, type Camera } from "./api";
 import { useApp } from "./app";
 import {
-  browserRow, camerasFor, candidateLabel, clockOffset, codecName, filterCandidates, fmtMbps, fmtMs, formatReport, groupRefusals, inboundVideo,
-  liveTiles, mayReleaseHls, median, MIN_STREAM_MBPS, perStreamMbps, parsePlaylist, pickTestStream, problemLog, refusalsSince, refusalText, REFUSAL_WINDOW_MS, selectedPair, statList,
-  verdict, versionRow, type CheckRow, type Pair, type ProblemEntry, type ProblemId, type Section, type Stat, type Status, type TestStream, type TileInfo, type UpdateInfo,
+  browserRow, camerasFor, routeLabel, transportLabel, viaRelay, clockOffset, codecName, filterCandidates, fmtMbps, fmtMs, formatReport, groupRefusals, inboundVideo,
+  liveTiles, mayReleaseHls, relayRow, median, MIN_STREAM_MBPS, perStreamMbps, parsePlaylist, pickTestStream, problemLog, refusalsSince, refusalText, REFUSAL_WINDOW_MS, selectedPair, statList,
+  verdict, versionRow, type CheckRow, type Pair, type ProblemEntry, type RelayProbe, type ProblemId, type Section, type Stat, type Status, type TestStream, type TileInfo, type UpdateInfo,
 } from "./diagnostics";
 import { resumeWebrtc, webrtcPause } from "./live";
 
 // ---- what the checks find ----------------------------------------------------------------------
 interface Info {
   serverTime: number; version: string; commit: string | null; update: UpdateInfo; recorder: "connected" | "connecting" | "down"; relay: boolean;
+  /** The TURN relay, when one is set up. */
+  turn: { answering: boolean; relayOnly: boolean } | null;
   streams: { limit: number; open: number; webrtc: number; hls: number; held: { cameraId: string; quality: "wall" | "focus"; kinds: string[] }[] };
   rate: { class: string; used: number; limit: number; resetSeconds: number }[];
 }
 type Failed = { failed: true; status: number; code?: string; requestId?: string | null };
 type WebrtcResult =
   | { ok: true; connectMs: number; signallingMs: number; pair: Pair | null; ports: number[] }
-  | { ok: false; reason: "refused" | "blocked" | "no_candidates" | "error"; status?: number; code?: string; requestId?: string; iceState?: string; waitedMs?: number; ports?: number[]; message?: string };
+  | { ok: false; reason: "refused" | "blocked" | "no_candidates" | "error" | "skipped"; status?: number; code?: string; requestId?: string; iceState?: string; waitedMs?: number; ports?: number[]; message?: string };
 interface Timed { status: number; ok: boolean; ms: number; text: string; bytes: number; code?: string; requestId: string | null }
 type HlsResult =
   | { ok: true; totalMs: number; steps: { name: string; t: Timed }[] }
@@ -46,6 +49,8 @@ interface Results {
   download?: { mbps: number; bytes: number; ms: number } | Failed;
   stream?: TestStream | null;
   udp?: WebrtcResult; tcp?: WebrtcResult; hls?: HlsResult;
+  /** Getting an address on the relay, once per relay address. Null: no relay set up, or no login for this person. */
+  relay?: RelayProbe[] | null;
   codecs?: Codecs; autoplay?: Autoplay; playing?: Playing[]; problems?: readonly ProblemEntry[];
 }
 interface Run { started: number; finished?: number; r: Results }
@@ -102,7 +107,7 @@ const TEST_CONNECT_MS = 5000;
 async function webrtcTest(s: TestStream, protocol: "udp" | "tcp", signal: AbortSignal): Promise<WebrtcResult> {
   let pc: RTCPeerConnection | undefined, resource: string | null = null;
   try {
-    pc = new RTCPeerConnection();
+    pc = new RTCPeerConnection((await rtcConfiguration()) ?? {});
     pc.addTransceiver("video", { direction: "recvonly" });
     pc.addTransceiver("audio", { direction: "recvonly" });
     await pc.setLocalDescription(await pc.createOffer());
@@ -144,6 +149,42 @@ async function webrtcTest(s: TestStream, protocol: "udp" | "tcp", signal: AbortS
     pc?.close();
     if (resource) release(resource.replace(/^\/api/, ""));
   }
+}
+
+/** How long the browser may take to get an address on the relay. TLS through a slow network takes the longest. */
+const RELAY_PROBE_MS = 5000;
+/**
+ * Asks the relay for an address through one of its URLs, with nothing else allowed, the way a tile
+ * does before it connects. No camera and no stream: this tests only the path from this browser to
+ * the relay, and that the login works.
+ */
+async function relayProbe(server: RTCIceServer, url: string, signal: AbortSignal): Promise<RelayProbe> {
+  const t0 = performance.now();
+  let pc: RTCPeerConnection | undefined, error: string | undefined;
+  try {
+    pc = new RTCPeerConnection({ iceServers: [{ urls: url, username: server.username, credential: server.credential }], iceTransportPolicy: "relay" });
+    pc.createDataChannel("probe"); // something to gather candidates for
+    const found = new Promise<boolean>((done) => {
+      const t = setTimeout(() => done(false), RELAY_PROBE_MS);
+      const end = (ok: boolean) => { clearTimeout(t); done(ok); };
+      pc!.onicecandidate = (e) => { if (!e.candidate) end(false); else if (e.candidate.type === "relay" || / typ relay\b/.test(e.candidate.candidate)) end(true); };
+      pc!.onicecandidateerror = (e) => { const x = e as RTCPeerConnectionIceErrorEvent; error = `${x.errorCode} ${x.errorText}`.trim(); };
+      signal.addEventListener("abort", () => end(false), { once: true });
+    });
+    await pc.setLocalDescription(await pc.createOffer());
+    const ok = await found;
+    return { url, ok, ms: performance.now() - t0, ...(!ok && error ? { error } : {}) };
+  } catch (e) {
+    return { url, ok: false, ms: performance.now() - t0, error: e instanceof Error ? e.message : String(e) };
+  } finally { pc?.close(); }
+}
+/** Every relay address at once, or null when there is no relay for this person. */
+async function relayCheck(signal: AbortSignal): Promise<RelayProbe[] | null> {
+  const cfg = await iceSettings().catch(() => null);
+  const server = cfg?.iceServers[0];
+  if (!server) return null;
+  const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+  return Promise.all(urls.map((u) => relayProbe(server, u, signal)));
 }
 
 /** The playlist file a URI in a playlist names, with its query, as the HLS route takes it. */
@@ -222,9 +263,9 @@ function describeTile(t: TileInfo, before: Stat[] | null, now: Stat[] | null): P
       v?.fps != null ? `${Math.round(v.fps)} fps` : null, v?.mbps != null ? fmtMbps(v.mbps) : null,
       v?.lossPct != null ? `${v.lossPct < 0.1 ? 0 : v.lossPct.toFixed(1)}% lost` : null, v?.jitterMs != null ? `jitter ${Math.round(v.jitterMs)} ms` : null, v?.heldMs != null ? `held ${fmtMs(v.heldMs)}` : null, ...extra,
     ].filter(Boolean);
-    if (pair) tech.push(`route ${pair.protocol ?? "?"} ${pair.remoteType ?? "?"} port ${pair.port ?? "?"}${pair.rttMs != null ? ` rtt ${Math.round(pair.rttMs)} ms` : ""}`);
+    if (pair) tech.push(`route ${pair.protocol ?? "?"} ${pair.localType ?? "?"}→${pair.remoteType ?? "?"}${pair.relayProtocol ? ` relay over ${pair.relayProtocol}` : ""} port ${pair.port ?? "?"}${pair.rttMs != null ? ` rtt ${Math.round(pair.rttMs)} ms` : ""}`);
     const lossy = (v?.lossPct ?? 0) > 2;
-    return { ...base, status: lossy ? "warn" : "ok", value: `WebRTC${pair?.protocol ? ` · ${pair.protocol.toUpperCase()}` : ""}${src}`, detail: bits.join(" · ") || undefined, tech, mbps: v?.mbps };
+    return { ...base, status: lossy ? "warn" : "ok", value: `WebRTC${transportLabel(pair) ? ` · ${transportLabel(pair)}` : ""}${src}`, detail: bits.join(" · ") || undefined, tech, mbps: v?.mbps };
   }
   const el = t.video, lvl = t.hls && t.hls.currentLevel >= 0 ? t.hls.levels[t.hls.currentLevel] : undefined;
   let behind: number | undefined;
@@ -245,15 +286,15 @@ const failedRow = (id: string, label: string, f: Failed, what = "Couldn't check"
 const isFailed = (x: unknown): x is Failed => !!x && typeof x === "object" && "failed" in x;
 const n = (x: number) => x.toLocaleString("en-US");
 
-function webrtcRow(id: "udp" | "tcp", r: WebrtcResult | undefined): CheckRow {
-  const label = `WebRTC over ${id.toUpperCase()}`;
+function webrtcRow(id: "udp" | "tcp", r: WebrtcResult | undefined, label = `WebRTC over ${id.toUpperCase()}`): CheckRow {
   if (!r) return pending(id, label);
   if (r.ok) {
     const port = r.pair?.port ?? r.ports[0];
-    const parts = [port ? `Port ${port}` : null, candidateLabel(r.pair?.remoteType), r.pair?.rttMs != null ? `round trip ${Math.round(r.pair.rttMs)} ms` : null, id === "tcp" ? "used only when UDP is blocked" : null].filter(Boolean);
+    const parts = [port && !viaRelay(r.pair) ? `Port ${port}` : null, routeLabel(r.pair), r.pair?.rttMs != null ? `round trip ${Math.round(r.pair.rttMs)} ms` : null, id === "tcp" ? "used only when UDP is blocked" : null].filter(Boolean);
     return { id, label, status: "ok", value: `Connected in ${fmtMs(r.connectMs)}`, detail: parts.join(" · "), tech: [`signalling ${Math.round(r.signallingMs)} ms`, `pair ${JSON.stringify(r.pair)}`] };
   }
   const tech = [`reason ${r.reason}`, ...(r.status ? [`status ${r.status} ${r.code ?? ""}`.trim()] : []), ...(r.requestId ? [`request ${r.requestId}`] : []), ...(r.message ? [`message ${r.message}`] : []), ...(r.iceState ? [`ICE ${r.iceState}`] : [])];
+  if (r.reason === "skipped") return { id, label, status: "info", value: "Not tried", detail: "Live video uses HLS until the relay is back.", tech };
   if (r.reason === "refused") return { id, label, status: "warn", value: "Refused (HTTP 429)", detail: `${r.code ?? "rate_limited"} · not tested. Try again in a minute.`, tech };
   if (r.reason === "no_candidates") return { id, label, status: id === "tcp" ? "warn" : "bad", value: "Not offered", detail: `The server offered no ${id.toUpperCase()} address.`, tech };
   if (r.reason === "blocked") return { id, label, status: "bad", value: "Blocked", detail: `No reply${r.ports?.[0] ? ` from port ${r.ports[0]}` : ""} after ${fmtMs(r.waitedMs ?? 0)} · ICE ${r.iceState}`, tech };
@@ -326,12 +367,17 @@ function build(r: Results, running: boolean, tz: string, onTryNow: () => void) {
 
   // Live video tests
   const pause = webrtcPause();
+  // With relay only, tiles never try a direct connection, so the direct TCP test would only report a false failure.
+  const relayOnly = !!info?.turn?.relayOnly;
+  const relay = relayRow(r.relay, info?.turn);
+  if (relay) { live.push(relay.row); relay.problems.forEach((p) => problems.add(p)); }
   if (r.stream === null) live.push({ id: "live-test", label: "Live video test", status: "info", value: "No camera to test with", detail: "None of your cameras is online right now." });
   else {
-    live.push(webrtcRow("udp", r.udp), webrtcRow("tcp", r.tcp));
+    if (relayOnly) live.push(webrtcRow("udp", r.udp, "WebRTC"));
+    else live.push(webrtcRow("udp", r.udp), webrtcRow("tcp", r.tcp));
     const udpOk = r.udp?.ok, tcpOk = r.tcp?.ok;
     const blocked = (x?: WebrtcResult) => !!x && !x.ok && (x.reason === "blocked" || x.reason === "no_candidates");
-    const webrtcDown = blocked(r.udp) && blocked(r.tcp);
+    const webrtcDown = blocked(r.udp) && (relayOnly || blocked(r.tcp));
     if (webrtcDown) problems.add("webrtc_blocked");
     else if (blocked(r.udp) && tcpOk) problems.add("webrtc_tcp_only");
     if (pause && (udpOk || tcpOk)) problems.add("webrtc_paused");
@@ -414,6 +460,7 @@ export function DiagnosticsDialog({ onClose }: { onClose: () => void }) {
         codecs().then((c) => apply({ codecs: c }), () => {}),
         testAutoplay().then((autoplay) => apply({ autoplay }), () => apply({ autoplay: "unknown" })),
         samplePlaying(signal).then((playing) => apply({ playing }), () => apply({ playing: [] })),
+        relayCheck(signal).then((relay) => apply({ relay }), () => apply({ relay: null })),
       ]);
       if (signal.aborted) return;
       apply({ download: await download(signal) });
@@ -421,9 +468,11 @@ export function DiagnosticsDialog({ onClose }: { onClose: () => void }) {
       const stream = pickTestStream(cams, info?.streams.held ?? [], liveTiles());
       apply({ stream });
       if (stream) {
-        apply({ udp: await webrtcTest(stream, "udp", signal) });
+        // Relay only, and the relay is down: tiles don't try WebRTC, so neither does the test.
+        const relayDown = !!info?.turn?.relayOnly && !info.turn.answering;
+        apply({ udp: relayDown ? { ok: false, reason: "skipped" } : await webrtcTest(stream, "udp", signal) });
         if (signal.aborted) return;
-        apply({ tcp: await webrtcTest(stream, "tcp", signal) });
+        if (!info?.turn?.relayOnly) apply({ tcp: await webrtcTest(stream, "tcp", signal) });
         if (signal.aborted) return;
         apply({ hls: await hlsTest(stream, signal) });
       }

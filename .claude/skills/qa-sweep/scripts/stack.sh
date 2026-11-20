@@ -12,6 +12,9 @@
 #   PROTECT_TLS_INSECURE=1   (or PROTECT_TLS_CA_FILE=...) for the recorder's own certificate
 # in .env.stack.local at the root of the worktree (git ignores it), or set them in the environment.
 # Sign-in still uses the test provider; "Avery Chen" is the administrator.
+#
+# A TURN relay for live video: put TURN_HOST, TURN_SECRET (and TURN_RELAY_ONLY=1 to force it) in
+# .env.stack.local; MediaMTX is given the relay as well. docs/turn.md has a coturn to run.
 set -euo pipefail
 cmd="${1:-}"; slot="${2:-}"
 [[ "$cmd" =~ ^(start|run|stop|url)$ && "$slot" =~ ^[1-9]$ ]] || { echo "usage: stack.sh start|run|stop|url <slot 1-9>" >&2; exit 2; }
@@ -51,9 +54,11 @@ export MEDIAMTX_API_URL="http://127.0.0.1:$api" MEDIAMTX_HLS_URL="http://127.0.0
 mkdir -p "$dir/data"
 
 nohup pnpm exec tsx scripts/test-oidc-provider.ts > "$dir/idp.log" 2>&1 & echo $! >> "$dir/pids"
+# A TURN relay (docs/turn.md), when .env.stack.local sets TURN_HOST and TURN_SECRET: MediaMTX uses it too, as in compose.yaml.
+turn=(); [[ -n "${TURN_HOST:-}" ]] && turn=(MTX_WEBRTCICESERVERS2_0_URL="turn:$TURN_HOST:${TURN_PORT:-3478}?transport=udp" MTX_WEBRTCICESERVERS2_0_USERNAME=AUTH_SECRET MTX_WEBRTCICESERVERS2_0_PASSWORD="$TURN_SECRET")
 MTX_AUTHHTTPADDRESS="http://127.0.0.1:$hook/mediamtx-auth?secret=qa-hook" MTX_WEBRTCADDITIONALHOSTS=127.0.0.1 \
 MTX_APIADDRESS=":$api" MTX_HLSADDRESS=":$hls" MTX_WEBRTCADDRESS=":$whep" MTX_RTSPADDRESS="127.0.0.1:$rtsp" MTX_WEBRTCLOCALUDPADDRESS=":$media" MTX_WEBRTCLOCALTCPADDRESS=":$media" \
-  nohup "$(mtx_bin)" docker/mediamtx.yml > "$dir/mediamtx.log" 2>&1 & echo $! >> "$dir/pids"
+  nohup env ${turn[@]+"${turn[@]}"} "$(mtx_bin)" docker/mediamtx.yml > "$dir/mediamtx.log" 2>&1 & echo $! >> "$dir/pids"
 nohup pnpm exec next dev -p "$app" > "$dir/app.log" 2>&1 & echo $! >> "$dir/pids"
 
 for _ in $(seq 1 60); do

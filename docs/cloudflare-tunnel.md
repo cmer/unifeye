@@ -14,7 +14,7 @@ comes from the code and from a local test with WebRTC made unreachable.
 | --- | --- |
 | Pages, API, sign-in, live updates (`/api/events/stream`) | Works. The event stream sends a keep-alive every 20 seconds, well inside Cloudflare's idle limit. |
 | Recorded playback, snapshots, event thumbnails, clip downloads | Works. All are sent `no-store`, so Cloudflare does not cache them. |
-| Live video over **WebRTC** | **Does not go through the tunnel.** WebRTC media goes straight to port 8189 (UDP or TCP), and a tunnel only carries HTTP. |
+| Live video over **WebRTC** | **Does not go through the tunnel.** WebRTC media goes straight to port 8189 (UDP or TCP), or through a TURN relay if you set one up ([turn.md](turn.md)), and a tunnel only carries HTTP. |
 | Live video over **HLS** | Works, through the tunnel. Viewers who cannot reach port 8189 get this automatically. |
 
 ### What viewers see
@@ -43,6 +43,9 @@ Pick one. `WEBRTC_PUBLIC_HOST` is required either way.
    Cloudflare. This opens one inbound port, which is often what a tunnel was meant to avoid.
 3. **HLS only.** Set `WEBRTC_PUBLIC_HOST` to the LAN IP and accept HLS for everyone off site. This
    is the same setup as option 1.
+4. **WebRTC everywhere through a relay.** Option 1 plus a TURN relay on a VPS
+   ([turn.md](turn.md)). Viewers off site get real-time video through the relay, and no inbound port
+   is opened on your network. The relay's name must be **DNS only** (grey cloud) as well.
 
 ## Set it up
 

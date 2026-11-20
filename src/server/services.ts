@@ -22,6 +22,7 @@ import { commandPublishUrl, MediaMtxRelay } from "./media/mediamtx";
 import { Recordings } from "./media/recordings";
 import { smtpMailer, type Mailer } from "./mail";
 import type { Relay } from "./media/relay";
+import { turnProvider, type TurnProvider } from "./media/turn";
 import { MockProtectAdapter } from "./protect/mock";
 import type { ProtectAdapter } from "./protect/types";
 import { UnifiProtectAdapter } from "./protect/unifi";
@@ -31,7 +32,7 @@ import { checkForUpdate } from "./version";
 
 export interface Services {
   db: Db; policy: Policy; access: Access; views: Views; sessions: Sessions; previews: Previews; admin: Admin; oidc: Oidc; local: LocalAccounts; cloudflare: CloudflareAccess;
-  adapter: ProtectAdapter; mailer: Mailer; media: Media; recordings: Recordings; events: Events;
+  adapter: ProtectAdapter; mailer: Mailer; media: Media; recordings: Recordings; events: Events; turn: TurnProvider;
   state: { startedAt: number; lastCameraSyncAt: number | null; lastCameraSyncError: string | null; timers: NodeJS.Timeout[] };
 }
 
@@ -54,7 +55,7 @@ export function buildServices(db: Db, adapter: ProtectAdapter, relay: Relay = ne
   const media = new Media(policy, access, get, relay, new DirectVideo(db)), recordings = new Recordings(db, policy, access, get), events = new Events(policy, access, get);
   access.onChange(() => media.revalidate());
   access.onChange(() => { void recordings.dropDeadExports().catch((e) => log("error", "export cleanup failed", { error: e })); });
-  return { db, policy, access, views, sessions, previews, admin, oidc, local, cloudflare, adapter, mailer, media, recordings, events, state: { startedAt: Date.now(), lastCameraSyncAt: null, lastCameraSyncError: null, timers: [] } };
+  return { db, policy, access, views, sessions, previews, admin, oidc, local, cloudflare, adapter, mailer, media, recordings, events, turn: turnProvider(), state: { startedAt: Date.now(), lastCameraSyncAt: null, lastCameraSyncError: null, timers: [] } };
 }
 
 const g = globalThis as unknown as { __unifeye?: Services; __unifeyeStart?: Promise<void> };
@@ -105,6 +106,15 @@ export function startRuntime(): Promise<void> {
     void s.media.sweep().catch(() => {});
     void syncNow(s);
     every(30, "camera sync", () => syncNow(s));
+    // The TURN relay, if any: browsers that may only use it skip WebRTC while it is not answering.
+    let relayWas: boolean | null = true;
+    const checkRelay = async () => {
+      const up = await s.turn.check();
+      if (up !== null && up !== relayWas) log(up ? "info" : "warn", up ? "TURN relay answering again" : "TURN relay not answering", { host: c.TURN_HOST });
+      relayWas = up;
+    };
+    void checkRelay().catch(() => {});
+    every(30, "TURN relay check", checkRelay);
     // Backstop: time limits that passed unnoticed become access changes, and the relay is re-checked regardless.
     every(c.REVOCATION_SWEEP_SECONDS, "revocation sweep", () => { s.access.expireDue(); return s.media.sweep(); });
     every(Math.min(60, c.OIDC_RECHECK_SECONDS), "identity re-validation", () => s.oidc.reconcile());

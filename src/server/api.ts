@@ -15,6 +15,7 @@ import { schema } from "./db";
 import { backupStatus } from "./db/backup";
 import { DIRECT_PROBLEM } from "./media/direct";
 import { maxStreams } from "./media/gateway";
+import { NO_RELAY } from "./media/turn";
 import { fileResponse } from "./media/recordings";
 import { maybeSeedDemo, services, type Services } from "./services";
 import { badRequest, forbidden, HttpError, log, newId, notFound, safeEqual } from "./util";
@@ -351,6 +352,9 @@ route("GET", "/cameras/:id/playback", { rate: "media" }, async ({ s, actor, p, u
 });
 
 // ---- live video -----------------------------------------------------------------
+// Relay logins for the browser's WebRTC connection (src/server/media/turn.ts). Empty when no relay is set
+// up, and for someone who can see no camera: a login would only let them use the relay for something else.
+route("GET", "/media/ice", { rate: "media" }, ({ s, actor, session }) => s.policy.cameraIds(subjectOf(actor)).size ? s.turn.issue(session.id) : NO_RELAY);
 route("POST", "/media/live/:id/whep", { rate: "media" }, async ({ s, actor, p, url, req }) => {
   const r = await s.media.whepCreate(actor, p.id, quality(url.searchParams.get("q")), await req.text());
   return new Response(r.sdp, { status: 201, headers: { "content-type": "application/sdp", location: `/api/media/live/whep/${r.secret}`, "cache-control": "no-store", "x-video-source": r.source, ...(r.etag ? { etag: r.etag } : {}) } });
@@ -512,6 +516,7 @@ route("GET", "/diagnostics", {}, async ({ s, actor, session }) => {
     ...versionInfo(),
     recorder: s.adapter.health().state,
     relay: await s.media.relayHealthy().catch(() => false),
+    turn: s.turn.answering() === null ? null : { answering: s.turn.answering(), relayOnly: config().TURN_RELAY_ONLY },
     streams: {
       limit: maxStreams(), open: streams.length,
       webrtc: streams.filter((x) => x.kinds.includes("webrtc")).length, hls: streams.filter((x) => x.kinds.includes("hls")).length,

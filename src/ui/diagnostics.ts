@@ -240,6 +240,8 @@ export const PROBLEMS = {
   no_h264: { title: "This browser can't play H.264 video", hint: "Try a current version of Chrome, Edge, Firefox or Safari.", short: "this browser can't play H.264", severe: true },
   tiles_failing: { title: "Some cameras can't connect", hint: "They keep trying on their own. Check again in a minute.", short: "some cameras can't connect", severe: true },
   refused: { title: "The server turned some requests away", hint: "This usually clears within a minute. If it keeps happening, close other Unifeye tabs.", short: "some requests were turned away", severe: false },
+  turn_down: { title: "The video relay isn't answering", hint: "Live video plays a few seconds behind until it's back. Let your administrator know.", short: "the video relay isn't answering", severe: false },
+  turn_unreachable: { title: "This network blocks the video relay", hint: "Live video plays a few seconds behind here. Try another network, or let your administrator know.", short: "the video relay is blocked here", severe: false },
   webrtc_blocked: { title: "WebRTC can't get through on this network", hint: "Cameras still play over HLS, a few seconds behind.", short: "WebRTC is blocked", severe: false },
   hls_failed: { title: "HLS isn't working", hint: "WebRTC works, so video still plays here. Let your administrator know.", short: "HLS isn't working", severe: false },
   slow_download: { title: "This connection is slow for live video", hint: "Fewer cameras at once will play more smoothly.", short: "the connection is slow", severe: false },
@@ -318,6 +320,12 @@ export function selectedPair(stats: readonly Stat[]) {
 export type Pair = NonNullable<ReturnType<typeof selectedPair>>;
 const CANDIDATE: Record<string, string> = { host: "direct (host)", srflx: "through NAT (srflx)", prflx: "direct (prflx)", relay: "relayed (relay)" };
 export const candidateLabel = (type: string | undefined) => (type ? CANDIDATE[type] ?? type : "unknown route");
+/** This browser's end of the pair is on the TURN relay: the video comes through it. */
+export const viaRelay = (p: Pair | null | undefined) => p?.localType === "relay";
+/** The route media takes, for a row: through the relay (and how this browser reaches it), or the remote candidate's kind. */
+export const routeLabel = (p: Pair | null | undefined) => (viaRelay(p) ? `through the relay${p!.relayProtocol ? ` (${p!.relayProtocol === "tls" ? "TLS" : p!.relayProtocol.toUpperCase()})` : ""}` : candidateLabel(p?.remoteType));
+/** The transport for a playing tile: UDP or TCP, or the relay. */
+export const transportLabel = (p: Pair | null | undefined) => (viaRelay(p) ? "relay" : p?.protocol ? p.protocol.toUpperCase() : null);
 
 /** Codec names people recognise, from a WebRTC mime type or an HLS codecs string. */
 export function codecName(s: string | undefined) {
@@ -373,3 +381,29 @@ export function pickTestStream(cams: readonly { id: string; online: boolean; has
  * started since, is released.
  */
 export const mayReleaseHls = (s: TestStream, tilesNow: readonly { cameraId: string; quality: string }[]) => !s.alreadyOpen && !tilesNow.some((t) => t.cameraId === s.cameraId && t.quality === s.quality);
+
+// ---- the video relay (TURN) ------------------------------------------------------------------------
+/** One try at getting an address on the relay through one of its addresses (`turn:` or `turns:` URL). */
+export interface RelayProbe { url: string; ok: boolean; ms: number; error?: string }
+/** How a relay address is reached: plain UDP or TCP, or TLS. */
+export const relayTransport = (url: string) => (/^turns:/i.test(url) ? "TLS" : /transport=tcp/i.test(url) ? "TCP" : "UDP");
+const list = (xs: string[]) => (xs.length < 3 ? xs.join(" and ") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`);
+
+/**
+ * The Video relay row: whether this browser can reach the relay (the probes) and whether Unifeye can
+ * (`server`, from its own check). Null when no relay is set up, or this person gets no relay login.
+ */
+export function relayRow(probes: readonly RelayProbe[] | null | undefined, server: { answering: boolean; relayOnly: boolean } | null | undefined): { row: CheckRow; problems: ProblemId[] } | null {
+  const id = "turn", label = "Video relay";
+  if (probes === null || server === null) return null;
+  if (!probes) return { row: { id, label, status: "pending", value: "Checking…" }, problems: [] };
+  if (!probes.length) return null;
+  const reached = probes.filter((p) => p.ok), ways = [...new Set(reached.map((p) => relayTransport(p.url)))];
+  const tech = [...probes.map((p) => `${relayTransport(p.url)} ${p.url}: ${p.ok ? `address in ${Math.round(p.ms)} ms` : `no address after ${Math.round(p.ms)} ms${p.error ? ` (${p.error})` : ""}`}`), ...(server ? [`Unifeye's own check: ${server.answering ? "answering" : "not answering"}`, `relay only: ${server.relayOnly ? "yes" : "no"}`] : [])];
+  if (server && !server.answering) return { row: { id, label, status: "bad", value: "Not answering", detail: reached.length ? "This browser can reach it, but Unifeye can't." : "Live video plays a few seconds behind until it's back.", tech }, problems: ["turn_down"] };
+  if (!reached.length) return { row: { id, label, status: "bad", value: "Can't reach it from here", detail: "This network seems to block it. Live video plays a few seconds behind.", tech }, problems: ["turn_unreachable"] };
+  const slowest = Math.max(...reached.map((p) => p.ms));
+  const missed = [...new Set(probes.filter((p) => !p.ok).map((p) => relayTransport(p.url)))].filter((w) => !ways.includes(w));
+  const detail = [`Answered in ${fmtMs(slowest)}`, !ways.includes("UDP") ? "UDP is blocked here, so video may lag a little" : null, missed.length ? `Not over ${list(missed)}` : null].filter(Boolean).join(" · ");
+  return { row: { id, label, status: "ok", value: `Reachable over ${list(ways)}`, detail, tech }, problems: [] };
+}

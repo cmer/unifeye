@@ -580,6 +580,26 @@ refusal in a real browser (iOS Low Power Mode, Safari's "Never Auto-Play"), Fire
 `getAutoplayPolicy` answer, and whether the click that opens the window lets Safari play the clip when
 autoplay is otherwise blocked.
 
+**TURN relay (2026-11-20):** coturn 4.7.0 in Docker (OrbStack on macOS), MediaMTX 1.21.4, the mock
+stack and the preview browser (Chromium), with `TURN_RELAY_ONLY=1` and MediaMTX advertising only
+127.0.0.1, so video could only meet at the relay. coturn accepted the logins Unifeye made for the
+browser and the ones MediaMTX made with `AUTH_SECRET`, and every wall tile played over WebRTC with
+the video carried by the relay (about 400 KB per tile in each logged period). With coturn stopped,
+MediaMTX answered each WHEP offer after 7.8 s instead of about 0.1 s (it waits for its relay
+candidates); after the health check (`stunPing`) noticed, a reload sent every tile straight to HLS
+with no WHEP request. With coturn started again, the check reported it within 30 s and a reload
+played over the relay again. With 60-second logins, streams kept playing past expiry: coturn
+accepted the browser's allocation refresh about 10 minutes after the login expired, and a channel
+bind 13 minutes after, so long-open walls do not drop when a login runs out. In the real images:
+Compose passes the relay to MediaMTX only when `TURN_HOST` is set (MediaMTX refuses an empty
+entry), and the coturn image binds port 443 as its unprivileged user with host networking. Settings,
+logins, the STUN check and `/api/media/ice` are unit-tested (`tests/turn.test.ts`). The
+diagnostics window, in the same setup with a self-signed certificate on the relay's TLS port:
+relay-only showed *Reachable over UDP and TCP · Not over TLS*, a WebRTC test *through the relay
+(UDP)* and tiles playing over *relay*; with coturn stopped it showed *Not answering* with the
+matching verdict and *Not tried* for WebRTC; in the default mode it showed the relay row and both
+direct tests. The row's wording is unit-tested (`tests/diagnostics.test.ts`).
+
 ## Not verified
 
 | Area | Why | What could go wrong |
@@ -606,6 +626,7 @@ autoplay is otherwise blocked.
 | Activity live updates in the browser | Checked through the API tests only | UI wiring |
 | Revocation bound under load | Checked with three streams | Slower with many sessions |
 | Video straight from the camera, end to end | Only the camera check ran against real cameras | The camera refuses a second reader or drops frames under the extra connection; MediaMTX logs the camera address (without the password); door stations' swapped stream addresses |
+| TURN relay on a real VPS | Checked on one machine only (above), without TLS and without the private-range `denied-peer-ip` lines | TURN over TLS on 443 through a strict network; coturn behind NAT (`external-ip`) relaying between its own two allocations; Safari and Firefox with `iceTransportPolicy: "relay"`, and their candidate errors in the Video relay row; the "can't reach it from here" case on a network that blocks the relay |
 | Recovery after a MediaMTX restart | Cache invalidation tested against the stub only | Which status MediaMTX returns for a path it no longer has; whether re-adding an identical path disturbs readers |
 
 ## Checking a real UNVR (read-only)
