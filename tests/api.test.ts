@@ -120,6 +120,11 @@ describe("a forbidden camera is indistinguishable from a missing one, on every r
     expect(me.recorderTimeZone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone); // the mock recorder keeps the server's zone
     expect(me.views.find((v: { name: string }) => v.name === "Building Overview").count).toBe(3);
   });
+  it("tells the player how much live video to hold, as configured", async () => {
+    expect((await call(f.u.front, "GET", "/me")).data.limits.liveBufferMs).toBe(1000);
+    (config() as { LIVE_BUFFER_MS: number }).LIVE_BUFFER_MS = 0;
+    expect((await call(f.u.front, "GET", "/me")).data.limits.liveBufferMs).toBe(0);
+  });
   it("event listings, counts and ids never cross the permission boundary", async () => {
     const all = (await call(f.u.admin, "GET", "/events?limit=200")).data.events as { id: string; cameraId: string }[];
     const foreign = all.find((e) => e.cameraId === f.cam["Server Closet"] || e.cameraId === f.cam["Upper Hallway East"])!;

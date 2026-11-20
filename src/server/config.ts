@@ -200,6 +200,13 @@ const schema = z.object({
    * recording starts loading, so letting go there plays sooner. 0 turns it off.
    */
   SCRUB_PRELOAD_MS: int(500, 0),
+  /**
+   * How much live video a browser holds before showing it over WebRTC. Cameras and the recorder
+   * send in bursts (a pause around each keyframe, then the backlog), which shows as a freeze and a
+   * jump unless the player has something in hand. Live video runs this far behind real time.
+   * 0 turns it off; browsers accept at most 4000.
+   */
+  LIVE_BUFFER_MS: int(1000, 0).pipe(z.number().max(4000)),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   /**
    * The commit this build was made from, shown in the diagnostics window. The image build sets it

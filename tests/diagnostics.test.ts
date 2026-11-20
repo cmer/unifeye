@@ -154,6 +154,13 @@ describe("WebRTC statistics", () => {
     expect(v.jitterMs).toBeCloseTo(3);
     expect(inboundVideo(stats(5, 1), null)!.mbps).toBeUndefined();
   });
+  it("reports how long frames were held before showing, between two samples", () => {
+    const held = (delay: number, shown: number): Stat[] => [{ type: "inbound-rtp", id: "V1", kind: "video", jitterBufferDelay: delay, jitterBufferEmittedCount: shown }];
+    expect(inboundVideo(held(130, 125), held(100, 100))!.heldMs).toBeCloseTo(1200); // 30 s over 25 frames
+    expect(inboundVideo(held(50, 100), null)!.heldMs).toBeCloseTo(500); // one sample: since the stream started
+    expect(inboundVideo(held(100, 100), held(100, 100))!.heldMs).toBeUndefined(); // nothing shown in between
+    expect(inboundVideo(stats(5, 1), null)!.heldMs).toBeUndefined(); // a browser that does not report it
+  });
   it("falls back to the nominated pair when there is no transport report (Firefox)", () => {
     const s = stats(0, 0).filter((x) => x.type !== "transport");
     expect(selectedPair(s)?.port).toBe(8189);

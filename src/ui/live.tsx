@@ -1,7 +1,9 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, mediaUrl, previewToken } from "./api";
+import { useApp } from "./app";
 import { recordProblem, recordRequestFailure, registerTile, type TileHandle } from "./diagnostics";
+import { holdLive } from "./live-buffer";
 import { applySound, watchAudio } from "./sound";
 
 type State = "idle" | "connecting" | "playing" | "unavailable" | "error";
@@ -64,6 +66,8 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
    */ force?: Transport;
 }) {
   const video = useRef<HTMLVideoElement>(null);
+  /** How much video WebRTC holds before showing it, so a camera that sends in bursts plays evenly (`live-buffer.ts`). */
+  const bufferMs = useApp().me.limits.liveBufferMs;
   const [audio, setAudio] = useState<boolean | null>(null);
   const [raw, setState] = useState<State>("idle");
   const [attempt, setAttempt] = useState(0);
@@ -187,7 +191,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
           audioTrack.onunmute = () => { if (!closed) setAudio(true); };
           timer2 = setTimeout(() => { if (!closed && audioTrack!.muted) setAudio(false); }, 3000);
         };
-        pc.ontrack = (e) => { if (e.track.kind === "audio") audioTrack = e.track; if (!closed && el.srcObject !== e.streams[0]) el.srcObject = e.streams[0]; };
+        pc.ontrack = (e) => { holdLive(e.receiver, bufferMs); if (e.track.kind === "audio") audioTrack = e.track; if (!closed && el.srcObject !== e.streams[0]) el.srcObject = e.streams[0]; };
         pc.onconnectionstatechange = () => {
           if (closed || !pc) return;
           if (pc.connectionState === "connected") { connected = true; clearTimeout(timer); setVia("webrtc"); decideAudio(); setState("playing"); }
