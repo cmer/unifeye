@@ -208,7 +208,7 @@ function ChangePassword({ onClose }: { onClose: () => void }) {
 export function SidebarOpener({ className = "" }: { className?: string }) {
   const { open, toggleSidebar, isMobile } = useSidebar();
   if (open && !isMobile) return null;
-  return <Button variant="ghost" size="icon" className={className} aria-label="Show sidebar" onClick={toggleSidebar}><PanelLeft /></Button>;
+  return <Button variant="ghost" size="icon" className={className} aria-label="Show sidebar" data-sidebar="trigger" onClick={toggleSidebar}><PanelLeft /></Button>;
 }
 export function PageHeader({ title, children }: { title: string; children?: React.ReactNode }) {
   return <div className="mb-4 flex min-h-9 flex-wrap items-center gap-2"><SidebarOpener className="-ml-2" /><h1 className="text-xl font-semibold">{title}</h1><span className="flex-1" />{children}</div>;
