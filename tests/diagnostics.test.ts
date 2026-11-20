@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   camerasFor, cameraIdIn, fmtMbps, perStreamMbps, clearDiagnostics, clockOffset, codecName, filterCandidates, formatReport, groupRefusals, inboundVideo, mayReleaseHls, median,
-  parsePlaylist, parseUserAgent, pickTestStream, problemLog, recordProblem, recordRequestFailure, refusalsSince, refusalText, REFUSAL_WINDOW_MS,
+  browserRow, isOutdated, parsePlaylist, parseUserAgent, pickTestStream, problemLog, recordProblem, recordRequestFailure, refusalsSince, refusalText, REFUSAL_WINDOW_MS,
   selectedPair, shortenPath, verdict, versionRow, type Stat,
 } from "@/ui/diagnostics";
 
@@ -103,6 +103,38 @@ describe("user agents", () => {
     expect(parseUserAgent("Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0")).toEqual({ browser: "Firefox 133", os: "Linux" });
     expect(parseUserAgent("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36")).toEqual({ browser: "Chrome 142", os: "Android 14" });
     expect(parseUserAgent("curl/8.4.0")).toEqual({ browser: null, os: null });
+  });
+});
+
+describe("the Browser row", () => {
+  const SAFARI = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15";
+  const ok = { ua: SAFARI, webrtc: true, mse: true, nativeHls: true, autoplay: "allowed" as const };
+
+  it("is green when live video can play and start on its own", () => {
+    expect(browserRow({ ...ok, network: "Wi-Fi" })).toMatchObject({ status: "ok", value: "Safari 18.1 · macOS", detail: "Wi-Fi", problems: [] });
+  });
+  it("waits for the autoplay test, and an unclear answer is not a problem", () => {
+    expect(browserRow({ ...ok, autoplay: undefined }).status).toBe("pending");
+    expect(browserRow({ ...ok, autoplay: "unknown" })).toMatchObject({ status: "ok", problems: [] });
+  });
+  it("is amber when video can't start on its own", () => {
+    expect(browserRow({ ...ok, autoplay: "blocked" })).toMatchObject({ status: "warn", detail: "Video can't start on its own.", problems: ["autoplay_blocked"] });
+  });
+  it("is red with neither WebRTC nor any way to play HLS", () => {
+    expect(browserRow({ ...ok, webrtc: false, mse: false, nativeHls: false })).toMatchObject({ status: "bad", problems: ["browser_unsupported"] });
+    expect(browserRow({ ...ok, webrtc: false, mse: false }).status).toBe("ok");
+  });
+  it("is amber for an old browser", () => {
+    const old = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36";
+    expect(browserRow({ ...ok, ua: old })).toMatchObject({ status: "warn", problems: ["browser_outdated"] });
+  });
+  it("judges age by the browser, or by the system on iPhone and iPad, and never guesses", () => {
+    expect(isOutdated({ browser: "Chrome 142", os: "macOS" })).toBe(false);
+    expect(isOutdated({ browser: "Firefox 115", os: "Windows" })).toBe(true);
+    expect(isOutdated({ browser: "Safari 16.6", os: "macOS" })).toBe(true);
+    expect(isOutdated({ browser: "Chrome 142", os: "iOS 16.7" })).toBe(true); // Chrome on an old iPhone still runs old Safari
+    expect(isOutdated({ browser: "Safari 18.1", os: "iOS 18.1" })).toBe(false);
+    expect(isOutdated({ browser: null, os: "Linux" })).toBe(false);
   });
 });
 
