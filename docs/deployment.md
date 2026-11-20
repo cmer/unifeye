@@ -261,7 +261,8 @@ relay, last backup). Neither exposes configuration or secrets.
 | `CF_ACCESS_TEAM_DOMAIN` / `CF_ACCESS_AUD` | unset | Cloudflare Access team and application, required with `cloudflare` |
 | `CF_ACCESS_ORIGIN_SECRET` | unset | Secret Cloudflare adds as `X-Unifeye-Origin-Secret`; required with `cloudflare,local` |
 | `CF_ACCESS_RECHECK_SECONDS` | 300 | How quickly someone Cloudflare stops letting through loses access |
-| `SESSION_IDLE_MINUTES` / `SESSION_ABSOLUTE_HOURS` | 720 / 168 | Session lifetimes |
+| `SESSION_DAYS` | 30 | How long people stay signed in before they must sign in again |
+| `SESSION_IDLE_MINUTES` | 0 (off) | Also sign people out after this many minutes without use |
 | `OIDC_RECHECK_SECONDS` | 300 | How quickly a user disabled at the provider is noticed |
 | `OIDC_MAX_STALE_SECONDS` | 1800 | How long a session survives without a successful re-check |
 | `REVOCATION_SWEEP_SECONDS` | 10 | Worst-case delay before revoked media stops (max 30) |

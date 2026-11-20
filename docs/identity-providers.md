@@ -398,8 +398,8 @@ Workspace account is suspended, and that person keeps access until their Unifeye
 Shorten sessions to limit this, and disable people in Admin > People when they leave:
 
 ```env
+SESSION_DAYS=1
 SESSION_IDLE_MINUTES=240
-SESSION_ABSOLUTE_HOURS=24
 ```
 
 ---

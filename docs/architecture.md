@@ -238,7 +238,8 @@ arrives without one, so a client that reaches Unifeye directly, with no proxy, c
 - The first administrator is the `(issuer, subject)` named in deployment configuration, promoted
   once on a normal sign-in, and audited.
 - Sessions are random opaque tokens, stored hashed, in an HttpOnly cookie (Secure over HTTPS,
-  SameSite=Lax), rotated at every sign-in, with idle and absolute limits. Writes need a per-session
+  SameSite=Lax), rotated at every sign-in. A session lasts `SESSION_DAYS` (30 by default) from sign-in; an
+  idle limit (`SESSION_IDLE_MINUTES`) is off unless set. Writes need a per-session
   CSRF token and a same-origin request.
 - Provider tokens are encrypted with `TOKEN_ENC_KEY` (AES-256-GCM). Only the ID token (for logout)
   and a refresh token (for re-validation) are kept.

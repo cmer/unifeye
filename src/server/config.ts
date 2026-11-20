@@ -126,8 +126,10 @@ const schema = z.object({
   /** base64 of 32 random bytes; encrypts provider tokens at rest. */
   TOKEN_ENC_KEY: z.string().optional(),
 
-  SESSION_IDLE_MINUTES: int(720, 1),
-  SESSION_ABSOLUTE_HOURS: int(168, 1),
+  /** How long a sign-in is remembered. After this, people sign in again however active they were. */
+  SESSION_DAYS: int(30, 1),
+  /** Optional: also end a session after this many minutes without use. 0 (the default) turns it off. */
+  SESSION_IDLE_MINUTES: int(0, 0),
   /** How often each session is re-validated with the identity provider (refresh grant). */
   OIDC_RECHECK_SECONDS: int(300, 30),
   /** A session that could not be re-validated for this long is suspended. */
@@ -222,6 +224,7 @@ let cached: Config | undefined;
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const c = schema.parse(env);
   const problems: string[] = [];
+  if (env.SESSION_ABSOLUTE_HOURS) problems.push("SESSION_ABSOLUTE_HOURS was replaced by SESSION_DAYS");
   const prod = c.NODE_ENV === "production";
   if (c.REVOCATION_SWEEP_SECONDS > 30) problems.push("REVOCATION_SWEEP_SECONDS must be 30 or less");
   const m = signInMethods(c);
@@ -264,6 +267,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (problems.length) throw new Error("Invalid configuration:\n- " + problems.join("\n- "));
   return c;
 }
+
+/** How long a session lasts from sign-in, in milliseconds. */
+export const sessionLifetimeMs = (c: Config = config()) => c.SESSION_DAYS * 864e5;
+/** The idle limit in milliseconds, or null when it is off. */
+export const sessionIdleMs = (c: Config = config()) => (c.SESSION_IDLE_MINUTES ? c.SESSION_IDLE_MINUTES * 6e4 : null);
 
 export type SignInMethod = "oidc" | "local" | "cloudflare";
 /** Which sign-in methods are turned on. */

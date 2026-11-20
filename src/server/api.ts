@@ -10,7 +10,7 @@ import { LOGIN_TXN_COOKIE, safeReturnTo } from "./auth/oidc";
 import { SESSION_COOKIE, type SessionRow } from "./auth/session";
 import { subjectOf, type Actor } from "./authz/actor";
 import type { CameraInfo, UserRow } from "./authz/policy";
-import { allowedOrigins, config, emailCodesOn, groupsClaim, signInMethods, ssoDomain } from "./config";
+import { allowedOrigins, config, emailCodesOn, groupsClaim, sessionLifetimeMs, signInMethods, ssoDomain } from "./config";
 import { schema } from "./db";
 import { backupStatus } from "./db/backup";
 import { DIRECT_PROBLEM } from "./media/direct";
@@ -179,7 +179,7 @@ route("GET", "/auth/login", { public: true, rate: "auth" }, async ({ s, req, url
     try {
       const r = await s.cloudflare.signIn(ch.assertion, { userAgent: req.headers.get("user-agent") ?? undefined, ip, previousSessionToken: readCookie(req, SESSION_COOKIE) });
       maybeSeedDemo(s);
-      return redirect(returnTo, [cookie(SESSION_COOKIE, r.token, config().SESSION_ABSOLUTE_HOURS * 3600)]);
+      return redirect(returnTo, [cookie(SESSION_COOKIE, r.token, sessionLifetimeMs() / 1000)]);
     } catch (e) {
       const reason = (e as { reason?: unknown })?.reason;
       if (typeof reason !== "string") log("warn", "Cloudflare sign-in failed", { error: e });
@@ -205,7 +205,7 @@ route("GET", "/auth/callback", { public: true, rate: "auth" }, async ({ s, req, 
   try {
     const r = await s.oidc.complete(new URL(url.pathname + url.search, config().APP_URL), readCookie(req, LOGIN_TXN_COOKIE), { userAgent: req.headers.get("user-agent") ?? undefined, ip, previousSessionToken: readCookie(req, SESSION_COOKIE) });
     maybeSeedDemo(s);
-    return redirect(r.returnTo, [clear, cookie(SESSION_COOKIE, r.token, config().SESSION_ABSOLUTE_HOURS * 3600)]);
+    return redirect(r.returnTo, [clear, cookie(SESSION_COOKIE, r.token, sessionLifetimeMs() / 1000)]);
   } catch (e) {
     const reason = (e as { reason?: unknown })?.reason;
     if (typeof reason !== "string") log("warn", "login callback failed", { error: e });
@@ -245,7 +245,7 @@ async function passwordRequest(req: Request, s: Services) {
   try { const b = JSON.parse(text) as unknown; if (b && typeof b === "object" && !Array.isArray(b)) return b as Record<string, unknown>; } catch { /* below */ }
   throw badRequest("Invalid JSON");
 }
-const signedIn = (token: string, returnTo: unknown) => json({ redirect: safeReturnTo(typeof returnTo === "string" ? returnTo : "/") }, 200, { "set-cookie": cookie(SESSION_COOKIE, token, config().SESSION_ABSOLUTE_HOURS * 3600) });
+const signedIn = (token: string, returnTo: unknown) => json({ redirect: safeReturnTo(typeof returnTo === "string" ? returnTo : "/") }, 200, { "set-cookie": cookie(SESSION_COOKIE, token, sessionLifetimeMs() / 1000) });
 route("POST", "/auth/password", { public: true, rate: "auth" }, async ({ s, req, ip }) => {
   const b = await passwordRequest(req, s);
   const r = await s.local.signIn(b.username, b.password, { ip, userAgent: req.headers.get("user-agent") ?? undefined, previousSessionToken: readCookie(req, SESSION_COOKIE) });
