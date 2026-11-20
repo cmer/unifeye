@@ -3,7 +3,7 @@ import { randomBytes, randomInt, scrypt as scryptCb, timingSafeEqual, type Scryp
 import { z } from "zod";
 import { audit } from "../audit";
 import type { Policy } from "../authz/policy";
-import { config, emailCodesOn, signInMethods } from "../config";
+import { config, emailCodesOn, signInMethods, ssoDomain } from "../config";
 import { schema, type Db } from "../db";
 import type { Mailer } from "../mail";
 import { badRequest, hashToken, HttpError, newId, randomToken, safeEqual } from "../util";
@@ -91,7 +91,8 @@ export const codeEmailsSchema = z
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 /** Inserts a password account with no password yet. Caller validates, audits and invalidates. */
 export function insertLocalUser(tx: Tx, o: { name: string; username: string; role: "admin" | "staff"; passwordAllowed?: boolean; codeEmails?: string[] }) {
-  const t = Date.now(), id = newId();
+  const t = Date.now(), id = newId(), sso = ssoDomain(o.username);
+  if (sso) throw badRequest(`People at ${sso} sign in with ${config().OIDC_DISPLAY_NAME}. Choose a different username.`);
   if (tx.select().from(schema.localCredentials).where(eq(schema.localCredentials.username, o.username)).get()) throw new HttpError(409, "conflict", "That username is taken.");
   tx.insert(schema.users).values({ id, issuer: LOCAL_ISSUER, subject: id, name: o.name, email: null, role: o.role, authMethod: "local", status: "active", createdAt: t, updatedAt: t }).run();
   tx.insert(schema.localCredentials).values({ userId: id, username: o.username, passwordHash: null, passwordSetAt: null, passwordAllowed: o.passwordAllowed ?? true, codeEmails: o.codeEmails ?? [], createdAt: t }).run();
@@ -115,6 +116,8 @@ const accountOff = () => new HttpError(403, "account_off", "This account is turn
 const wrongCode = () => new HttpError(400, "wrong_code", "That code isn't right. Try again.");
 const codeGone = () => new HttpError(400, "code_expired", "This code has expired. Send a new one.");
 const codeTries = () => new HttpError(400, "too_many_tries", "Too many tries. Send a new code.");
+/** The username is at a domain in OIDC_EMAIL_DOMAINS. Depends only on configuration, so it reveals nothing about accounts. */
+const ssoOnly = () => new HttpError(403, "use_sso", `Sign in with ${config().OIDC_DISPLAY_NAME} instead.`);
 
 /** "Chrome on Windows", from a User-Agent, for the sign-in email. Rough on purpose. */
 export function describeDevice(ua = ""): string {
@@ -217,6 +220,7 @@ export class LocalAccounts {
 
   async signIn(rawUsername: unknown, password: unknown, ctx: Ctx) {
     this.enabled();
+    if (ssoDomain(rawUsername)) throw ssoOnly();
     const parsed = usernameSchema.safeParse(typeof rawUsername === "string" ? rawUsername : "");
     const key = parsed.success ? parsed.data : `invalid:${String(rawUsername).slice(0, 64)}`;
     const c = parsed.success ? this.cred(eq(schema.localCredentials.username, parsed.data)) : undefined;
@@ -244,6 +248,7 @@ export class LocalAccounts {
     const l = this.liveLink(token);
     const c = l && this.cred(eq(schema.localCredentials.userId, l.userId));
     if (!l || !c || !c.passwordAllowed || !this.policy.activeUser(c.userId)) throw linkGone();
+    if (ssoDomain(c.username)) throw ssoOnly();
     return { username: c.username, name: c.name, firstTime: !c.passwordHash };
   }
   private liveLink(token: unknown) {
@@ -334,6 +339,7 @@ export class LocalAccounts {
    */
   requestCode(rawUsername: unknown, ctx: Ctx & { timeZone?: string }) {
     this.codesEnabled();
+    if (ssoDomain(rawUsername)) throw ssoOnly();
     const parsed = usernameSchema.safeParse(typeof rawUsername === "string" ? rawUsername : "");
     const key = parsed.success ? parsed.data : `invalid:${String(rawUsername).slice(0, 64)}`;
     this.throttle(key);
@@ -360,10 +366,12 @@ export class LocalAccounts {
    * Step one of the sign-in page: what to ask for after the username. Only an account that signs in
    * by email code alone goes straight to a code (sent now, unless this browser already holds a live
    * one for it). Everything else, including unknown usernames, gets the same password step, so the
-   * answer reveals only that a username is a code-only account.
+   * answer reveals only that a username is a code-only account. A username at a domain in
+   * OIDC_EMAIL_DOMAINS goes to the identity provider, whether or not an account has it.
    */
-  start(rawUsername: unknown, heldSecret: string | undefined, ctx: Ctx & { timeZone?: string }): { next: "password" } | { next: "code"; secret?: string } {
+  start(rawUsername: unknown, heldSecret: string | undefined, ctx: Ctx & { timeZone?: string }): { next: "password" } | { next: "sso" } | { next: "code"; secret?: string } {
     this.enabled();
+    if (ssoDomain(rawUsername)) return { next: "sso" };
     const parsed = usernameSchema.safeParse(typeof rawUsername === "string" ? rawUsername : "");
     const c = parsed.success && emailCodesOn() ? this.cred(eq(schema.localCredentials.username, parsed.data)) : undefined;
     if (!c || c.passwordAllowed || !c.codeEmails.length) return { next: "password" };

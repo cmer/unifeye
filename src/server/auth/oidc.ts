@@ -64,8 +64,11 @@ export class Oidc {
     return (this.jwks ??= createRemoteJWKSet(new URL(uri)));
   }
 
-  /** Step 1: create a single-use login transaction and return the hosted-login URL. */
-  async begin(returnTo: string | null): Promise<{ url: string; cookie: string }> {
+  /**
+   * Step 1: create a single-use login transaction and return the hosted-login URL. `loginHint`, an
+   * email address the person already typed, is passed on so the provider can skip asking for it.
+   */
+  async begin(returnTo: string | null, loginHint?: string): Promise<{ url: string; cookie: string }> {
     const c = config(), cfg = await this.configuration();
     const cookie = randomToken(), state = oidc.randomState(), nonce = oidc.randomNonce(), codeVerifier = oidc.randomPKCECodeVerifier();
     const t = Date.now();
@@ -73,7 +76,7 @@ export class Oidc {
     this.db.insert(schema.loginTransactions).values({ id: hashToken(cookie), state, nonce, codeVerifier, returnTo: safeReturnTo(returnTo), createdAt: t, expiresAt: t + TXN_TTL_MS }).run();
     const scopes = new Set(c.OIDC_SCOPES.split(/\s+/).filter(Boolean));
     scopes.add("openid");
-    const url = oidc.buildAuthorizationUrl(cfg, { ...Object.fromEntries(c.OIDC_AUTH_PARAMS), redirect_uri: this.redirectUri(), scope: [...scopes].join(" "), state, nonce, code_challenge: await oidc.calculatePKCECodeChallenge(codeVerifier), code_challenge_method: "S256", response_type: "code" });
+    const url = oidc.buildAuthorizationUrl(cfg, { ...Object.fromEntries(c.OIDC_AUTH_PARAMS), redirect_uri: this.redirectUri(), scope: [...scopes].join(" "), state, nonce, code_challenge: await oidc.calculatePKCECodeChallenge(codeVerifier), code_challenge_method: "S256", response_type: "code", ...(loginHint ? { login_hint: loginHint } : {}) });
     return { url: url.toString(), cookie };
   }
 

@@ -46,6 +46,13 @@ upload speed and make sure each camera has a low-quality stream for the wall (se
 the sign-in page offers both; with `cloudflare,local`, people coming through Cloudflare are signed in
 by Access and password accounts are for the local network.
 
+**Send a company's addresses to the identity provider.** With `oidc,local`, set
+`OIDC_EMAIL_DOMAINS` (comma separated, for example `OIDC_EMAIL_DOMAINS=example.com`). Someone who
+types an address at one of those domains on the sign-in page goes straight to the provider, with the
+address filled in where the provider supports it, and is never asked for a password. Password and
+code sign-in refuse those addresses, and administrators can't add password accounts with them.
+Domains match exactly: `example.com` does not cover `mail.example.com`, so list each one.
+
 A person belongs to one method for good. Nothing links a work account to a password account, even
 with the same name or email. Turning a method off (and restarting) locks its people out at once;
 they come back if it is turned on again.
@@ -248,6 +255,7 @@ relay, last backup). Neither exposes configuration or secrets.
 | --- | --- | --- |
 | `UNIFEYE_MODE` | `mock` in code, `real` in `.env.example` | `mock` serves simulated cameras; sign-in works the same |
 | `SIGN_IN_METHODS` | `oidc` | Ways to sign in: `oidc`, `local`, `cloudflare` (see [section 1](#1-choose-how-people-sign-in)) |
+| `OIDC_EMAIL_DOMAINS` | unset | Email domains that always sign in with the identity provider; needs `oidc,local` |
 | `LOCAL_APP_URL` | unset | A second address for password sign-in; password links point there |
 | `SMTP_URL` / `MAIL_FROM` | unset | Outgoing mail; set both or neither. Email sign-in codes also need `local` |
 | `CF_ACCESS_TEAM_DOMAIN` / `CF_ACCESS_AUD` | unset | Cloudflare Access team and application, required with `cloudflare` |

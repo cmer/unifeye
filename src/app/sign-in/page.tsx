@@ -9,7 +9,7 @@ export default async function SignIn({ searchParams }: { searchParams: Promise<{
   const { returnTo } = await searchParams, m = signInMethods();
   return (
     <AuthShell title="Sign in">
-      <SignInForm oidcName={m.oidc ? config().OIDC_DISPLAY_NAME : null} passwords={m.local} emailCodes={emailCodesOn()} returnTo={safeReturnTo(returnTo)} />
+      <SignInForm oidcName={m.oidc ? config().OIDC_DISPLAY_NAME : null} passwords={m.local} emailCodes={emailCodesOn()} ssoEmails={m.oidc && config().OIDC_EMAIL_DOMAINS.length > 0} returnTo={safeReturnTo(returnTo)} />
     </AuthShell>
   );
 }

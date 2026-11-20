@@ -297,6 +297,14 @@ arrives without one, so a client that reaches Unifeye directly, with no proxy, c
   gives nobody a way in: the code still goes to that account's addresses.
 - The password step offers "Email a code instead" when outgoing mail is set up. Going back and
   continuing again in the same browser reuses a live code rather than sending another.
+- Domains that must use the identity provider (`OIDC_EMAIL_DOMAINS`, needs `oidc` and `local`):
+  step one answers `sso` for any username whose part after the last `@` is exactly one of them, and
+  the page sends the browser to `GET /api/auth/login?with=oidc&hint=<address>`. The hint goes to the
+  provider as `login_hint`, only when it is an address at one of those domains. The answer depends
+  on configuration alone, so it reveals nothing about accounts. Password sign-in, email codes and
+  password links refuse these usernames (`403 use_sso`), including for an account made before the
+  setting, and administrators cannot create one. Sessions such an account already holds are not
+  ended.
 - On a device where someone signed in by code, the username is remembered (in the browser only) to
   fill in step one: the shared front-desk computer case.
 

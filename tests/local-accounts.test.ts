@@ -282,6 +282,44 @@ describe("turning sign-in methods off", () => {
   });
 });
 
+describe("domains that must use the identity provider", () => {
+  const sso = () => env({ OIDC_EMAIL_DOMAINS: "@LittleCampus.ca, example.org", SMTP_URL: "smtp://mail.example", MAIL_FROM: "cams@example.org" });
+  it("sends an address at one of them to the provider, whatever its case, and leaves other names alone", async () => {
+    sso();
+    expect((await call("POST", "/auth/start", { body: { username: " Ana@LittleCampus.CA " } })).data).toEqual({ next: "sso" });
+    expect((await call("POST", "/auth/start", { body: { username: "ana@example.org" } })).data).toEqual({ next: "sso" });
+    for (const username of ["ana@mail.littlecampus.ca", "ana@littlecampus.ca.evil", "littlecampus.ca", "frontdesk"])
+      expect((await call("POST", "/auth/start", { body: { username } })).data, username).toEqual({ next: "password" });
+  });
+  it("refuses password and code sign-in for them, even for an account made before the setting", async () => {
+    const p = await withPassword("ana@littlecampus.ca");
+    expect((await signIn("ana@littlecampus.ca", GOOD)).status).toBe(200);
+    sso();
+    const r = await signIn("Ana@littlecampus.ca", GOOD);
+    expect(r.status).toBe(403);
+    expect(r.data).toMatchObject({ error: "use_sso", message: "Sign in with SSO instead." });
+    expect((await call("POST", "/auth/email", { body: { username: "ana@littlecampus.ca" } })).status).toBe(403);
+    const link = tokenOf((await as(f.u.admin, "POST", `/admin/users/${p.id}/password-link`)).data.link.url);
+    expect((await call("POST", "/auth/password-link/check", { body: { token: link } })).status).toBe(403);
+    expect((await call("POST", "/auth/password-link", { body: { token: link, password: "another good phrase" } })).status).toBe(403);
+    expect((await signIn("frontdesk", GOOD)).status).toBe(401); // other names are unaffected
+  });
+  it("administrators can't add password accounts at them", async () => {
+    sso();
+    const r = await as(f.u.admin, "POST", "/admin/users", { body: { name: "Ana", username: "ana@littlecampus.ca" } });
+    expect(r.status).toBe(400);
+    expect(r.data.message).toMatch(/littlecampus\.ca sign in with SSO/);
+    expect((await as(f.u.admin, "POST", "/admin/users", { body: { name: "Ana", username: "ana@gmail.com" } })).status).toBe(200);
+  });
+  it("needs both the provider and passwords on, and real domains", () => {
+    const load = (o: Record<string, string>) => () => loadConfig({ ...TEST_ENV, ...o } as unknown as NodeJS.ProcessEnv);
+    expect(load({ SIGN_IN_METHODS: "oidc", OIDC_EMAIL_DOMAINS: "littlecampus.ca" })).toThrowError(/both oidc and local/);
+    expect(load({ SIGN_IN_METHODS: "local", OIDC_EMAIL_DOMAINS: "littlecampus.ca" })).toThrowError(/both oidc and local/);
+    expect(load({ SIGN_IN_METHODS: "oidc,local", OIDC_EMAIL_DOMAINS: "not a domain" })).toThrowError(/like example\.com/);
+    expect(load({ SIGN_IN_METHODS: "oidc,local", OIDC_EMAIL_DOMAINS: "@LittleCampus.ca" })().OIDC_EMAIL_DOMAINS).toEqual(["littlecampus.ca"]);
+  });
+});
+
 describe("return addresses", () => {
   it("never leave the site, including through characters URL parsers strip", () => {
     for (const bad of ["/\u4e2d", "/caf\u00e9", "/\t/evil.example", "/\r/evil.example", "/\n/evil.example", "/ /evil.example", "//evil.example", "/\\evil.example", "https://evil.example", "/api/auth/logout", "/\u0000x"])

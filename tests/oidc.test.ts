@@ -84,6 +84,16 @@ describe("OIDC login", () => {
     expect(b.url.searchParams.get("scope")).toBe("openid profile email offline_access");
     expect(b.state.length).toBeGreaterThan(20); expect(b.nonce.length).toBeGreaterThan(20);
   });
+  it("passes an address at a domain that must use the provider on as the login hint, and nothing else", async () => {
+    setConfigForTests(env({ SIGN_IN_METHODS: "oidc,local", OIDC_EMAIL_DOMAINS: "littlecampus.ca" }));
+    const hint = async (h: string) => {
+      const r = await handleApi(new Request(`http://localhost:3000/api/auth/login?with=oidc&hint=${encodeURIComponent(h)}`));
+      return new URL(r.headers.get("location")!).searchParams.get("login_hint");
+    };
+    expect(await hint("Ana@LittleCampus.ca")).toBe("ana@littlecampus.ca");
+    expect(await hint("ana@gmail.com")).toBeNull();
+    expect(await hint("a b@littlecampus.ca")).toBeNull();
+  });
   it("adds configured extra parameters to the sign-in request but never lets them replace protocol ones", async () => {
     setConfigForTests(env({ OIDC_AUTH_PARAMS: "access_type=offline&prompt=consent" }));
     oidc = new Oidc(f.db, f.policy, f.sessions);
