@@ -342,7 +342,7 @@ route("GET", "/cameras/:id/playback/info", { rate: "media" }, async ({ s, actor,
 route("GET", "/cameras/:id/playback", { rate: "media" }, async ({ s, actor, p, url, req }) => {
   const high = url.searchParams.get("layer") === "high";
   // The base file can be served while the high one is still being placed.
-  const w = await s.recordings.window(actor, p.id, num(url.searchParams.get("t"), "t"), req.signal, !high), file = high ? w.high : w.base;
+  const w = await s.recordings.window(actor, p.id, num(url.searchParams.get("t"), "t"), req.signal, !high, true), file = high ? w.high : w.base;
   if (!file) throw new HttpError(404, "no_recording", "Nothing recorded at this time");
   return fileResponse(file, req, "video/mp4", { "x-window-start": String(w.info.startMs), "x-window-end": String(w.info.endMs) });
 });

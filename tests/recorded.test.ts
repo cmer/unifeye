@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import type { MediaInfo } from "@/server/protect/ffmpeg";
 import { NoRecordingError, RecorderBusyError } from "@/server/protect/types";
-import { channelsFor, coveredMs, fetchRecorded, fetchRecordedFile, type Entry, type ExportChannel, type ListSegments, type ListStamps, type MediaOps, type Reach, type Recorded } from "@/server/media/recorded";
+import { channelsFor, coveredMs, fetchRecorded, fetchRecordedFile, type Entry, type ExportChannel, type FetchOptions, type ListSegments, type ListStamps, type MediaOps, type Reach, type Recorded } from "@/server/media/recorded";
 import { highReachMs, type Thumbs } from "@/server/media/placement";
 import type { Gop, Seams } from "@/server/media/timeline";
 
@@ -338,8 +338,10 @@ describe("fetchRecorded with the recorder's times", () => {
   const HIGH_KEYS = [A - 300_000, ...every(A + 15_000, A + 35_000), ...every(B + 5000, B + 10_000)];
   const R = highReachMs();
   const withContext = () => { const fl = files(); return { ...fl, context: `${fl.wall}.c` }; };
-  const run = (r: ReturnType<typeof stamping>, fl: { focus: string; wall: string; context?: string }, o: { stamps?: boolean; onBase?: (e: Recorded) => void } = {}) =>
-    fetchRecorded(r.exporter, A, B, { files: fl, signal, ops: r.ops, segments: r.segments, stamps: o.stamps === false ? undefined : r.stamps, onBase: o.onBase });
+  const run = (r: ReturnType<typeof stamping>, fl: { focus: string; wall: string; context?: string }, o: { stamps?: boolean; onBase?: (e: Recorded) => void; known?: FetchOptions["known"]; segments?: ListSegments } = {}) =>
+    fetchRecorded(r.exporter, A, B, { files: fl, signal, ops: r.ops, segments: o.segments ?? r.segments, stamps: o.stamps === false ? undefined : r.stamps, onBase: o.onBase, known: o.known });
+  /** A recorder that has given segment lists and stamps before. */
+  const KNOWN = { segments: true, stamps: true };
   /** kind, seconds into the window and seconds long of each entry, to the tenth. */
   const timed = (es: Entry[]) => es.map((e) => [e.kind, Math.round((e.at - A) / 100) / 10, Math.round(e.span / 100) / 10, !!e.lead]);
 
@@ -367,11 +369,68 @@ describe("fetchRecorded with the recorder's times", () => {
     const contextFails = stamping({ wall: LOW_KEYS, focus: HIGH_KEYS }, { fail: (ch, reach) => (ch === "wall" && reach ? new RecorderBusyError(503) : null) });
     const lowWrong = stamping({ wall: LOW_KEYS, focus: HIGH_KEYS }, { stamps: (ch, s, reach) => (ch === "wall" && !reach ? [...s].reverse() : s) });
     for (const r of [short, contextFails, lowWrong]) {
-      const fl = withContext(), got = await run(r, fl);
+      const fl = withContext(), got = await run(r, fl, { known: KNOWN });
       expect(r.exported.filter(([ch]) => ch === "focus")).toEqual([["focus", { afterMs: R }], ["focus", undefined]]);
       expect(r.of(fl.focus).gops.length).toBe(1 + 20);
       expect(got.entries).toEqual(plain.entries);
+      // Worth fetching again: this recorder gave its times before.
+      expect(got.got.stamps).toBe(false);
+      expect(got.degraded).toEqual(["stamps"]);
     }
+    // A recorder never seen to give them: nothing to fetch again for.
+    expect((await run(stamping({ wall: LOW_KEYS, focus: HIGH_KEYS }, { stamps: (ch, s) => (ch === "focus" ? s.slice(1) : s) }), withContext())).degraded).toBeUndefined();
+  });
+
+  it("places by the stamps though the recorder stamps a high GOP a little before the one ahead of it", async () => {
+    const good = await run(stamping({ wall: LOW_KEYS, focus: HIGH_KEYS }), withContext());
+    expect(good.degraded).toBeUndefined();
+    // GOP 6 stamped 0.3 s before GOP 5, as Protect does now and then.
+    const r = stamping({ wall: LOW_KEYS, focus: HIGH_KEYS }, { stamps: (ch, s) => (ch === "focus" ? s.map((x, g) => (g === 6 ? s[5] - 300 : x)) : s) });
+    const got = await run(r, withContext(), { known: KNOWN });
+    expect(r.exported.filter(([ch]) => ch === "focus")).toEqual([["focus", { afterMs: R }]]);
+    expect(got.degraded).toBeUndefined();
+    expect(timed(got.entries)).toEqual(timed(good.entries));
+    // A step back of more than a few seconds is not understood: the old way, as before.
+    const far = stamping({ wall: LOW_KEYS, focus: HIGH_KEYS }, { stamps: (ch, s) => (ch === "focus" ? s.map((x, g) => (g === 6 ? s[5] - 40_000 : x)) : s) });
+    await run(far, withContext());
+    expect(far.exported.filter(([ch]) => ch === "focus")).toEqual([["focus", { afterMs: R }], ["focus", undefined]]);
+  });
+
+  it("takes no high stamps as the truth when channel 0 hands back the low pictures", async () => {
+    // Channel 0 has nothing of its own here: its export is the low file's GOPs, and the stream sends no stamps for it.
+    const r = stamping({ wall: LOW_KEYS, focus: HIGH_KEYS }, { stamps: (ch, s) => (ch === "focus" ? [] : s) }), fl = withContext();
+    const ops: MediaOps = { ...r.ops, gops: async (p, sig) => r.ops.gops(p === fl.focus ? fl.wall : p, sig) };
+    const got = await fetchRecorded(r.exporter, A, B, { files: fl, signal, ops, segments: r.segments, stamps: r.stamps, known: KNOWN });
+    expect(got).toMatchObject({ base: fl.wall, high: null, got: { segments: true, stamps: true } });
+    expect(got.degraded).toBeUndefined();
+    expect(r.exported.filter(([ch]) => ch === "focus")).toEqual([["focus", { afterMs: R }]]);
+  });
+
+  it("places by the stamps when a segment list goes missing on a recorder that gives them, and says so", async () => {
+    const good = await run(stamping({ wall: LOW_KEYS, focus: HIGH_KEYS }), withContext());
+    for (const missing of ["focus", "wall"] as const) {
+      const r = stamping({ wall: LOW_KEYS, focus: HIGH_KEYS });
+      const got = await run(r, withContext(), { known: KNOWN, segments: async (ch) => (ch === missing ? null : r.segments(ch, signal)) });
+      expect(r.exported.filter(([ch]) => ch === "focus")).toEqual([["focus", { afterMs: R }]]);
+      expect(got.entries).toEqual(good.entries);
+      expect(got.got.segments).toBe(false);
+      expect(got.degraded).toEqual(["segments"]);
+    }
+    // A recorder never seen to give segment lists keeps the old way: channel 0 first, nothing else asked.
+    const r = stamping({ wall: LOW_KEYS, focus: HIGH_KEYS }), got = await run(r, withContext(), { segments: async () => null });
+    expect(r.exported[0]).toEqual(["focus", undefined]);
+    expect(r.stamped).toEqual([]);
+    expect(got.degraded).toBeUndefined();
+  });
+
+  it("says so when the recorder fails the high channel's export", async () => {
+    const r = stamping({ wall: LOW_KEYS, focus: HIGH_KEYS }, { fail: (ch) => (ch === "focus" ? new RecorderBusyError(503) : null) });
+    const got = await run(r, withContext());
+    expect(got).toMatchObject({ high: null, busy: true, degraded: ["busy"] });
+    // Nothing recorded in the high channel is not a failure.
+    const none = await run(stamping({ wall: LOW_KEYS, focus: HIGH_KEYS }, { fail: (ch) => (ch === "focus" ? new NoRecordingError() : null) }), withContext());
+    expect(none).toMatchObject({ high: null, busy: false });
+    expect(none.degraded).toBeUndefined();
   });
 
   it("changes nothing without a file for the context or without stamps", async () => {

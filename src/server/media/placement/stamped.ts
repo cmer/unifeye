@@ -57,15 +57,23 @@ export interface LagSettings {
   reset: number;
   /** Stamps of two base GOPs this close to following on (as a share of the GOP's length) count as following on. */
   join: number;
+  /** How far, in seconds, a high GOP's stamp may fall behind the one before it (`usable`). */
+  stepBackSec: number;
 }
 
 /** One base GOP on the timeline: media time and length in seconds, wall-clock start and span in ms. */
 export interface Span { t: number; len: number; at: number; span: number }
 
-/** True when `stamps` can serve as the times of `gops`: one each, in order. */
-export function usable(gops: Gop[], stamps: number[] | undefined): stamps is number[] {
+/**
+ * True when `stamps` can serve as the times of `gops`: one each, in order. The high channel's are
+ * checked with `backMs`, how far a stamp may fall behind the one before: the recorder sometimes
+ * stamps a GOP a little before the GOP ahead of it (seen half a second back), and `highTimes` only
+ * reads them as how late each GOP runs, treating a step back as a break. Rejecting those threw away
+ * the stamps of every stretch around them. A larger step back is not understood, and fails.
+ */
+export function usable(gops: Gop[], stamps: number[] | undefined, backMs = 0): stamps is number[] {
   if (!stamps || stamps.length !== gops.length || !gops.length) return false;
-  for (let k = 0; k < stamps.length; k++) if (!Number.isFinite(stamps[k]) || (k && stamps[k] <= stamps[k - 1])) return false;
+  for (let k = 0; k < stamps.length; k++) if (!Number.isFinite(stamps[k]) || (k && stamps[k] - stamps[k - 1] <= (backMs ? -backMs : 0))) return false;
   return true;
 }
 
