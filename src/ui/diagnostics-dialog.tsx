@@ -219,7 +219,7 @@ function describeTile(t: TileInfo, before: Stat[] | null, now: Stat[] | null): P
     const bits = [
       [v?.codec, v?.width && v?.height ? `${v.width}×${v.height}` : null].filter(Boolean).join(" ") || null,
       v?.fps != null ? `${Math.round(v.fps)} fps` : null, v?.mbps != null ? fmtMbps(v.mbps) : null,
-      v?.lossPct != null ? `${v.lossPct < 0.1 ? 0 : v.lossPct.toFixed(1)}% lost` : null, v?.jitterMs != null ? `jitter ${Math.round(v.jitterMs)} ms` : null, ...extra,
+      v?.lossPct != null ? `${v.lossPct < 0.1 ? 0 : v.lossPct.toFixed(1)}% lost` : null, v?.jitterMs != null ? `jitter ${Math.round(v.jitterMs)} ms` : null, v?.heldMs != null ? `held ${fmtMs(v.heldMs)}` : null, ...extra,
     ].filter(Boolean);
     if (pair) tech.push(`route ${pair.protocol ?? "?"} ${pair.remoteType ?? "?"} port ${pair.port ?? "?"}${pair.rttMs != null ? ` rtt ${Math.round(pair.rttMs)} ms` : ""}`);
     const lossy = (v?.lossPct ?? 0) > 2;

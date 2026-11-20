@@ -312,7 +312,7 @@ route("GET", "/me", {}, ({ s, actor, user, session }) => {
     mode: c.UNIFEYE_MODE,
     recorder: s.adapter.health().state,
     recorderTimeZone: s.adapter.timeZone(),
-    limits: { maxStreams: c.MAX_WALL_STREAMS, windowSeconds: c.PLAYBACK_WINDOW_SECONDS, prerollSeconds: c.EVENT_PREROLL_SECONDS, clipMaxSeconds: c.CLIP_MAX_SECONDS, scrubPreloadMs: c.SCRUB_PRELOAD_MS, wallPlaybackStreams: c.WALL_PLAYBACK_STREAMS },
+    limits: { maxStreams: c.MAX_WALL_STREAMS, windowSeconds: c.PLAYBACK_WINDOW_SECONDS, prerollSeconds: c.EVENT_PREROLL_SECONDS, clipMaxSeconds: c.CLIP_MAX_SECONDS, scrubPreloadMs: c.SCRUB_PRELOAD_MS, wallPlaybackStreams: c.WALL_PLAYBACK_STREAMS, liveBufferMs: c.LIVE_BUFFER_MS },
   };
 });
 route("PUT", "/preferences", {}, async ({ s, actor, json: body }) => { const b = await body<{ key: string; value: unknown }>(); s.admin.setPreference(actor, b.key, b.value); });

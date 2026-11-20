@@ -293,7 +293,9 @@ export function codecName(s: string | undefined) {
 
 /**
  * The incoming video stream: codec, size and frame rate from the latest sample; bitrate from the
- * bytes between two samples; loss as a share of all packets; jitter in milliseconds.
+ * bytes between two samples; loss as a share of all packets; jitter in milliseconds; and how long
+ * frames wait in the browser before they are shown (`LIVE_BUFFER_MS` or more), between the two
+ * samples when there are two, else since the stream started.
  */
 export function inboundVideo(now: readonly Stat[], before: readonly Stat[] | null) {
   const v = now.find((s) => s.type === "inbound-rtp" && (s.kind === "video" || s.mediaType === "video"));
@@ -303,7 +305,10 @@ export function inboundVideo(now: readonly Stat[], before: readonly Stat[] | nul
   const mbps = bytes != null && t != null && pb != null && pt != null && t > pt ? ((bytes - pb) * 8) / ((t - pt) * 1000) : undefined;
   const lost = num(v.packetsLost) ?? 0, got = num(v.packetsReceived) ?? 0, jitter = num(v.jitter);
   const codec = now.find((s) => s.id === str(v.codecId));
+  const waited = num(v.jitterBufferDelay), shown = num(v.jitterBufferEmittedCount), pw = num(prev?.jitterBufferDelay) ?? 0, ps = num(prev?.jitterBufferEmittedCount) ?? 0;
+  const heldMs = waited != null && shown != null && shown > ps ? ((waited - pw) / (shown - ps)) * 1000 : undefined;
   return {
+    heldMs,
     codec: codecName(str(codec?.mimeType)), width: num(v.frameWidth), height: num(v.frameHeight), fps: num(v.framesPerSecond),
     mbps, lossPct: got + lost > 0 ? (Math.max(0, lost) / (got + Math.max(0, lost))) * 100 : undefined, jitterMs: jitter == null ? undefined : jitter * 1000,
   };

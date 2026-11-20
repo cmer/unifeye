@@ -417,6 +417,15 @@ taken until the relay closes the idle reader and a sweep notices (30 to 60 s), a
 HLS refused the new tiles. A tile refused for now (429, the stream limit or the rate limit) waits
 5 seconds and tries again without counting it as a failed attempt.
 
+Over WebRTC the player asks the browser to hold `LIVE_BUFFER_MS` of video and sound before playing
+them (`holdLive` in `src/ui/live-buffer.ts`, 1000 by default, 0 off, sent to the player in
+`/api/me`). Neither MediaMTX nor the retiming FFmpeg paces what it forwards, and cameras send in
+bursts: a pause around each keyframe, then the backlog at once. A browser's own buffer is about
+50 ms, so every pause showed as a freeze and a jump. Both tracks get the same target so they stay
+together. It hides pauses shorter than the buffer; longer ones, and video the camera never sent,
+still show. HLS is unaffected: its player already holds several seconds. Diagnostics shows how long
+each playing stream is actually held.
+
 ### Sound
 
 Video starts muted, and sound plays only after a viewer clicks the speaker (or presses M in the

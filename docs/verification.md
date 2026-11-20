@@ -476,6 +476,38 @@ Read from the running stack, its audit log and its logs. Nothing was changed.
   `-fpsprobesize 0`, it was ready in 3.1 to 4.0 s over four cold starts with no failures. Not yet
   checked in the Compose stack.
 
+**Live video freezing over WebRTC (2026-11-20, production, real cameras, Chromium; read-only apart from the camera settings named):**
+
+- In the browser: no packets lost and a 40 ms round trip, yet one camera read directly was frozen 37%
+  of the time over 8 minutes and about a third of the frames that arrived were never shown. The
+  browser held about 50 to 75 ms of video.
+- At the server's network card, before MediaMTX: the same camera's data stopped for 0.3 to 2.7 s
+  dozens of times a minute, with no retransmissions and the receive window open, and not in step
+  with other cameras. The pause sits on the keyframe: every 2 s, lasting about the keyframe's size
+  divided by 650 KB/s (0.4 to 0.6 s for a 250 to 400 KB keyframe), then the backlog arrives at once.
+  In bad periods lasting minutes the pauses reached 2 to 3 s and 10 to 35% of the video was never
+  sent. What starts and ends those periods is not known.
+- The cameras are the limit. One whose high stream nobody else read was clean with one reader, ran
+  1.1 s late with two and lost 31% of its video with four, at 100% CPU. Raising one camera's bitrate
+  from 2048 to 4096 and 8192 kbps took its missing video from 11% to 47% and 71% and cut the
+  recorder's own copy from 26 to 5 frames a second. Lowering its resolution by a third roughly
+  halved the pause. Reading over UDP changed nothing.
+- The relay adds nothing: a camera in low light with 53 KB keyframes played with at most 0.2 s
+  between frames through the same MediaMTX and retiming FFmpeg.
+- The recorder's stream for these cameras carries every frame, but on some its timestamps jump an
+  extra 2 s at each keyframe. Not acted on yet.
+- `LIVE_BUFFER_MS`, tried in the browser against a production stream before the code was written,
+  with a 0.6 s pause injected every 2 s into both tracks (the cameras were calm at the time): with
+  no target, 3 freezes in 35 s and frame intervals of 33 ± 17 ms; with 1000 ms on both tracks, no
+  freezes and 33 ± 5 ms, 978 ms of video and 849 ms of sound held, 0.4% of sound concealed. A 1.3 s
+  pause against the same 1000 ms still froze (3 freezes, 37 frames dropped in 13 s).
+- The player itself, in the QA stack (mock mode, MediaMTX 1.21.4, Chromium in the T3 preview): eight
+  wall tiles each reported "held 978 ms" in Diagnostics with the default setting.
+- Not checked: the player against real cameras (production runs the previous build), a bad period
+  with the buffer on, Safari and Firefox (`holdLive` falls back to playing as before where the
+  browser has no such setting, covered by `tests/live-buffer.test.ts` only), and whether a second
+  of delay bothers anyone using sound.
+
 **Diagnostics window (2026-11-18, mock mode, real MediaMTX 1.21.4 on macOS, Chromium in the T3 preview):**
 
 - Opened from the menu on the name with the keyboard (arrow down, Enter) and with the mouse, as the
