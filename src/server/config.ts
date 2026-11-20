@@ -202,6 +202,23 @@ const schema = z.object({
    * 0 turns it off; browsers accept at most 4000.
    */
   LIVE_BUFFER_MS: int(1000, 0).pipe(z.number().max(4000)),
+  /**
+   * A TURN relay (coturn) for live video, so viewers who cannot reach the WebRTC media port still get
+   * real-time video, and the port need not be open to the internet. Host name or IPv4 address only.
+   * Unset: no relay; viewers who cannot reach the port get HLS. See docs/turn.md.
+   */
+  TURN_HOST: z.preprocess((v) => (v === "" ? undefined : v), z.string().regex(/^[A-Za-z0-9.-]+$/, "TURN_HOST must be a host name or IPv4 address, without a scheme or port").optional()),
+  /** coturn's `static-auth-secret`. Browser logins are made from it and last 12 hours. */
+  TURN_SECRET: z.preprocess((v) => (v === "" ? undefined : v), z.string().optional()),
+  /** coturn's plain listening port, UDP and TCP. */
+  TURN_PORT: int(3478, 1),
+  /** coturn's TLS port, for networks that only let HTTPS out. 0 leaves TURN over TLS out. */
+  TURN_TLS_PORT: int(443, 0),
+  /**
+   * Browsers use only the relay, never the media port directly. Off: browsers that can reach the
+   * port (on the office network, say) connect directly, the rest through the relay.
+   */
+  TURN_RELAY_ONLY: bool(false),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   /**
    * The commit this build was made from, shown in the diagnostics window. The image build sets it
@@ -255,6 +272,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     for (const k of ["MEDIAMTX_HOOK_SECRET", "MEDIAMTX_API_SECRET"] as const)
       if (c[k] && c[k].length < MIN_SECRET) problems.push(`${k} must be at least ${MIN_SECRET} characters (openssl rand -hex 24)`);
   }
+  if (!!c.TURN_HOST !== !!c.TURN_SECRET) problems.push("TURN_HOST and TURN_SECRET must be set together");
+  if (c.TURN_SECRET && c.TURN_SECRET.length < MIN_SECRET) problems.push(`TURN_SECRET must be at least ${MIN_SECRET} characters (openssl rand -hex 24)`);
+  if (c.TURN_RELAY_ONLY && !c.TURN_HOST) problems.push("TURN_RELAY_ONLY needs TURN_HOST");
   if (c.UNIFEYE_MODE === "real")
     for (const k of ["PROTECT_HOST", "PROTECT_USERNAME", "PROTECT_PASSWORD"] as const)
       if (!c[k]) problems.push(`${k} is required when UNIFEYE_MODE=real`);

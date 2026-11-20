@@ -244,6 +244,8 @@ relay, last backup). Neither exposes configuration or secrets.
   port must be the same on the outside as inside (no remapping, including on a router). A
   viewer who cannot reach it gets HLS through the HTTPS proxy after about 4 seconds, and that tab
   uses HLS directly for the next 10 minutes.
+- To give viewers off site real-time video without opening 8189 to the internet, add a TURN relay
+  on a VPS: see [turn.md](turn.md).
 - Cloudflare Tunnel can take the place of the reverse proxy: see [cloudflare-tunnel.md](cloudflare-tunnel.md).
 - Nothing else is published. Do not publish 8554, 8888, 8889 or 9997.
 
@@ -270,6 +272,7 @@ relay, last backup). Neither exposes configuration or secrets.
 | `PLAYBACK_WINDOW_SECONDS` | 60 | Size of each recorded-video window |
 | `SCRUB_PRELOAD_MS` | 500 | While someone drags a camera's timeline, how long the playhead must rest before that moment's video starts loading, so letting go there plays sooner. Lower is snappier but asks the recorder for more video that may go unwatched; 0 turns it off |
 | `LIVE_BUFFER_MS` | 1000 | How long a browser holds live video before showing it. Cameras and recorders send in bursts, with a pause around each keyframe; without something in hand the picture freezes and jumps every couple of seconds. Live video runs this far behind real time. Raise it (up to 4000) if video still stutters, lower it for less delay, 0 to turn it off. Takes effect when people reload the page |
+| `TURN_HOST`, `TURN_SECRET` | unset | A TURN relay (coturn) for live video, so viewers off site get real-time video without port 8189 open to the internet. See [turn.md](turn.md), which also covers `TURN_PORT`, `TURN_TLS_PORT` and `TURN_RELAY_ONLY` |
 | `CLIP_MAX_SECONDS` | 7200 | Longest clip a person can save. Clips stream from the recorder to disk, so `/cache` needs room for them (roughly 1–4 GB per hour of video, depending on the camera) |
 | `CLIP_EXPORT_PARALLEL` | 3 | How many five-minute pieces of a long clip are fetched from the recorder at once. Higher is faster if the recorder keeps up |
 | `CLIP_MATCH_RESOLUTION` | on | With adaptive recording, re-encode the parts of a clip recorded only in low resolution at the high-resolution size, so players don't resize the picture partway. Off joins them as recorded |

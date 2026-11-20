@@ -7,6 +7,8 @@ flowchart LR
   B[Browser] -- HTTPS: pages, API, WHEP signalling, HLS, playback --> P[HTTPS reverse proxy]
   P --> A[Unifeye app<br/>Next.js on Node]
   B -. WebRTC media, UDP/TCP 8189 .-> M[MediaMTX]
+  B -. WebRTC media via relay, optional .-> T[TURN relay]
+  M -. connects out, optional .-> T
   A -- control API, WHEP, HLS (internal) --> M
   M -- auth hook for every reader --> A
   A -- OIDC: discovery, token, JWKS --> Z[OIDC provider]
@@ -18,7 +20,8 @@ flowchart LR
   A --- C[(bounded cache /cache)]
 ```
 
-Only the reverse proxy and MediaMTX's WebRTC media port face the network. MediaMTX's API, WHEP,
+Only the reverse proxy and MediaMTX's WebRTC media port face the network; with a TURN relay
+(below), the media port need only face the local network. MediaMTX's API, WHEP,
 HLS and RTSP listeners are internal. Protect credentials and RTSPS URLs never leave the server.
 
 | Data | Owner | What Unifeye does |
@@ -411,7 +414,7 @@ existing sessions are not extended, and a session that could not be re-validated
    reader would have no cookie, and MediaMTX refuses a playlist or segment from one with 401.
 
 WebRTC signalling is proxied; media flows from MediaMTX to the browser over ICE on port 8189
-(`WEBRTC_PORT` in Compose). If no media arrives within 4 seconds, the player tears the WebRTC session
+(`WEBRTC_PORT` in Compose), or through a TURN relay (next paragraph). If no media arrives within 4 seconds, the player tears the WebRTC session
 down and switches to HLS, and the tab skips WebRTC for 10 minutes (`src/ui/live.tsx`). To test a
 network, the camera page takes `?stream=webrtc` or `?stream=hls`: HLS then never tries WebRTC, and
 WebRTC never falls back to HLS (it keeps retrying) and does not start the 10-minute pause. It
@@ -428,6 +431,26 @@ kicks that session's readers for the stream and frees the slot at once. Without 
 taken until the relay closes the idle reader and a sweep notices (30 to 60 s), and changing views on
 HLS refused the new tiles. A tile refused for now (429, the stream limit or the rate limit) waits
 5 seconds and tries again without counting it as a failed attempt.
+
+**TURN relay (optional, `TURN_HOST`; setup in [turn.md](turn.md)).** coturn with a secret shared with
+Unifeye (`TURN_SECRET`). Before opening a WebRTC connection the browser asks `GET /api/media/ice`
+(`src/ui/ice.ts`, reused across tiles until 30 minutes before expiry) for relay logins, which
+`CoturnProvider` (`src/server/media/turn.ts`) makes from the secret in coturn's `use-auth-secret`
+format, valid 12 hours, labelled with a hash of the session, never its id. Someone who can see no
+camera gets an empty answer, so a login is never handed out for anything but watching. MediaMTX gets
+the relay from Compose (`webrtcICEServers2`, `AUTH_SECRET` mode: it makes its own logins) and
+gathers relay candidates too, so the two ends can meet at the relay with no inbound port at
+either. The relay forwards encrypted media only; tickets, the hook and the sweep are unchanged, and
+kicking a reader ends its relayed stream like any other. `TURN_RELAY_ONLY` sets the browser's
+`iceTransportPolicy` to `relay`. Unifeye sends the relay a STUN Binding request every 30 seconds
+(`stunPing`); while it does not answer, `/api/media/ice` says `relayDown` and relay-only browsers go
+straight to HLS. The diagnostics window's Video relay row asks for a relay address from the browser through each
+relay URL with `iceTransportPolicy: "relay"` and no stream, so it tests only this network's path
+to the relay and the login; with relay-only it skips the direct TCP test, and skips WebRTC
+altogether while the relay is down. Without relay-only, a dead relay makes MediaMTX wait about 8 seconds for its relay
+candidates before answering each offer (measured with MediaMTX 1.21.4). MediaMTX's relay setting is
+fixed at start-up because changing it through the control API restarts its WebRTC listener, which
+drops every WebRTC reader.
 
 Over WebRTC the player asks the browser to hold `LIVE_BUFFER_MS` of video and sound before playing
 them (`holdLive` in `src/ui/live-buffer.ts`, 1000 by default, 0 off, sent to the player in

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, ApiError, mediaUrl, previewToken } from "./api";
 import { useApp } from "./app";
 import { recordProblem, recordRequestFailure, registerTile, type TileHandle } from "./diagnostics";
+import { rtcConfiguration } from "./ice";
 import { holdLive } from "./live-buffer";
 import { preferHlsJs, stallWatch } from "./live-stall";
 import { LoadingSpinner } from "./recorded-video";
@@ -21,8 +22,8 @@ const SKIP_KEY = "unifeye.webrtc-unreachable-until";
  */
 const BUSY_RETRY_MS = 5000;
 /**
- * WebRTC media goes to port 8189 directly, which is not reachable from every network (for example
- * through a tunnel that only carries HTTPS). Once one tile finds that out, the others, and this tab
+ * WebRTC media goes to port 8189 directly, or through the relay when one is set up, and neither is
+ * reachable from every network (for example through a tunnel that only carries HTTPS). Once one tile finds that out, the others, and this tab
  * after a reload, skip straight to HLS instead of each waiting for the same timeout.
  */
 let skipUntil = 0;
@@ -210,7 +211,11 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
     let connected = false, answeredAt = 0;
     (async () => {
       try {
-        pc = new RTCPeerConnection();
+        const rtc = await rtcConfiguration();
+        if (closed) return;
+        // The relay is the only way in and it isn't answering. Not remembered like `unreachable`: the server knows when it is back.
+        if (!rtc && force !== "webrtc") { recordProblem({ kind: "webrtc", cameraId, title: "Relay not answering, switched to HLS" }); void viaHls(); return; }
+        pc = new RTCPeerConnection(rtc ?? {});
         diag.current?.update({ pc });
         pc.addTransceiver("video", { direction: "recvonly" });
         pc.addTransceiver("audio", { direction: "recvonly" });

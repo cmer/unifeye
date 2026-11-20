@@ -1,6 +1,7 @@
 # Unifeye: one application instance plus MediaMTX. Start with:  docker compose up -d
 # Put an HTTPS reverse proxy in front of 127.0.0.1:3000. Only two things face the network:
-# that proxy, and the WebRTC media port (WEBRTC_PORT, 8189 by default, UDP and TCP).
+# that proxy, and the WebRTC media port (WEBRTC_PORT, 8189 by default, UDP and TCP). With a TURN
+# relay (docs/turn.md), the media port need only be reachable from the local network.
 services:
   app:
     build:
@@ -48,6 +49,23 @@ services:
       # The WebRTC media port. MediaMTX advertises the port it listens on, so the published port must match it.
       MTX_WEBRTCLOCALUDPADDRESS: :${WEBRTC_PORT:-8189}
       MTX_WEBRTCLOCALTCPADDRESS: :${WEBRTC_PORT:-8189}
+      # Optional TURN relay (docs/turn.md). MediaMTX connects out to it and makes its own logins from the
+      # shared secret, so viewers can get real-time video without reaching the port above.
+      TURN_HOST: ${TURN_HOST:-}
+      TURN_PORT: ${TURN_PORT:-3478}
+      TURN_SECRET: ${TURN_SECRET:-}
+    # MediaMTX refuses an empty relay entry, so the relay is only added when TURN_HOST is set.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ -n "$$TURN_HOST" ]; then
+          export MTX_WEBRTCICESERVERS2_0_URL="turn:$$TURN_HOST:$$TURN_PORT?transport=udp"
+          export MTX_WEBRTCICESERVERS2_0_USERNAME=AUTH_SECRET
+          export MTX_WEBRTCICESERVERS2_0_PASSWORD="$$TURN_SECRET"
+        fi
+        unset TURN_SECRET
+        exec /mediamtx
     volumes:
       - ./docker/mediamtx.yml:/mediamtx.yml:ro
     ports:
