@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 1.5.0 - 2026-11-20
+
+### Added
+- Live video can go through a relay server (TURN) that you run on a VPS, so people away from the office get real-time video without opening a port on your network, including behind Cloudflare Tunnel. If the relay stops answering, live video plays a few seconds behind until it's back. The diagnostics window shows whether the relay is answering and whether your network can reach it. See docs/turn.md.
+- The Live label in the player says whether real-time video comes straight from the server (direct) or through the video relay (relay).
+- When the sidebar is hidden, move the pointer to the left edge of the screen to show it. On phones and tablets, swipe in from the left edge or tap the small tab there.
+
 ## 1.4.2 - 2026-11-20
 
 ### Fixed
