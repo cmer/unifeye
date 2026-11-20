@@ -2,7 +2,7 @@
 /**
  * The diagnostics window. It runs its checks when it opens and on "Check again": the server and the
  * recorder, download speed, refusals, test connections over WebRTC (UDP and TCP separately) and HLS,
- * what this browser can decode, and what every live tile is doing. Its own requests are not added to
+ * what this browser can decode and whether it lets video start on its own, and what every live tile is doing. Its own requests are not added to
  * the problem log (they report in their own rows), and everything a test opens is released, also when
  * the window closes mid-test.
  *
@@ -13,11 +13,12 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { testAutoplay, type Autoplay } from "./autoplay-probe";
 import { api, ApiError, fmtShort, previewToken, type Camera } from "./api";
 import { useApp } from "./app";
 import {
-  camerasFor, candidateLabel, clockOffset, codecName, filterCandidates, fmtMbps, fmtMs, formatReport, groupRefusals, inboundVideo,
-  liveTiles, mayReleaseHls, median, MIN_STREAM_MBPS, perStreamMbps, parsePlaylist, parseUserAgent, pickTestStream, problemLog, refusalsSince, refusalText, REFUSAL_WINDOW_MS, selectedPair, statList,
+  browserRow, camerasFor, candidateLabel, clockOffset, codecName, filterCandidates, fmtMbps, fmtMs, formatReport, groupRefusals, inboundVideo,
+  liveTiles, mayReleaseHls, median, MIN_STREAM_MBPS, perStreamMbps, parsePlaylist, pickTestStream, problemLog, refusalsSince, refusalText, REFUSAL_WINDOW_MS, selectedPair, statList,
   verdict, versionRow, type CheckRow, type Pair, type ProblemEntry, type ProblemId, type Section, type Stat, type Status, type TestStream, type TileInfo, type UpdateInfo,
 } from "./diagnostics";
 import { resumeWebrtc, webrtcPause } from "./live";
@@ -45,7 +46,7 @@ interface Results {
   download?: { mbps: number; bytes: number; ms: number } | Failed;
   stream?: TestStream | null;
   udp?: WebrtcResult; tcp?: WebrtcResult; hls?: HlsResult;
-  codecs?: Codecs; playing?: Playing[]; problems?: readonly ProblemEntry[];
+  codecs?: Codecs; autoplay?: Autoplay; playing?: Playing[]; problems?: readonly ProblemEntry[];
 }
 interface Run { started: number; finished?: number; r: Results }
 
@@ -354,10 +355,12 @@ function build(r: Results, running: boolean, tz: string, onTryNow: () => void) {
   }
 
   // This device
-  const ua = navigator.userAgent, p = parseUserAgent(ua);
   const conn = (navigator as unknown as { connection?: { type?: string; effectiveType?: string; downlink?: number; rtt?: number } }).connection;
   const net = conn ? (conn.type && conn.type !== "unknown" ? ({ wifi: "Wi-Fi", ethernet: "Ethernet", cellular: "Mobile data" } as Record<string, string>)[conn.type] ?? conn.type : conn.effectiveType ? `network like ${conn.effectiveType}` : null) : null;
-  device.push({ id: "browser", label: "Browser", status: "info", value: [p.browser, p.os].filter(Boolean).join(" · ") || "Unknown browser", detail: [net, document.visibilityState === "visible" ? "tab visible" : "tab hidden"].filter(Boolean).join(" · "), tech: [...(conn ? [`connection ${JSON.stringify({ type: conn.type, effectiveType: conn.effectiveType, downlink: conn.downlink, rtt: conn.rtt })}`] : [])] });
+  const MS = (window as unknown as { ManagedMediaSource?: unknown }).ManagedMediaSource ?? (typeof MediaSource !== "undefined" ? MediaSource : undefined);
+  const { problems: browserProblems, ...browser } = browserRow({ ua: navigator.userAgent, network: net, webrtc: typeof RTCPeerConnection !== "undefined", mse: !!MS, nativeHls: r.codecs ? r.codecs.nativeHls : true, autoplay: r.autoplay });
+  for (const id of browserProblems) problems.add(id);
+  device.push({ id: "browser", label: "Browser", ...browser, tech: [...(browser.tech ?? []), ...(conn ? [`connection ${JSON.stringify({ type: conn.type, effectiveType: conn.effectiveType, downlink: conn.downlink, rtt: conn.rtt })}`] : [])] });
   if (r.clockMs == null) device.push(info || r.info ? { id: "clock", label: "Clock", status: "info", value: "Couldn't check" } : pending("clock", "Clock"));
   else {
     const off = Math.abs(r.clockMs) / 1000;
@@ -409,6 +412,7 @@ export function DiagnosticsDialog({ onClose }: { onClose: () => void }) {
         infoP, camsP,
         roundTrips(signal).then((rtt) => apply({ rtt })),
         codecs().then((c) => apply({ codecs: c }), () => {}),
+        testAutoplay().then((autoplay) => apply({ autoplay }), () => apply({ autoplay: "unknown" })),
         samplePlaying(signal).then((playing) => apply({ playing }), () => apply({ playing: [] })),
       ]);
       if (signal.aborted) return;

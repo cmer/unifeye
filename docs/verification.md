@@ -532,6 +532,13 @@ Read from the running stack, its audit log and its logs. Nothing was changed.
   error reports, real 429s shown in the window (only through the unit tests), and whether fetching the
   top playlist again through a reader a tile is using ever disturbs that tile in MediaMTX.
 
+**Browser row in Diagnostics (2026-11-20):** `browserRow` and `isOutdated` are unit-tested
+(`tests/diagnostics.test.ts`). The embedded autoplay clip decodes (16×16) and plays muted in headless
+Google Chrome on macOS, with autoplay set to allowed and to "user gesture required". Not checked: a
+refusal in a real browser (iOS Low Power Mode, Safari's "Never Auto-Play"), Firefox's
+`getAutoplayPolicy` answer, and whether the click that opens the window lets Safari play the clip when
+autoplay is otherwise blocked.
+
 ## Not verified
 
 | Area | Why | What could go wrong |

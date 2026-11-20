@@ -581,6 +581,13 @@ as tiles:
   the session already holds (so no extra slot is taken), and releases the stream
   (`DELETE /api/media/live/:id/hls/:q`) only if the test opened it and no tile in the tab has started
   it since, because that release ends every HLS reader the session has for the stream.
+- The Browser row (`browserRow` in `src/ui/diagnostics.ts`) is green when the browser can play live
+  video here: it has WebRTC or a way to play HLS (Media Source or native HLS), muted video may start
+  on its own, and it is no older than `MIN_BROWSER` (judged by the system version on iPhone and iPad,
+  where every browser runs on Safari). The autoplay test (`src/ui/autoplay-probe.ts`) asks Firefox's
+  `getAutoplayPolicy`, and elsewhere plays an embedded one-frame clip muted; only a `NotAllowedError`
+  counts as blocked. A refusal (iOS Low Power Mode, Safari's "Never Auto-Play") leaves every tile
+  waiting, so the verdict names it.
 - The tab keeps, in memory only (`src/ui/diagnostics.ts`), the last 50 problems (failed API requests
   with their `x-request-id`, WebRTC timeouts and switches to HLS, HLS player errors, tiles that gave
   up), the 429s of the last 10 minutes, and a registry of the live tiles with their peer connection or

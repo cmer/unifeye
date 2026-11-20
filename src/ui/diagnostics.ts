@@ -167,6 +167,42 @@ export function parseUserAgent(ua: string): { browser: string | null; os: string
   return { browser, os };
 }
 
+/**
+ * The oldest version of each browser Unifeye is checked against: late 2023, when all of them had the
+ * WebRTC, Media Source and video features live video uses. On iPhone and iPad every browser runs on
+ * the system's Safari, so the system version is what counts there.
+ */
+export const MIN_BROWSER: Record<string, number> = { Chrome: 120, Edge: 120, Opera: 106, Firefox: 120, Safari: 17, iOS: 17, iPadOS: 17 };
+/** True when the user agent names a browser (or iOS) older than `MIN_BROWSER`; false when it is newer or unknown. */
+export function isOutdated(p: { browser: string | null; os: string | null }): boolean {
+  const [name, ver] = (/^(iOS|iPadOS) /.test(p.os ?? "") ? p.os : p.browser)?.split(" ") ?? [];
+  const min = name ? MIN_BROWSER[name] : undefined, major = Number.parseInt(ver ?? "", 10);
+  return min != null && Number.isFinite(major) && major < min;
+}
+
+/** What the Browser row looks at. `autoplay` is missing while the test runs. */
+export interface BrowserFacts {
+  ua: string; network?: string | null;
+  webrtc: boolean; mse: boolean; nativeHls: boolean;
+  autoplay?: "allowed" | "blocked" | "unknown";
+}
+/**
+ * The Browser row: green when this browser can play live video here. Red when it has neither WebRTC
+ * nor any way to play HLS; amber when muted video can't start on its own (iOS Low Power Mode, a site
+ * setting) or the browser is old. An autoplay test that could not tell is not a reason for concern.
+ */
+export function browserRow(f: BrowserFacts): Pick<CheckRow, "status" | "value" | "detail" | "tech"> & { problems: ProblemId[] } {
+  const p = parseUserAgent(f.ua), value = [p.browser, p.os].filter(Boolean).join(" \u00b7 ") || "Unknown browser";
+  const tech = [`WebRTC ${f.webrtc ? "yes" : "no"}, Media Source ${f.mse ? "yes" : "no"}, native HLS ${f.nativeHls ? "yes" : "no"}`, `muted autoplay: ${f.autoplay ?? "not tested"}`];
+  const problems: ProblemId[] = [], notes: string[] = [];
+  let status: Status = "ok";
+  if (!f.webrtc && !f.mse && !f.nativeHls) { problems.push("browser_unsupported"); notes.push("Can't play live video. Try Chrome, Edge, Firefox or Safari."); status = "bad"; }
+  if (f.autoplay === "blocked") { problems.push("autoplay_blocked"); notes.push("Video can't start on its own."); if (status === "ok") status = "warn"; }
+  if (isOutdated(p)) { problems.push("browser_outdated"); notes.push("An update would help."); if (status === "ok") status = "warn"; }
+  if (status === "ok" && !f.autoplay) status = "pending";
+  return { status, value, detail: [...notes, f.network].filter(Boolean).join(" \u00b7 ") || undefined, tech, problems };
+}
+
 export const fmtMs = (ms: number) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms)} ms`);
 export const fmtMbps = (mbps: number) => (mbps < 1 ? `${Math.round(mbps * 1000)} kbps` : `${mbps >= 10 ? Math.round(mbps).toLocaleString("en-US") : mbps.toFixed(1)} Mbps`);
 
@@ -199,6 +235,8 @@ export const PROBLEMS = {
   relay_down: { title: "Live video isn't available right now", hint: "The live video service isn't answering. Recordings still work. Let your administrator know.", short: "the live video service isn't answering", severe: true },
   no_live_video: { title: "Live video can't get through on this network", hint: "Neither WebRTC nor HLS worked. Try another network, or let your administrator know.", short: "live video can't get through", severe: true },
   streams_full: { title: "This browser has too many streams open", hint: "Close other Unifeye tabs or windows to free some up.", short: "this browser has too many streams open", severe: true },
+  browser_unsupported: { title: "This browser can't play live video", hint: "Try a current version of Chrome, Edge, Firefox or Safari.", short: "this browser can't play live video", severe: true },
+  autoplay_blocked: { title: "Video can't start on its own here", hint: "Turn off Low Power Mode, or let this site play video automatically in your browser's settings.", short: "video can't start on its own", severe: true },
   no_h264: { title: "This browser can't play H.264 video", hint: "Try a current version of Chrome, Edge, Firefox or Safari.", short: "this browser can't play H.264", severe: true },
   tiles_failing: { title: "Some cameras can't connect", hint: "They keep trying on their own. Check again in a minute.", short: "some cameras can't connect", severe: true },
   refused: { title: "The server turned some requests away", hint: "This usually clears within a minute. If it keeps happening, close other Unifeye tabs.", short: "some requests were turned away", severe: false },
@@ -207,6 +245,7 @@ export const PROBLEMS = {
   slow_download: { title: "This connection is slow for live video", hint: "Fewer cameras at once will play more smoothly.", short: "the connection is slow", severe: false },
   webrtc_tcp_only: { title: "WebRTC only works over TCP here", hint: "Video plays, but may lag a little on a busy network.", short: "WebRTC only works over TCP", severe: false },
   webrtc_paused: { title: "WebRTC works again", hint: "Choose Try now to switch back to real-time video.", short: "WebRTC is paused but works", severe: false },
+  browser_outdated: { title: "This browser is out of date", hint: "Update it to keep live video working well.", short: "the browser is out of date", severe: false },
   clock_off: { title: "This device's clock is off", hint: "Times may not match the recordings. Set the clock to update automatically.", short: "the device clock is off", severe: false },
 } as const;
 export type ProblemId = keyof typeof PROBLEMS;
