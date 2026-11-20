@@ -158,8 +158,8 @@ and Cloudflare does not cache it. Do not add a "Cache Everything" rule for this 
   video waits while Unifeye fetches that minute from the recorder. This is normally a few seconds,
   but a slow or overloaded UNVR could exceed the limit and the seek would fail.
 - **Rate limits are per person once signed in.** Unifeye counts signed-in requests per session, so
-  people behind one office or VPN address do not share a limit. HLS has its own budget, 2,640
-  requests a minute with the default `MAX_WALL_STREAMS`; a 9-tile wall on HLS makes about 540
+  people behind one office or VPN address do not share a limit. HLS has its own budget, 6,240
+  requests a minute with the default `MAX_WALL_STREAMS`; a 24-tile wall on HLS makes about 1,440
   (about 60 per tile: a video and a sound playlist and a segment of each every 4 seconds). Sign-in
   pages are limited per address, taken from the last `X-Forwarded-For` entry, which `cloudflared`
   sets to the visitor's address.

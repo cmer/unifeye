@@ -203,9 +203,9 @@ count per client address; a valid session is never refused because of its addres
 | `unauth` (failed authentication) | 600 | address |
 | `read` / `write` | 1,200 / 240 | session |
 | `media` (WebRTC set-up, playback, thumbnails, exports, the diagnostics speed test) | 600 | session |
-| `stills` (camera snapshots, live and from a recording) | 60 × the stream limit, 1,320 by default | session |
+| `stills` (camera snapshots, live and from a recording) | 60 × the stream limit, 3,120 by default | session |
 | `speedtest` (the diagnostics download sample, on top of `media`) | 10 | session |
-| `hls` (playlists and segments) | 120 × the stream limit, 2,640 by default | session |
+| `hls` (playlists and segments) | 120 × the stream limit, 6,240 by default | session |
 
 An HLS stream on Protect cameras polls a video and a sound playlist and fetches a segment of each
 every 4 seconds, about 60 requests a minute (measured 2026-11-17: 29 playlist requests per tile per
@@ -418,7 +418,7 @@ WebRTC never falls back to HLS (it keeps retrying) and does not start the 10-min
 changes only how the browser receives video; permission checks are the same either way. Tearing down a WHEP session frees its slot at
 once, before Unifeye asks the relay to close it, so tiles opened in the same moment (changing views)
 are not refused. A tile that stops while its offer is still on its way tears the session down as soon as the
-answer arrives, and an offer that fails after the hook admitted its reader frees that slot at once. The per-session limit, 2 × (`MAX_WALL_STREAMS` + 2) (22 by default), is room for two tabs, each with a
+answer arrives, and an offer that fails after the hook admitted its reader frees that slot at once. The per-session limit, 2 × (`MAX_WALL_STREAMS` + 2) (52 by default), is room for two tabs, each with a
 full wall plus the player and handovers; it also covers a reload whose old streams are still being
 released. Tiles release their streams on `pagehide` too, with `keepalive`, because React does not
 unmount on a reload or a closed tab. The limit counts distinct streams (camera and quality),
@@ -695,7 +695,10 @@ or below are got ready ahead (`src/ui/wall-warm.ts`): once every tile on screen 
 nearest that do not play have their window's low-resolution description asked for (and the next
 window's, within 20 seconds of its end), which has the server export and cache it without the browser
 downloading anything, so scrolling to them starts them from the cache. A tile that moves away has its
-request cancelled. The timeline's drag preload warms them too. The wall's time is
+request cancelled. The timeline's drag preload warms them too. On the live wall and when rewinding, pointing
+at a tile that is not playing (one past `MAX_WALL_STREAMS` live, or one the visibility check missed)
+starts it; the two most recent stay started until no part of them is on screen, within the two
+streams per tab the session limit leaves beside the wall. The wall's time is
 the median of the playing tiles' times, and a tile more than three seconds off is moved back to it, at
 most once every ten seconds. A tile that starts playing later (scrolled into view, a filter changed)
 starts at the wall's time. Dragging works as in the player, with stills on every tile on screen, paced

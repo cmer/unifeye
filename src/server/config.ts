@@ -169,7 +169,8 @@ const schema = z.object({
   MEDIAMTX_HOOK_SECRET: z.string().optional(),
   /** Username Unifeye uses for the MediaMTX control API (checked by the same hook). */
   MEDIAMTX_API_SECRET: z.string().optional(),
-  MAX_WALL_STREAMS: int(9, 1),
+  /** Live tiles on screen that play at once; off-screen tiles never play, and the rest show stills. */
+  MAX_WALL_STREAMS: int(24, 1),
   CLIP_MAX_SECONDS: int(7200, 5),
   /** A long clip is fetched from the recorder in 5-minute pieces, this many at a time. */
   CLIP_EXPORT_PARALLEL: int(3, 1),
