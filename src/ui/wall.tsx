@@ -32,6 +32,11 @@ export function Wall({ viewId }: { viewId?: string }) {
   const [visible, setVisible] = useState<string[]>([]);
   /** Tiles within a screen of the visible area (on screen included), for warming while rewinding. */
   const [near, setNear] = useState<string[]>([]);
+  /**
+   * Tiles started by pointing at them (most recent last): one past the stream limit, or one the
+   * visibility check missed. Each stays until it scrolls off screen or two newer ones replace it.
+   */
+  const [hovered, setHovered] = useState<string[]>([]);
   /** Which streaming tiles carry sound (missing or null while unknown), and the one camera playing it. */
   const [audio, setAudio] = useState<Record<string, boolean | null>>({});
   const sound = useSound();
@@ -67,16 +72,23 @@ export function Wall({ viewId }: { viewId?: string }) {
     const el = root.current;
     if (!el) return;
     const seen = new Set<string>();
-    const io = new IntersectionObserver((es) => { for (const e of es) { const id = (e.target as HTMLElement).dataset.cam!; if (e.isIntersecting) seen.add(id); else seen.delete(id); } setVisible([...seen]); }, { root: el, threshold: 0.2 });
+    // A tile counts as on screen from a fifth showing; one started by pointing at it stops once none of it shows.
+    const io = new IntersectionObserver((es) => {
+      const gone: string[] = [];
+      for (const e of es) { const id = (e.target as HTMLElement).dataset.cam!; if (e.isIntersecting && e.intersectionRatio >= 0.2) seen.add(id); else seen.delete(id); if (!e.isIntersecting) gone.push(id); }
+      setVisible([...seen]);
+      if (gone.length) setHovered((h) => (h.some((x) => gone.includes(x)) ? h.filter((x) => !gone.includes(x)) : h));
+    }, { root: el, threshold: [0, 0.2] });
     // Tiles within a screen above or below, warmed while rewinding so scrolling to them is quick.
     const nearSet = new Set<string>();
     const nearIo = new IntersectionObserver((es) => { for (const e of es) { const id = (e.target as HTMLElement).dataset.cam!; if (e.isIntersecting) nearSet.add(id); else nearSet.delete(id); } setNear([...nearSet]); }, { root: el, rootMargin: "100% 0px" });
     el.querySelectorAll("[data-cam]").forEach((n) => { io.observe(n); nearIo.observe(n); });
     return () => { io.disconnect(); nearIo.disconnect(); };
   }, [shown, cols]);
-  const streaming = useMemo(() => new Set(shown.filter((c) => visible.includes(c.id)).slice(0, me.limits.maxStreams).map((c) => c.id)), [shown, visible, me.limits.maxStreams]);
+  const extra = useMemo(() => hovered.filter((id) => shown.some((c) => c.id === id)), [hovered, shown]);
+  const streaming = useMemo(() => new Set([...shown.filter((c) => visible.includes(c.id)).slice(0, me.limits.maxStreams).map((c) => c.id), ...extra]), [shown, visible, extra, me.limits.maxStreams]);
   // Rewinding: every tile on screen plays the same moment from the recording, in low resolution (`RecordedVideo`'s `low`).
-  const playIds = useMemo(() => shown.filter((c) => visible.includes(c.id)).map((c) => c.id), [shown, visible]);
+  const playIds = useMemo(() => shown.filter((c) => visible.includes(c.id) || extra.includes(c.id)).map((c) => c.id), [shown, visible, extra]);
   const shownIds = useMemo(() => shown.map((c) => c.id), [shown]);
   // Opening a camera from a rewound wall keeps the moment in the address (`at`), so coming back carries on from there.
   const [startAt] = useState(() => Number(loc.query.get("at")) || undefined);
@@ -122,7 +134,8 @@ export function Wall({ viewId }: { viewId?: string }) {
         const st = past ? rw.tileStart(c.id) : null, playRec = !!st && !down && playIds.includes(c.id), onScreen = visible.includes(c.id);
         const still = rw.open && onScreen && !down ? rw.stillAt(c.id) : null, onAudio = (h: boolean | null) => setAudio((a) => (a[c.id] === h ? a : { ...a, [c.id]: h }));
         return (
-        <div key={c.id} data-cam={c.id} className="group relative aspect-video overflow-hidden bg-black text-white">
+        <div key={c.id} data-cam={c.id} className="group relative aspect-video overflow-hidden bg-black text-white"
+          onPointerEnter={() => { if (!(past ? playIds.includes(c.id) : streaming.has(c.id))) setHovered((h) => [...h.filter((x) => x !== c.id), c.id].slice(-2)); }}>
           <button onClick={() => open(c.id)} aria-label={`Open ${c.name}`} className="peer absolute inset-0 text-left outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-inset">
             {!past ? <LiveVideo cameraId={c.id} quality="wall" active={streaming.has(c.id) && !down} online={c.online && !down} sound={sound === c.id} onAudio={onAudio} onGone={() => { setTick((n) => n + 1); void reload(); }} />
               : playRec ? <RecordedVideo key={st.key} cameraId={c.id} W={me.limits.windowSeconds * 1000} startMs={st.ms} playing={rw.playing && !rw.dragging} speed={rw.speed} fit="object-cover" low sound={sound === c.id} onAudio={onAudio} {...rw.tile(c.id)} />

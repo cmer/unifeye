@@ -695,7 +695,10 @@ or below are got ready ahead (`src/ui/wall-warm.ts`): once every tile on screen 
 nearest that do not play have their window's low-resolution description asked for (and the next
 window's, within 20 seconds of its end), which has the server export and cache it without the browser
 downloading anything, so scrolling to them starts them from the cache. A tile that moves away has its
-request cancelled. The timeline's drag preload warms them too. The wall's time is
+request cancelled. The timeline's drag preload warms them too. On the live wall and when rewinding, pointing
+at a tile that is not playing (one past `MAX_WALL_STREAMS` live, or one the visibility check missed)
+starts it; the two most recent stay started until no part of them is on screen, within the two
+streams per tab the session limit leaves beside the wall. The wall's time is
 the median of the playing tiles' times, and a tile more than three seconds off is moved back to it, at
 most once every ten seconds. A tile that starts playing later (scrolled into view, a filter changed)
 starts at the wall's time. Dragging works as in the player, with stills on every tile on screen, paced
