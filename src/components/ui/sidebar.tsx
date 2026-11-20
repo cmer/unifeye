@@ -31,6 +31,9 @@ const SIDEBAR_WIDTH = "16rem"
 const SIDEBAR_WIDTH_MOBILE = "18rem"
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
+// How close to the left edge of the page (px) the mouse must rest, and for how long, to show a closed sidebar.
+const EDGE_ZONE = 40
+const EDGE_DWELL_MS = 200
 
 type SidebarContextProps = {
   state: "expanded" | "collapsed"
@@ -217,16 +220,47 @@ function Sidebar({
   const later = (fn: () => void, ms: number) => { clearTimeout(hover.current); hover.current = setTimeout(fn, ms) }
   const stop = () => clearTimeout(hover.current)
   const hidden = isMobile ? !openMobile : state === "collapsed" && !peek
-  // A small tab on the left edge for touch screens, where there is no pointer to rest on the edge.
+
+  // Resting the mouse near the left edge of the page shows the closed sidebar over the page.
+  // The zone is wider than a sliver because the page often doesn't start at the screen edge
+  // (a browser sidebar, a window that isn't maximized), so the pointer can't be pinned there.
+  // It listens on the window rather than covering the edge, so nothing underneath is blocked.
+  const edgeHidden = !isMobile && hidden
+  React.useEffect(() => {
+    if (!edgeHidden) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const move = (e: PointerEvent) => {
+      if (e.pointerType !== "mouse" || e.buttons) return
+      // Resting on the sidebar button itself should not open the sidebar under the pointer.
+      const onTrigger = e.target instanceof Element && e.target.closest("[data-sidebar=trigger]")
+      if (e.clientX <= EDGE_ZONE && !onTrigger) { if (!timer) timer = setTimeout(() => setPeek(true), EDGE_DWELL_MS) }
+      else { clearTimeout(timer); timer = undefined }
+    }
+    const away = () => { clearTimeout(timer); timer = undefined }
+    window.addEventListener("pointermove", move)
+    document.documentElement.addEventListener("pointerleave", away)
+    window.addEventListener("blur", away)
+    return () => {
+      away()
+      window.removeEventListener("pointermove", move)
+      document.documentElement.removeEventListener("pointerleave", away)
+      window.removeEventListener("blur", away)
+    }
+  }, [edgeHidden, setPeek])
+
+  // A tab on the left edge for touch screens. any-pointer, not pointer: some phones and
+  // foldables report a pen or trackpad as their main pointer while still having a touch screen.
   const handle = hidden && (
     <button
       type="button"
       data-slot="sidebar-handle"
       aria-label="Show sidebar"
       onClick={reveal}
-      className="fixed top-1/2 left-0 z-40 hidden h-16 w-5 -translate-y-1/2 items-center pl-1 outline-none pointer-coarse:flex"
+      className="fixed top-1/2 left-0 z-40 hidden h-20 w-6 -translate-y-1/2 items-center outline-none any-pointer-coarse:flex"
     >
-      <span className="h-10 w-1 rounded-full bg-foreground/35 shadow-[0_0_0_1px_rgb(0_0_0/0.15)]" />
+      <span className="flex h-14 w-3 items-center justify-center rounded-r-md border border-l-0 border-border bg-background/90 shadow-md backdrop-blur">
+        <span className="h-8 w-0.5 rounded-full bg-foreground/60" />
+      </span>
     </button>
   )
 
@@ -278,16 +312,6 @@ function Sidebar({
   return (
     <>
     {handle}
-    {/* Resting the pointer on the left edge of the screen shows the closed sidebar over the page. */}
-    {hidden && (
-      <div
-        aria-hidden
-        data-slot="sidebar-edge"
-        className="fixed inset-y-0 left-0 z-40 hidden w-1 md:block"
-        onPointerEnter={(e) => { if (e.pointerType === "mouse") later(() => setPeek(true), 120) }}
-        onPointerLeave={stop}
-      />
-    )}
     {peeking && <div aria-hidden className="fixed inset-0 z-40 hidden md:block" onPointerDown={() => setPeek(false)} />}
     <div
       className="group peer hidden text-sidebar-foreground md:block"
