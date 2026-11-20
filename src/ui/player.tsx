@@ -45,6 +45,9 @@ export function Player({ cameraId }: { cameraId: string }) {
   const recording = useRecording();
   const W = me.limits.windowSeconds * 1000;
   const startAt = Number(loc.query.get("t")) || 0;
+  /** `?stream=webrtc` or `?stream=hls` uses only that way of sending live video, to test a network. */
+  const forced = loc.query.get("stream");
+  const force: Transport | undefined = forced === "webrtc" || forced === "hls" ? forced : undefined;
   const [cam, setCam] = useState<Camera | null | "gone">(null);
   const [live, setLive] = useState(!startAt);
   const [via, setVia] = useState<LiveInfo | null>(null);
@@ -301,7 +304,7 @@ export function Player({ cameraId }: { cameraId: string }) {
 
   return (
     <div ref={box} className="relative min-h-0 flex-1 overflow-hidden bg-black text-white">
-      {live ? <LiveVideo cameraId={cameraId} quality="focus" active={!down} online={cam.online && !down} onTransport={setVia} sound={soundOn} onAudio={setLiveAudio} onMedia={setLiveEl} />
+      {live ? <LiveVideo cameraId={cameraId} quality="focus" active={!down} online={cam.online && !down} onTransport={setVia} force={force} sound={soundOn} onAudio={setLiveAudio} onMedia={setLiveEl} />
         : <RecordedVideo key={target.n} cameraId={cameraId} W={W} startMs={target.ms} playing={playing} speed={speed} sound={soundOn} onTime={setT} onEnd={seek}
             onMissing={onMissing} onSkip={skipped} onHoles={addHoles} onAudio={setRecAudio} onMedia={setRecEl} onPlaying={() => setScrub((p) => (p?.held ? null : p))} />}
       {scrub && !down && !toLive && !(scrub.held && (missing || live)) && (
@@ -325,7 +328,7 @@ export function Player({ cameraId }: { cameraId: string }) {
       <div className={`absolute inset-x-0 top-0 flex items-center gap-2.5 bg-gradient-to-b from-black/70 to-transparent px-4 pt-3.5 pb-10 transition-opacity ${idle ? "opacity-0" : ""}`}>
         <Button variant="ghost" size="icon" className={ghost} aria-label="Back to cameras" onClick={back}><ArrowLeft /></Button>
         <b className="truncate text-[15px] font-semibold">{cam.name}</b>
-        {showLive ? <LiveLabel info={via} /> : <span className="text-xs text-zinc-300">Recorded</span>}
+        {showLive ? <LiveLabel info={via} forced={!!force} /> : <span className="text-xs text-zinc-300">Recorded</span>}
         <span className="flex-1" />
         {recording.has(cameraId) && <RecMark />}
         <Button variant="outline" className="border-white/30 bg-transparent text-white hover:bg-white/15 hover:text-white" onClick={() => setJump((j) => !j)}><CalendarDays />{fmtDay(t, tz)}</Button>
@@ -499,6 +502,12 @@ const VIA: Record<Transport | "none", [string, string]> = {
   none: ["Connecting", "Live video is starting."],
 };
 
+/** Said instead when the address chose the way (`?stream=`). */
+const FORCED: Record<Transport, string> = {
+  webrtc: "Set to use WebRTC only by this page's address.",
+  hls: "Set to use standard streaming (HLS) by this page's address.",
+};
+
 const SOURCE: Record<VideoSource, [string, string?]> = {
   camera: ["Camera"],
   recorder: ["Recorder"],
@@ -506,9 +515,10 @@ const SOURCE: Record<VideoSource, [string, string?]> = {
 };
 
 /** "Live" in the player's top bar. A ring around the dot means real-time (WebRTC); hover or tap explains. */
-function LiveLabel({ info }: { info: LiveInfo | null }) {
+function LiveLabel({ info, forced }: { info: LiveInfo | null; forced: boolean }) {
   const via = info?.via ?? null;
-  const [title, text] = VIA[via ?? "none"];
+  const [title, plain] = VIA[via ?? "none"];
+  const text = forced && via ? FORCED[via] : plain;
   const source = info?.source ? SOURCE[info.source] : null;
   return (
     <Popover>

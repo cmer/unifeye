@@ -411,7 +411,10 @@ existing sessions are not extended, and a session that could not be re-validated
 
 WebRTC signalling is proxied; media flows from MediaMTX to the browser over ICE on port 8189
 (`WEBRTC_PORT` in Compose). If no media arrives within 4 seconds, the player tears the WebRTC session
-down and switches to HLS, and the tab skips WebRTC for 10 minutes (`src/ui/live.tsx`). Tearing down a WHEP session frees its slot at
+down and switches to HLS, and the tab skips WebRTC for 10 minutes (`src/ui/live.tsx`). To test a
+network, the camera page takes `?stream=webrtc` or `?stream=hls`: HLS then never tries WebRTC, and
+WebRTC never falls back to HLS (it keeps retrying) and does not start the 10-minute pause. It
+changes only how the browser receives video; permission checks are the same either way. Tearing down a WHEP session frees its slot at
 once, before Unifeye asks the relay to close it, so tiles opened in the same moment (changing views)
 are not refused. A tile that stops while its offer is still on its way tears the session down as soon as the
 answer arrives, and an offer that fails after the hook admitted its reader frees that slot at once. The per-session limit, 2 × (`MAX_WALL_STREAMS` + 2) (22 by default), is room for two tabs, each with a
