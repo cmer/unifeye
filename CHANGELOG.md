@@ -1,5 +1,21 @@
 # CHANGELOG
 
+## 1.4.1 - 2026-11-20
+
+### Added
+- On the camera wall, pointing at a camera that isn't playing starts it.
+
+### Changed
+- When you rewind the camera wall, up to 24 cameras on screen now play their recordings, instead of only the first four. Wall tiles play the lower-resolution recording so they keep up; open a camera to see it in full detail.
+- When you rewind the camera wall, cameras just below or above the screen get ready ahead, so they start right away when you scroll to them.
+- The camera wall now plays up to 24 cameras at once, live or rewound, up from 9 live. Only cameras on screen play. Set MAX_WALL_STREAMS to change the limit.
+
+### Fixed
+- Video no longer shows a black screen while it starts, live or recorded. A still image stays up with a spinner until the video appears.
+
+### Removed
+- The WALL_PLAYBACK_STREAMS setting is gone: MAX_WALL_STREAMS now sets how many cameras play on the wall, live or rewound.
+
 ## 1.4.0 - 2026-11-20
 
 ### Added
