@@ -266,6 +266,12 @@ gateway) is pinned separately in
   a password change cancelling unused links and having its own lock, Origin and JSON checks, `LOCAL_APP_URL`, session rotation,
   sessions ending on a new password and on disable, changing your own password, and turning `local`
   or `oidc` off locking those people out.
+- Domains that must use the identity provider (`OIDC_EMAIL_DOMAINS`, `tests/local-accounts.test.ts`
+  and `tests/oidc.test.ts`): step one sends exact-domain addresses, in any case, to the provider and
+  leaves subdomains and look-alikes on the password step; password, code and link sign-in refused for
+  them, including an account made before the setting; admin creation refused; configuration checks;
+  the login hint passed on only for addresses at those domains. The redirect from the sign-in page
+  and the hint at a real provider are not yet checked in a browser.
 - Email codes (`tests/email-codes.test.ts`, with an in-memory mailer): accounts with codes only get
   no password or link, at least one way in, address validation and the three-address limit, codes
   refused without outgoing mail, codes sent to every address and kept out of the subject, a code

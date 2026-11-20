@@ -10,7 +10,7 @@ import { LOGIN_TXN_COOKIE, safeReturnTo } from "./auth/oidc";
 import { SESSION_COOKIE, type SessionRow } from "./auth/session";
 import { subjectOf, type Actor } from "./authz/actor";
 import type { CameraInfo, UserRow } from "./authz/policy";
-import { allowedOrigins, config, emailCodesOn, groupsClaim, signInMethods } from "./config";
+import { allowedOrigins, config, emailCodesOn, groupsClaim, signInMethods, ssoDomain } from "./config";
 import { schema } from "./db";
 import { backupStatus } from "./db/backup";
 import { DIRECT_PROBLEM } from "./media/direct";
@@ -188,7 +188,9 @@ route("GET", "/auth/login", { public: true, rate: "auth" }, async ({ s, req, url
   }
   if (m.oidc && (!m.local || url.searchParams.get("with") === "oidc")) {
     try {
-      const { url: to, cookie: txn } = await s.oidc.begin(returnTo);
+      // Only an address at a domain that must use the provider, as typed on the sign-in page.
+      const hint = url.searchParams.get("hint")?.trim().toLowerCase();
+      const { url: to, cookie: txn } = await s.oidc.begin(returnTo, hint && hint.length <= 254 && /^[^\s@]+@[^\s@]+$/.test(hint) && ssoDomain(hint) ? hint : undefined);
       return redirect(to, [cookie(LOGIN_TXN_COOKIE, txn, 600, "/api/auth")]);
     } catch (e) {
       log("warn", "login could not start", { error: e });

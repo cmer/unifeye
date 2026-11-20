@@ -45,6 +45,17 @@ const schema = z.object({
     .pipe(z.array(z.enum(["oidc", "local", "cloudflare"])).min(1, "SIGN_IN_METHODS needs at least one method")),
   /** Shown on the sign-in page as "Continue with …" when passwords are also on, e.g. `Google` or `Okta`. */
   OIDC_DISPLAY_NAME: z.string().trim().min(1).max(60).default("SSO"),
+  /**
+   * Email domains that must sign in with the identity provider, comma separated, such as
+   * `example.com`. On the sign-in page, a username at one of them goes straight to the provider, and
+   * password and email-code sign-in refuse it. Exact domains only: `example.com` does not cover
+   * `mail.example.com`. Needs `oidc` and `local` in SIGN_IN_METHODS.
+   */
+  OIDC_EMAIL_DOMAINS: z
+    .string()
+    .optional()
+    .transform((v) => [...new Set((v ?? "").split(",").map((s) => s.trim().toLowerCase().replace(/^@/, "")).filter(Boolean))])
+    .pipe(z.array(z.string().regex(/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/, "OIDC_EMAIL_DOMAINS must be domains like example.com"))),
   /** Cloudflare Access team domain, for example `acme.cloudflareaccess.com`. */
   CF_ACCESS_TEAM_DOMAIN: z
     .string()
@@ -219,6 +230,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (c.CF_ACCESS_RECHECK_SECONDS > 3600) problems.push("CF_ACCESS_RECHECK_SECONDS must be 3600 or less");
   if (m.cloudflare && m.local && !c.CF_ACCESS_ORIGIN_SECRET) problems.push("CF_ACCESS_ORIGIN_SECRET is required when SIGN_IN_METHODS combines cloudflare and local");
   if (c.CF_ACCESS_ORIGIN_SECRET && c.CF_ACCESS_ORIGIN_SECRET.length < MIN_SECRET) problems.push(`CF_ACCESS_ORIGIN_SECRET must be at least ${MIN_SECRET} characters (openssl rand -hex 24)`);
+  if (c.OIDC_EMAIL_DOMAINS.length && !(m.oidc && m.local)) problems.push("OIDC_EMAIL_DOMAINS needs SIGN_IN_METHODS to include both oidc and local");
   if (c.LOCAL_APP_URL && !m.local) problems.push("LOCAL_APP_URL needs SIGN_IN_METHODS to include local");
   if (!!c.SMTP_URL !== !!c.MAIL_FROM) problems.push("SMTP_URL and MAIL_FROM must be set together");
   if (c.LOCAL_APP_URL && new URL(c.LOCAL_APP_URL).origin === new URL(c.APP_URL).origin) problems.push("LOCAL_APP_URL must be a different address from APP_URL");
@@ -261,6 +273,17 @@ export function signInMethods(c: Config = config()): Record<SignInMethod, boolea
 }
 /** Email sign-in codes are available: password accounts are on and outgoing mail is set up. */
 export const emailCodesOn = (c: Config = config()) => signInMethods(c).local && !!c.SMTP_URL && !!c.MAIL_FROM;
+/**
+ * The domain of a username that must sign in with the identity provider (OIDC_EMAIL_DOMAINS), or
+ * null. Only the part after the last `@` counts, compared exactly and ignoring case.
+ */
+export function ssoDomain(username: unknown, c: Config = config()): string | null {
+  if (typeof username !== "string" || !c.OIDC_EMAIL_DOMAINS.length || !signInMethods(c).oidc) return null;
+  const v = username.normalize("NFKC").trim().toLowerCase(), at = v.lastIndexOf("@");
+  if (at < 1) return null;
+  const d = v.slice(at + 1);
+  return c.OIDC_EMAIL_DOMAINS.includes(d) ? d : null;
+}
 /** The issuer Cloudflare Access puts in its tokens, which is also the issuer of a Cloudflare identity. */
 export const cloudflareIssuer = (c: Config = config()) => (c.CF_ACCESS_TEAM_DOMAIN ? `https://${c.CF_ACCESS_TEAM_DOMAIN}` : null);
 /** The origins a browser may send writes and password sign-ins from. */

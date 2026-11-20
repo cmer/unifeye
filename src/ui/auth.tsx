@@ -45,7 +45,7 @@ const timeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
  * get a code straight away; every other username, real or not, gets the same password step, which
  * offers a code instead when email is set up.
  */
-export function SignInForm({ oidcName, passwords, emailCodes, returnTo }: { oidcName: string | null; passwords: boolean; emailCodes: boolean; returnTo: string }) {
+export function SignInForm({ oidcName, passwords, emailCodes, ssoEmails = false, returnTo }: { oidcName: string | null; passwords: boolean; emailCodes: boolean; ssoEmails?: boolean; returnTo: string }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [username, setUsername] = useState("");
@@ -72,6 +72,8 @@ export function SignInForm({ oidcName, passwords, emailCodes, returnTo }: { oidc
     e.preventDefault();
     setBusy(true); setError(null);
     const r = await post("/auth/start", { username, timeZone: timeZone() });
+    // An address at a domain that signs in with the identity provider: straight there, address filled in.
+    if (r.ok && r.data.next === "sso") return void location.assign(`${oidcHref}&hint=${encodeURIComponent(username.trim())}`);
     setBusy(false);
     if (!r.ok) return setError(message(r.data));
     if (r.data.next === "code") { setFrom("username"); setWait(RESEND_SECONDS); go("code"); } else go("password");
@@ -143,11 +145,11 @@ export function SignInForm({ oidcName, passwords, emailCodes, returnTo }: { oidc
         <>
           {/* A plain link: this is an API redirect to the identity provider, not a page route. */}
           <a href={oidcHref} className={buttonVariants({ className: "w-full" })}>Continue with {oidcName}</a>
-          <div className="flex items-center gap-3 text-xs text-muted-foreground"><span className="h-px flex-1 bg-border" />or use a username<span className="h-px flex-1 bg-border" /></div>
+          <div className="flex items-center gap-3 text-xs text-muted-foreground"><span className="h-px flex-1 bg-border" />{ssoEmails ? "or" : "or use a username"}<span className="h-px flex-1 bg-border" /></div>
         </>
       )}
       <form className="grid gap-3" onSubmit={next}>
-        <Field id="username" label="Username" autoComplete="username" autoCapitalize="none" spellCheck={false} autoFocus={!oidcName} required value={username} onChange={(e) => setUsername(e.currentTarget.value)} />
+        <Field id="username" label={ssoEmails ? "Email or username" : "Username"} autoComplete="username" autoCapitalize="none" spellCheck={false} autoFocus={!oidcName} required value={username} onChange={(e) => setUsername(e.currentTarget.value)} />
         {err}
         <Button type="submit" variant={oidcName ? "outline" : "default"} disabled={busy}>{busy ? "One moment…" : "Continue"}</Button>
       </form>
