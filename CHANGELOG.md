@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## 1.4.2 - 2026-11-20
+
+### Fixed
+- Live video that falls back to the slower connection no longer freezes for good. If it stops, it catches up to live, and reconnects if it's still stuck.
+- Live video now plays in Safari and on iPhone for cameras with a microphone, when it can't use the faster connection.
+
 ## 1.4.1 - 2026-11-20
 
 ### Added
