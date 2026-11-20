@@ -40,6 +40,11 @@ type SidebarContextProps = {
   setOpenMobile: (open: boolean) => void
   isMobile: boolean
   toggleSidebar: () => void
+  /** The closed desktop sidebar is showing over the page for a moment (edge hover or edge swipe). */
+  peek: boolean
+  setPeek: (peek: boolean) => void
+  /** Shows the sidebar without changing whether it stays open: a sheet on phones, a peek elsewhere. */
+  reveal: () => void
 }
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
@@ -68,6 +73,7 @@ function SidebarProvider({
 }) {
   const isMobile = useIsMobile()
   const [openMobile, setOpenMobile] = React.useState(false)
+  const [peek, setPeek] = React.useState(false)
 
   // This is the internal state of the sidebar.
   // We use openProp and setOpenProp for control from outside the component.
@@ -93,9 +99,49 @@ function SidebarProvider({
     return isMobile ? setOpenMobile((open) => !open) : setOpen((open) => !open)
   }, [isMobile, setOpen, setOpenMobile])
 
+  const reveal = React.useCallback(() => {
+    if (isMobile) setOpenMobile(true)
+    else if (!open) setPeek(true)
+  }, [isMobile, open])
+
+  // A peek ends when the sidebar opens for good or the layout switches to the phone sheet.
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- resets a transient overlay
+  React.useEffect(() => { if (open || isMobile) setPeek(false) }, [open, isMobile])
+
+  // Swiping in from the left edge shows the sidebar on touch screens.
+  React.useEffect(() => {
+    if (isMobile ? openMobile : open || peek) return
+    let start: { x: number; y: number } | null = null
+    const down = (e: TouchEvent) => {
+      const t = e.touches[0]
+      start = e.touches.length === 1 && t.clientX <= 24 ? { x: t.clientX, y: t.clientY } : null
+    }
+    const move = (e: TouchEvent) => {
+      if (!start) return
+      const t = e.touches[0], dx = t.clientX - start.x, dy = Math.abs(t.clientY - start.y)
+      if (dy > 40 || dx < -10) start = null
+      else if (dx > 40 && dx > dy * 1.5) { start = null; reveal() }
+    }
+    const end = () => { start = null }
+    window.addEventListener("touchstart", down, { passive: true })
+    window.addEventListener("touchmove", move, { passive: true })
+    window.addEventListener("touchend", end)
+    window.addEventListener("touchcancel", end)
+    return () => {
+      window.removeEventListener("touchstart", down)
+      window.removeEventListener("touchmove", move)
+      window.removeEventListener("touchend", end)
+      window.removeEventListener("touchcancel", end)
+    }
+  }, [isMobile, openMobile, open, peek, reveal])
+
   // Adds a keyboard shortcut to toggle the sidebar.
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && peek) {
+        setPeek(false)
+        return
+      }
       if (
         event.key === SIDEBAR_KEYBOARD_SHORTCUT &&
         (event.metaKey || event.ctrlKey)
@@ -107,7 +153,7 @@ function SidebarProvider({
 
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [toggleSidebar])
+  }, [toggleSidebar, peek])
 
   // We add a state so that we can do data-state="expanded" or "collapsed".
   // This makes it easier to style the sidebar with Tailwind classes.
@@ -122,8 +168,11 @@ function SidebarProvider({
       openMobile,
       setOpenMobile,
       toggleSidebar,
+      peek,
+      setPeek,
+      reveal,
     }),
-    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar]
+    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, peek, reveal]
   )
 
   return (
@@ -162,7 +211,24 @@ function Sidebar({
   variant?: "sidebar" | "floating" | "inset"
   collapsible?: "offcanvas" | "icon" | "none"
 }) {
-  const { isMobile, state, openMobile, setOpenMobile } = useSidebar()
+  const { isMobile, state, openMobile, setOpenMobile, peek, setPeek, reveal } = useSidebar()
+  const hover = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  React.useEffect(() => () => clearTimeout(hover.current), [])
+  const later = (fn: () => void, ms: number) => { clearTimeout(hover.current); hover.current = setTimeout(fn, ms) }
+  const stop = () => clearTimeout(hover.current)
+  const hidden = isMobile ? !openMobile : state === "collapsed" && !peek
+  // A small tab on the left edge for touch screens, where there is no pointer to rest on the edge.
+  const handle = hidden && (
+    <button
+      type="button"
+      data-slot="sidebar-handle"
+      aria-label="Show sidebar"
+      onClick={reveal}
+      className="fixed top-1/2 left-0 z-40 hidden h-16 w-5 -translate-y-1/2 items-center pl-1 outline-none pointer-coarse:flex"
+    >
+      <span className="h-10 w-1 rounded-full bg-foreground/35 shadow-[0_0_0_1px_rgb(0_0_0/0.15)]" />
+    </button>
+  )
 
   if (collapsible === "none") {
     return (
@@ -181,6 +247,8 @@ function Sidebar({
 
   if (isMobile) {
     return (
+      <>
+      {handle}
       <Sheet open={openMobile} onOpenChange={setOpenMobile} {...props}>
         <SheetContent
           dir={dir}
@@ -202,14 +270,30 @@ function Sidebar({
           <div className="flex h-full w-full flex-col">{children}</div>
         </SheetContent>
       </Sheet>
+      </>
     )
   }
 
+  const peeking = state === "collapsed" && peek
   return (
+    <>
+    {handle}
+    {/* Resting the pointer on the left edge of the screen shows the closed sidebar over the page. */}
+    {hidden && (
+      <div
+        aria-hidden
+        data-slot="sidebar-edge"
+        className="fixed inset-y-0 left-0 z-40 hidden w-1 md:block"
+        onPointerEnter={(e) => { if (e.pointerType === "mouse") later(() => setPeek(true), 120) }}
+        onPointerLeave={stop}
+      />
+    )}
+    {peeking && <div aria-hidden className="fixed inset-0 z-40 hidden md:block" onPointerDown={() => setPeek(false)} />}
     <div
       className="group peer hidden text-sidebar-foreground md:block"
       data-state={state}
-      data-collapsible={state === "collapsed" ? collapsible : ""}
+      data-peek={peeking || undefined}
+      data-collapsible={state === "collapsed" && !peeking ? collapsible : ""}
       data-variant={variant}
       data-side={side}
       data-slot="sidebar"
@@ -217,6 +301,7 @@ function Sidebar({
       {/* This is what handles the sidebar gap on desktop */}
       <div
         data-slot="sidebar-gap"
+        style={peeking ? { width: 0 } : undefined}
         className={cn(
           "relative w-(--sidebar-width) bg-transparent transition-[width] duration-200 ease-linear",
           "group-data-[collapsible=offcanvas]:w-0",
@@ -235,8 +320,11 @@ function Sidebar({
           variant === "floating" || variant === "inset"
             ? "p-2 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]"
             : "group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r group-data-[side=right]:border-l",
+          peeking && "z-50 shadow-2xl",
           className
         )}
+        onPointerEnter={peeking ? stop : undefined}
+        onPointerLeave={peeking ? (e) => { if (e.pointerType === "mouse") later(() => setPeek(false), 300) } : undefined}
         {...props}
       >
         <div
@@ -248,6 +336,7 @@ function Sidebar({
         </div>
       </div>
     </div>
+    </>
   )
 }
 

@@ -111,10 +111,10 @@ export function App() {
 function AppSidebar() {
   const { me, loc, nav } = useApp();
   const { theme, resolvedTheme, setTheme } = useTheme();
-  const { isMobile, setOpenMobile } = useSidebar();
+  const { isMobile, setOpenMobile, setPeek } = useSidebar();
   const [pw, setPw] = useState(false);
   const [diag, setDiag] = useState(false);
-  const go = (to: string) => { nav(to); if (isMobile) setOpenMobile(false); };
+  const go = (to: string) => { nav(to); if (isMobile) setOpenMobile(false); setPeek(false); };
   const at = (p: string) => loc.path === p || loc.path.startsWith(p + "/");
   void theme;
   return (
