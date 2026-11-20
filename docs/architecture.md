@@ -438,6 +438,14 @@ together. It hides pauses shorter than the buffer; longer ones, and video the ca
 still show. HLS is unaffected: its player already holds several seconds. Diagnostics shows how long
 each playing stream is actually held.
 
+HLS plays through hls.js wherever it runs, and through the browser's own player only in Apple's
+browsers (it uses less battery there, and older iPhones cannot run hls.js) or where hls.js cannot
+run. Chrome now offers its own HLS player, but that player can wait forever on a stall without
+reporting an error. Either way, a stall watchdog (`src/ui/live-stall.ts`) checks the tile once a
+second: if playback has not moved for 3 seconds it jumps to the live edge, and if it is still stuck
+5 seconds later it reconnects the tile. Reconnecting for a stall is not counted as a failed attempt,
+because a stream that played can stall any number of times. Both steps are logged in diagnostics.
+
 ### Sound
 
 Video starts muted, and sound plays only after a viewer clicks the speaker (or presses M in the
@@ -476,6 +484,11 @@ probes until it has seen the first video frame (up to 10 s), because on a cold s
 sound arrives seconds before its picture; a shorter probe made FFmpeg exit and MediaMTX wait 5 s to
 retry. It adds one small FFmpeg process per stream being watched. Cameras
 without a microphone are pulled directly, as before.
+
+MediaMTX lists both sound tracks in its top HLS playlist as choices in one group, and adds "opus"
+to the stream's codecs. Apple's player (Safari, iPhone) refuses such a playlist outright, so the
+relay leaves only the default track, the AAC one, in the playlist it hands back
+(`onlyDefaultAudio` in `mediamtx.ts`). HLS players only play the default track anyway.
 
 ### Video straight from the camera
 

@@ -4,6 +4,7 @@ import { api, ApiError, mediaUrl, previewToken } from "./api";
 import { useApp } from "./app";
 import { recordProblem, recordRequestFailure, registerTile, type TileHandle } from "./diagnostics";
 import { holdLive } from "./live-buffer";
+import { preferHlsJs, stallWatch } from "./live-stall";
 import { LoadingSpinner } from "./recorded-video";
 import { applySound, watchAudio } from "./sound";
 
@@ -101,7 +102,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
   useEffect(() => {
     if (!active || !online) return;
     const el = video.current!;
-    let closed = false, unwatch: (() => void) | undefined, pc: RTCPeerConnection | undefined, resource: string | null = null, hls: { destroy(): void } | undefined, timer: ReturnType<typeof setTimeout> | undefined, timer2: ReturnType<typeof setTimeout> | undefined;
+    let closed = false, unwatch: (() => void) | undefined, pc: RTCPeerConnection | undefined, resource: string | null = null, hls: { destroy(): void } | undefined, timer: ReturnType<typeof setTimeout> | undefined, timer2: ReturnType<typeof setTimeout> | undefined, stallTimer: ReturnType<typeof setInterval> | undefined;
     const retry = () => { if (closed) return; setState("connecting"); timer = setTimeout(() => setAttempt((n) => n + 1), Math.min(3000 * (attempt + 1), 15000)); };
     const busy = () => { if (closed) return; diag.current?.refused(); setState("connecting"); timer = setTimeout(() => setWake((n) => n + 1), BUSY_RETRY_MS); };
     const stream = `/media/live/${cameraId}/hls/${quality}`;
@@ -124,10 +125,28 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
       if (closed) return;
       const src = mediaUrl(`/api${stream}/index.m3u8`);
       try {
-        if (el.canPlayType("application/vnd.apple.mpegurl")) {
-          // The browser's own HLS player (Safari, recent Chrome): same retry rule as hls.js below.
+        const Hls = preferHlsJs(navigator.vendor) ? (await import("hls.js")).default : null;
+        if (closed) return;
+        let player: { liveSyncPosition: number | null } | undefined;
+        if (Hls?.isSupported()) {
+          const h = new Hls({ lowLatencyMode: true, xhrSetup: (xhr) => { const t = previewToken(); if (t) xhr.setRequestHeader("x-unifeye-preview", t); } });
+          h.on(Hls.Events.ERROR, (_e, d) => {
+            if (!d.fatal) return;
+            const url = d.url ?? d.context?.url;
+            if (d.response?.code === 429) recordRequestFailure({ method: "GET", path: url ? new URL(url, location.href).pathname : `/api${stream}`, status: 429, cameraId });
+            else recordProblem({ kind: "hls", cameraId, title: `HLS fatal error: ${d.details}`, detail: [d.type, d.response?.code ? `HTTP ${d.response.code}` : null, d.error?.message].filter(Boolean).join(" · ") });
+            diag.current?.update({ lastError: d.response?.code ? `HTTP ${d.response.code}` : String(d.details), hls: null });
+            h.destroy(); clearInterval(stallTimer); if (d.response?.code === 429) busy(); else if (attempt < 4) retry(); else setState("error");
+          });
+          // The playlist names its codecs, so whether there is sound is known before anything plays.
+          h.on(Hls.Events.MANIFEST_PARSED, (_e, d) => { if (!closed) setAudio(d.audioTracks.length > 0 || d.levels.some((l) => !!l.audioCodec)); });
+          h.loadSource(src); h.attachMedia(el); hls = h; player = h;
+          diag.current?.update({ hls: h, nativeHls: false });
+        }
+        else if (el.canPlayType("application/vnd.apple.mpegurl")) {
+          // The browser's own HLS player (Safari): same retry rule as hls.js above.
           el.onerror = () => {
-            if (closed) return; el.onerror = null;
+            if (closed) return; el.onerror = null; clearInterval(stallTimer);
             // The browser's player says little: a media error code at most.
             const me = el.error;
             recordProblem({ kind: "hls", cameraId, title: "HLS player error", detail: me ? `MediaError ${me.code}${me.message ? `: ${me.message}` : ""}` : undefined });
@@ -136,25 +155,27 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
           diag.current?.update({ nativeHls: true, hls: null });
           el.src = src;
         }
-        else {
-          const { default: Hls } = await import("hls.js");
-          if (closed || !Hls.isSupported()) return setState("error");
-          const h = new Hls({ lowLatencyMode: true, xhrSetup: (xhr) => { const t = previewToken(); if (t) xhr.setRequestHeader("x-unifeye-preview", t); } });
-          h.on(Hls.Events.ERROR, (_e, d) => {
-            if (!d.fatal) return;
-            const url = d.url ?? d.context?.url;
-            if (d.response?.code === 429) recordRequestFailure({ method: "GET", path: url ? new URL(url, location.href).pathname : `/api${stream}`, status: 429, cameraId });
-            else recordProblem({ kind: "hls", cameraId, title: `HLS fatal error: ${d.details}`, detail: [d.type, d.response?.code ? `HTTP ${d.response.code}` : null, d.error?.message].filter(Boolean).join(" · ") });
-            diag.current?.update({ lastError: d.response?.code ? `HTTP ${d.response.code}` : String(d.details), hls: null });
-            h.destroy(); if (d.response?.code === 429) busy(); else if (attempt < 4) retry(); else setState("error");
-          });
-          // The playlist names its codecs, so whether there is sound is known before anything plays.
-          h.on(Hls.Events.MANIFEST_PARSED, (_e, d) => { if (!closed) setAudio(d.audioTracks.length > 0 || d.levels.some((l) => !!l.audioCodec)); });
-          h.loadSource(src); h.attachMedia(el); hls = h;
-          diag.current?.update({ hls: h, nativeHls: false });
-        }
+        else return setState("error");
         if (!hls) unwatch = watchAudio(el, (has) => { if (!closed) setAudio(has); });
-        el.onplaying = () => { if (!closed) { setVia("hls"); setState("playing"); } };
+        let started = false;
+        el.onplaying = () => { if (!closed) { started = true; setVia("hls"); setState("playing"); } };
+        // Neither player always recovers from a stall on its own (`live-stall.ts`).
+        const check = stallWatch();
+        stallTimer = setInterval(() => {
+          if (closed) return;
+          const act = check(performance.now(), el.currentTime, started && !el.paused && !document.hidden);
+          if (act === "jump") {
+            const end = el.seekable.length ? el.seekable.end(el.seekable.length - 1) - 3 : NaN;
+            const live = player ? player.liveSyncPosition : end;
+            recordProblem({ kind: "hls", cameraId, title: "HLS stalled, jumped to live" });
+            if (live != null && Number.isFinite(live) && live > el.currentTime) el.currentTime = live;
+            void el.play().catch(() => {});
+          } else if (act === "reconnect") {
+            recordProblem({ kind: "hls", cameraId, title: "HLS still stalled, reconnecting" });
+            // Not counted as a failed attempt: a stream that played can stall any number of times over a day.
+            setState("connecting"); setWake((n) => n + 1);
+          }
+        }, 1000);
         void el.play().catch(() => {});
       } catch { setState("error"); }
     };
@@ -240,7 +261,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
       unwatch?.();
       if (frameCb !== undefined) el.cancelVideoFrameCallback(frameCb);
       el.removeEventListener("loadeddata", onFrame);
-      clearTimeout(timer); clearTimeout(timer2);
+      clearTimeout(timer); clearTimeout(timer2); clearInterval(stallTimer);
       pc?.close();
       hls?.destroy();
       release();

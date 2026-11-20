@@ -2,7 +2,7 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig, setConfigForTests } from "@/server/config";
-import { authorizeHook, MediaMtxRelay, type HookBody } from "@/server/media/mediamtx";
+import { authorizeHook, MediaMtxRelay, onlyDefaultAudio, type HookBody } from "@/server/media/mediamtx";
 import { RelayUnavailable, type ReaderRequest } from "@/server/media/relay";
 import { TEST_ENV } from "@/server/testing/fixture";
 
@@ -256,5 +256,40 @@ describe("MediaMTX adapter: auth hook", () => {
     expect(hook({ action: "publish", user: "unifeye-publisher", password: "api", ip: "203.0.113.9" })).toBe(false);
     expect(hook({ action: "read", protocol: "webrtc", path: "c_cam1_wall", token: "tk" })).toBe(false); // no reader id
     expect(asked).toEqual([]);
+  });
+});
+
+describe("MediaMTX adapter: HLS playlists every player accepts", () => {
+  // As MediaMTX 1.21.4 lists a retimed stream: AAC then Opus, both in one group.
+  const retimed = [
+    "#EXTM3U", "#EXT-X-VERSION:10", "#EXT-X-INDEPENDENT-SEGMENTS", "",
+    '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="audio2",AUTOSELECT=YES,DEFAULT=YES,URI="audio2_stream.m3u8"',
+    '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="audio3",AUTOSELECT=YES,URI="audio3_stream.m3u8"', "",
+    '#EXT-X-STREAM-INF:BANDWIDTH=2104817,AVERAGE-BANDWIDTH=2103775,CODECS="avc1.640033,mp4a.40.2,opus",RESOLUTION=2048x1536,AUDIO="audio"',
+    "video1_stream.m3u8", "",
+  ].join("\n");
+
+  it("keeps only the default sound track, and drops Opus from the codecs with it", () => {
+    const out = onlyDefaultAudio(retimed);
+    expect(out).not.toContain("audio3");
+    expect(out).toContain('URI="audio2_stream.m3u8"');
+    expect(out).toContain('CODECS="avc1.640033,mp4a.40.2",RESOLUTION=2048x1536');
+    expect(out).toContain("video1_stream.m3u8");
+  });
+
+  it("leaves a playlist with one sound track, or none, as it is", () => {
+    const one = retimed.split("\n").filter((l) => !l.includes("audio3")).join("\n").replace(',opus"', '"');
+    expect(onlyDefaultAudio(one)).toBe(one);
+    const opusOnly = '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1,CODECS="avc1.640033,opus"\nvideo1_stream.m3u8\n';
+    expect(onlyDefaultAudio(opusOnly)).toBe(opusOnly);
+  });
+
+  it("is applied to the top playlist the relay serves, and to nothing else", async () => {
+    answer = (r, res) => { res.writeHead(200, { "content-type": "application/vnd.apple.mpegurl" }); res.end(retimed); };
+    const reader = relay.hlsReader("c_cam1_focus");
+    const top = await reader.fetch("index.m3u8", "", "t");
+    expect(top.outcome === "ok" && await new Response(top.body).text()).toBe(onlyDefaultAudio(retimed));
+    const media = await reader.fetch("video1_stream.m3u8", "", "t");
+    expect(media.outcome === "ok" && await new Response(media.body).text()).toBe(retimed);
   });
 });
