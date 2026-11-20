@@ -30,6 +30,8 @@ export function Wall({ viewId }: { viewId?: string }) {
   const [gone, setGone] = useState(false);
   const [panel, setPanel] = useState(false);
   const [visible, setVisible] = useState<string[]>([]);
+  /** Tiles within a screen of the visible area (on screen included), for warming while rewinding. */
+  const [near, setNear] = useState<string[]>([]);
   /** Which streaming tiles carry sound (missing or null while unknown), and the one camera playing it. */
   const [audio, setAudio] = useState<Record<string, boolean | null>>({});
   const sound = useSound();
@@ -66,8 +68,11 @@ export function Wall({ viewId }: { viewId?: string }) {
     if (!el) return;
     const seen = new Set<string>();
     const io = new IntersectionObserver((es) => { for (const e of es) { const id = (e.target as HTMLElement).dataset.cam!; if (e.isIntersecting) seen.add(id); else seen.delete(id); } setVisible([...seen]); }, { root: el, threshold: 0.2 });
-    el.querySelectorAll("[data-cam]").forEach((n) => io.observe(n));
-    return () => io.disconnect();
+    // Tiles within a screen above or below, warmed while rewinding so scrolling to them is quick.
+    const nearSet = new Set<string>();
+    const nearIo = new IntersectionObserver((es) => { for (const e of es) { const id = (e.target as HTMLElement).dataset.cam!; if (e.isIntersecting) nearSet.add(id); else nearSet.delete(id); } setNear([...nearSet]); }, { root: el, rootMargin: "100% 0px" });
+    el.querySelectorAll("[data-cam]").forEach((n) => { io.observe(n); nearIo.observe(n); });
+    return () => { io.disconnect(); nearIo.disconnect(); };
   }, [shown, cols]);
   const streaming = useMemo(() => new Set(shown.filter((c) => visible.includes(c.id)).slice(0, me.limits.maxStreams).map((c) => c.id)), [shown, visible, me.limits.maxStreams]);
   // Rewinding: every tile on screen plays the same moment from the recording, in low resolution (`RecordedVideo`'s `low`).
@@ -75,7 +80,7 @@ export function Wall({ viewId }: { viewId?: string }) {
   const shownIds = useMemo(() => shown.map((c) => c.id), [shown]);
   // Opening a camera from a rewound wall keeps the moment in the address (`at`), so coming back carries on from there.
   const [startAt] = useState(() => Number(loc.query.get("at")) || undefined);
-  const rw = useRewind({ playIds, shownIds, W: me.limits.windowSeconds * 1000, preloadMs: me.limits.scrubPreloadMs, startAt });
+  const rw = useRewind({ playIds, shownIds, nearIds: near, W: me.limits.windowSeconds * 1000, preloadMs: me.limits.scrubPreloadMs, startAt });
   useEffect(() => { if (!loc.query.has("at")) return; const p = new URLSearchParams(loc.query); p.delete("at"); nav(`${loc.path}${p.size ? `?${p}` : ""}`, true); }, [loc, nav]);
   const open = (id: string) => {
     if (!past) { nav(`/camera/${id}`); return; }
