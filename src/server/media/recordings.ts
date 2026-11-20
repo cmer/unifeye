@@ -98,14 +98,16 @@ export class Recordings {
    * playback can start while the high-resolution file is still on its way. With `files` (a player
    * loading the files of a window it already has the description of), a degraded window past its
    * time is served as it is rather than fetched again, so the files keep matching that description.
+   * With `low`, the window is the low channel alone (`FetchOptions.lowOnly`), cached apart.
    */
-  async window(a: Actor, cameraId: string, tMs: number, signal?: AbortSignal, early = false, files = false): Promise<PlaybackWindow> {
+  async window(a: Actor, cameraId: string, tMs: number, signal?: AbortSignal, o: { early?: boolean; files?: boolean; low?: boolean } = {}): Promise<PlaybackWindow> {
+    const { early = false, files = false, low = false } = o;
     const cam = this.policy.camera(subjectOf(a), cameraId);
     const W = config().PLAYBACK_WINDOW_SECONDS * 1000, now = Date.now();
     if (!Number.isFinite(tMs) || tMs > now - 3000 || tMs < now - 400 * 864e5) throw new HttpError(404, "no_recording", "Nothing recorded at this time");
     const startMs = Math.floor(tMs / W) * W, endMs = Math.min(startMs + W, now - 2000);
     const complete = endMs === startMs + W;
-    const key = `${cameraId}_${startMs}_${complete ? "full" : Math.floor(endMs / 10_000)}`, stem = join(this.dir("playback"), `${key}.v4`);
+    const key = `${cameraId}_${startMs}_${complete ? "full" : Math.floor(endMs / 10_000)}${low ? "_low" : ""}`, stem = join(this.dir("playback"), `${key}.v4`);
     const cached = await this.cached(stem);
     if (cached && (!cached.stale || files)) return cached.w;
     let f = this.inflight.get(key);
@@ -113,7 +115,7 @@ export class Recordings {
       const ac = new AbortController();
       let base!: (w: PlaybackWindow) => void;
       const first = new Promise<PlaybackWindow>((r) => (base = r));
-      const full = this.build(cam.protectId, startMs, endMs, stem, ac.signal, base);
+      const full = this.build(cam.protectId, startMs, endMs, stem, ac.signal, base, low);
       // Without an early stage (one channel, or the base and high file ready together), both are the full window.
       full.then(base, () => {});
       f = { early: Promise.race([first, full]), full, ac, waiters: 0 };
@@ -197,14 +199,14 @@ export class Recordings {
    * Exports a playback window (`fetchRecorded`): a base file and, for adaptive recordings, a high
    * file and the order to play them in. `onBase` gets the base alone as soon as it is ready.
    */
-  private async build(protectId: string, startMs: number, endMs: number, stem: string, signal: AbortSignal, onBase: (w: PlaybackWindow) => void): Promise<PlaybackWindow> {
+  private async build(protectId: string, startMs: number, endMs: number, stem: string, signal: AbortSignal, onBase: (w: PlaybackWindow) => void, lowOnly: boolean): Promise<PlaybackWindow> {
     await mkdir(this.dir("playback"), { recursive: true, mode: 0o700 });
     const tmp = `${stem}.${newId()}`, files = { focus: `${tmp}.f.part`, wall: `${tmp}.w.part`, context: `${tmp}.c.part` }, base = `${stem}.mp4`;
     const window = (r: Recorded, extra: Partial<WindowInfo> = {}): WindowInfo => ({ startMs, endMs, entries: r.entries, high: !!r.high, seams: r.seams, ...extra });
     let moved: Promise<void> | null = null;
     try {
       const r = await fetchRecorded(this.exporter(protectId, startMs, endMs, false), startMs, endMs, {
-        files, signal, segments: this.segments(protectId, startMs, endMs), stamps: this.stamps(protectId, startMs, endMs), context: { protectId }, known: { ...this.known },
+        files, signal, segments: this.segments(protectId, startMs, endMs), stamps: this.stamps(protectId, startMs, endMs), context: { protectId }, known: { ...this.known }, lowOnly,
         // The base file is final once handed over: it takes its place now, so the player can start on it.
         onBase: (e) => { moved = rename(e.base, base).then(() => onBase({ info: window(e, { pending: true }), base, high: null })); moved.catch(() => {}); },
       });

@@ -584,7 +584,7 @@ autoplay is otherwise blocked.
 | Password sign-in and password links in a browser | Checked through the API tests and a production build only | Password-manager autofill, the set-password page on phones |
 | Browser test suite | Not written | Screens were checked by hand in one desktop browser |
 | Phones and tablets | No device testing | Layout or touch problems; dragging the timeline with a finger (stills while dragging) is untested |
-| Rewinding the wall on a real UNVR | Mock mode only | How many tiles the recorder can export for at once (`WALL_PLAYBACK_STREAMS`), how quickly they start after a seek, and how often tiles drift and get moved back in step |
+| Rewinding the wall on a real UNVR | Mock mode only | How many tiles the recorder can export the low channel for at once (every tile on screen plays), how quickly they start after a seek, and how often tiles drift and get moved back in step |
 | HLS playback in a browser | Used in Chrome in production, where it turned up the HLS bugs above; the fixes are not yet checked there | Player-level issues |
 | Sound from a real UNVR in Unifeye end to end | The retiming relay was checked outside Unifeye only (see Verified) | HLS sound, wall-quality streams, other camera models; recordings from Protect may lack audio |
 | Sound in Safari and Firefox | Only Chromium was used | "No audio" shown wrongly, or the speaker missing; no level meter in Safari for HLS and recordings |

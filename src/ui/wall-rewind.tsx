@@ -156,7 +156,7 @@ export function useRewind({ playIds, shownIds, W, preloadMs, startAt }: { playId
   // ---- dragging: stills on every tile, one seek on letting go ----
   const warmRef = useRef<WindowWarmer | null>(null);
   /** Made on first use, in an event handler; it loads the window on every tile that would play it. */
-  const warmer = () => (warmRef.current ??= new WindowWarmer((at, signal) => Promise.all(ids.current.map((id) => api(`/cameras/${id}/playback/info?t=${at}`, { signal }).catch(() => null))), { rest: preloadMs }));
+  const warmer = () => (warmRef.current ??= new WindowWarmer((at, signal) => Promise.all(ids.current.map((id) => api(`/cameras/${id}/playback/info?t=${at}&low=1`, { signal }).catch(() => null))), { rest: preloadMs }));
   useEffect(() => { const w = warmRef; return () => w.current?.stop(); }, []);
   const scrubTo = (ms: number) => { warmer().at(ms < now() - 10_000 ? windowStart(ms, W) : null); setScrub((p) => (p ? { ...p, ms } : p)); };
   const startScrub = (ms: number) => { setPlaying(false); setScrub((p) => ({ ms, held: false, n: (p?.n ?? 0) + 1 })); scrubTo(ms); };

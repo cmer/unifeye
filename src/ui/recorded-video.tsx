@@ -18,6 +18,11 @@ export interface RecordedVideoProps {
   speed: number;
   /** Play the recording's sound (when it has any). */
   sound?: boolean;
+  /**
+   * The low-resolution recording alone (a wall tile): cheaper for the recorder, the server and the
+   * browser, at the cost of moments only the high-resolution recording holds.
+   */
+  low?: boolean;
   /** `object-contain` letterboxes (the player), `object-cover` fills (a wall tile). */
   fit?: "object-contain" | "object-cover";
   /** The wall-clock time on screen, at most every 250 ms. */
@@ -44,7 +49,8 @@ export interface RecordedVideoProps {
  * and takes over when this one ends. Shared by the player and the camera wall.
  */
 export function RecordedVideo(props: RecordedVideoProps) {
-  const { cameraId, W, startMs, playing, speed, sound = false, fit = "object-contain" } = props;
+  const { cameraId, W, startMs, playing, speed, sound = false, fit = "object-contain", low = false } = props;
+  const lowQ = low ? "&low=1" : "";
   const cb = useRef(props);
   useEffect(() => { cb.current = props; });
   /** The window playing: where the seek landed, then each window handed over to. */
@@ -76,14 +82,14 @@ export function RecordedVideo(props: RecordedVideoProps) {
       if (reqs.has(at)) continue;
       const ac = new AbortController();
       reqs.set(at, ac);
-      const get = (early: boolean) => api<WinInfo>(`/cameras/${cameraId}/playback/info?t=${at}${early ? "&early=1" : ""}`, { signal: ac.signal });
+      const get = (early: boolean) => api<WinInfo>(`/cameras/${cameraId}/playback/info?t=${at}${lowQ}${early ? "&early=1" : ""}`, { signal: ac.signal });
       get(true).then((i) => {
         setInfos((p) => ({ ...p, [at]: i }));
         // Without the high-resolution order, the base plays on alone.
         if (i.pending) get(false).then((f) => setInfos((p) => ({ ...p, [at]: f })), () => {});
       }, () => { if (!ac.signal.aborted) setInfos((p) => ({ ...p, [at]: "none" })); });
     }
-  }, [ws, armed, W, cameraId]);
+  }, [ws, armed, W, cameraId, lowQ]);
   useEffect(() => { const reqs = infoReq.current; return () => { for (const ac of reqs.values()) ac.abort(); reqs.clear(); }; }, []);
   // Each window's holes, reported once its description is final.
   const holesSent = useRef(new Set<number>());
@@ -98,7 +104,7 @@ export function RecordedVideo(props: RecordedVideoProps) {
   const missing = noRec || info === "none";
   useEffect(() => { cb.current.onMissing?.(missing); }, [missing]);
 
-  const url = (at: number, high = false) => mediaUrl(`/api/cameras/${cameraId}/playback?t=${at}${high ? "&layer=high" : ""}`);
+  const url = (at: number, high = false) => mediaUrl(`/api/cameras/${cameraId}/playback?t=${at}${lowQ}${high ? "&layer=high" : ""}`);
   const ok = info && info !== "none" ? info : null, withHigh = (i: WinInfo | null) => !!i?.high && !i.pending;
   const src = ok ? url(ws) : undefined, hiSrc = src && withHigh(ok) ? url(ws, true) : undefined;
   // The following window loads in hidden elements while this one plays (armed once it is fully recorded),

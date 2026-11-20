@@ -21,7 +21,7 @@ const hasFfmpeg = spawnSync("ffprobe", ["-version"]).status === 0;
 describe.skipIf(!hasFfmpeg)("adaptive playback windows", () => {
   let f: Fixture, cam: string, ws: number;
   const dir = mkdtempSync(join(tmpdir(), "unifeye-pb-"));
-  const window = (camera: string, t: number, early = false) => f.s.recordings.window(f.actor(f.u.admin), camera, t, undefined, early);
+  const window = (camera: string, t: number, early = false) => f.s.recordings.window(f.actor(f.u.admin), camera, t, undefined, { early });
   beforeAll(async () => {
     f = makeFixture();
     setConfigForTests(loadConfig({ ...TEST_ENV, MEDIA_CACHE_DIR: dir } as NodeJS.ProcessEnv));
@@ -54,6 +54,16 @@ describe.skipIf(!hasFfmpeg)("adaptive playback windows", () => {
     expect(w.info.entries.filter((e) => e.lead).map((e) => e.kind)).toEqual(["base"]);
     // Served from the cache the second time.
     expect(await window(cam, ws + 30_000)).toEqual(w);
+  }, 30_000);
+
+  it("gives wall tiles the low resolution alone, cached apart from the full window", async () => {
+    const full = await window(cam, ws + 1000), low = await f.s.recordings.window(f.actor(f.u.admin), cam, ws + 1000, undefined, { low: true });
+    expect(low.high).toBeNull();
+    expect(low.info).toMatchObject({ startMs: ws, endMs: ws + 60_000, high: false });
+    expect(low.info.entries.every((e) => e.kind === "base")).toBe(true);
+    expect(low.base).not.toBe(full.base);
+    // The full window is still served whole.
+    expect((await window(cam, ws + 1000)).high).not.toBeNull();
   }, 30_000);
 
   /** Checks a window second by second against what the mock recorded: every moment shows once, in order, at its time. */
@@ -144,7 +154,7 @@ describe.skipIf(!hasFfmpeg)("adaptive playback windows", () => {
     try {
       // A player loading the files it has the description of gets them as they are ...
       const exports = vi.spyOn(f.adapter, "exportClip");
-      expect(await f.s.recordings.window(f.actor(f.u.admin), cam, t, undefined, false, true)).toEqual(hiccup);
+      expect(await f.s.recordings.window(f.actor(f.u.admin), cam, t, undefined, { files: true })).toEqual(hiccup);
       expect(exports).not.toHaveBeenCalled();
       // ... and a new request still gets it while the recorder fails to give it again.
       exports.mockRejectedValue(new Error("recorder down"));

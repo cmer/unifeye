@@ -314,7 +314,7 @@ route("GET", "/me", {}, ({ s, actor, user, session }) => {
     mode: c.UNIFEYE_MODE,
     recorder: s.adapter.health().state,
     recorderTimeZone: s.adapter.timeZone(),
-    limits: { maxStreams: c.MAX_WALL_STREAMS, windowSeconds: c.PLAYBACK_WINDOW_SECONDS, prerollSeconds: c.EVENT_PREROLL_SECONDS, clipMaxSeconds: c.CLIP_MAX_SECONDS, scrubPreloadMs: c.SCRUB_PRELOAD_MS, wallPlaybackStreams: c.WALL_PLAYBACK_STREAMS, liveBufferMs: c.LIVE_BUFFER_MS },
+    limits: { maxStreams: c.MAX_WALL_STREAMS, windowSeconds: c.PLAYBACK_WINDOW_SECONDS, prerollSeconds: c.EVENT_PREROLL_SECONDS, clipMaxSeconds: c.CLIP_MAX_SECONDS, scrubPreloadMs: c.SCRUB_PRELOAD_MS, liveBufferMs: c.LIVE_BUFFER_MS },
   };
 });
 route("PUT", "/preferences", {}, async ({ s, actor, json: body }) => { const b = await body<{ key: string; value: unknown }>(); s.admin.setPreference(actor, b.key, b.value); });
@@ -340,11 +340,12 @@ route("GET", "/cameras/:id/snapshot", { rate: "stills" }, async ({ s, actor, p, 
 });
 route("GET", "/cameras/:id/recordings", {}, ({ s, actor, p, url }) => s.recordings.ranges(actor, p.id, num(url.searchParams.get("from"), "from"), num(url.searchParams.get("to"), "to")));
 // `early=1`: answer once the base file is ready; an adaptive window then says `pending` and a second request gets the full order.
-route("GET", "/cameras/:id/playback/info", { rate: "media" }, async ({ s, actor, p, url, req }) => (await s.recordings.window(actor, p.id, num(url.searchParams.get("t"), "t"), req.signal, url.searchParams.get("early") === "1")).info);
+// `low=1`: the low-resolution recording alone, for wall tiles (see `FetchOptions.lowOnly`).
+route("GET", "/cameras/:id/playback/info", { rate: "media" }, async ({ s, actor, p, url, req }) => (await s.recordings.window(actor, p.id, num(url.searchParams.get("t"), "t"), req.signal, { early: url.searchParams.get("early") === "1", low: url.searchParams.get("low") === "1" })).info);
 route("GET", "/cameras/:id/playback", { rate: "media" }, async ({ s, actor, p, url, req }) => {
   const high = url.searchParams.get("layer") === "high";
   // The base file can be served while the high one is still being placed.
-  const w = await s.recordings.window(actor, p.id, num(url.searchParams.get("t"), "t"), req.signal, !high, true), file = high ? w.high : w.base;
+  const w = await s.recordings.window(actor, p.id, num(url.searchParams.get("t"), "t"), req.signal, { early: !high, files: true, low: url.searchParams.get("low") === "1" }), file = high ? w.high : w.base;
   if (!file) throw new HttpError(404, "no_recording", "Nothing recorded at this time");
   return fileResponse(file, req, "video/mp4", { "x-window-start": String(w.info.startMs), "x-window-end": String(w.info.endMs) });
 });

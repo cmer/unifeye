@@ -128,6 +128,12 @@ export interface FetchOptions {
    * A recorder that never gives them is not asked to make up for them.
    */
   known?: { segments?: boolean; stamps?: boolean };
+  /**
+   * The low channel alone, for small pictures (a wall tile): no high-resolution file, so nothing to
+   * export at full size or place. Moments only the high channel holds are left out. Channel 0 is
+   * exported only when the low channel has nothing.
+   */
+  lowOnly?: boolean;
 }
 
 /**
@@ -212,6 +218,12 @@ async function fetchOnce(exportChannel: ExportChannel, startMs: number, endMs: n
   // everything that matters, so both channels are fetched and placed by them, not the old way.
   const mode = channelsFor(segs.focus, segs.wall, startMs, endMs) ?? (reach && opts.known?.segments && opts.known.stamps ? "both" : null);
   if (mode === "focus" || mode === "wall") return single(mode);
+  if (opts.lowOnly) {
+    try { return await single("wall"); } catch (e) {
+      if (signal.aborted || !isNoRecording(e)) throw e;
+      return single("focus");
+    }
+  }
   // Both channels: the low one is the base. Without segment lists or stamps, channel 0 decides first.
   let focus: Promise<string | null>, wall: Promise<string | null>, busy = false, focusErr: unknown = null, wallErr: unknown = null;
   let lowStamps: Promise<number[] | null> = Promise.resolve(null), highStamps: Promise<number[] | null> = Promise.resolve(null), reached = 0;

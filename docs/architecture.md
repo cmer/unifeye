@@ -685,9 +685,12 @@ a minute or more away is offered as "Skip to". The wall leaves both callbacks ou
 
 The wall's Rewind button opens a timeline in place of its dock (`src/ui/wall-rewind.tsx`). It shows
 when any camera on screen recorded (their ranges joined) and their events. Every tile plays the same
-moment: one seek remounts every tile's `RecordedVideo` at that moment. Only the first
-`WALL_PLAYBACK_STREAMS` tiles on screen (default 4) play, because each asks the recorder for an
-export every minute; the others show a still from that moment every five seconds. The wall's time is
+moment: one seek remounts every tile's `RecordedVideo` at that moment. Every tile on screen plays,
+from the low-resolution recording alone (`low=1` on both playback routes, `lowOnly` in
+`fetchRecorded`): an adaptive camera's window is then one low-channel export with its stamps, with no
+high-resolution export, placement or second video to keep in step, and is cached apart from the full
+window. Channel 0 is exported only where the low channel has nothing; moments only the high channel
+holds are left out on the wall. Opening a tile plays the full recording. The wall's time is
 the median of the playing tiles' times, and a tile more than three seconds off is moved back to it, at
 most once every ten seconds. A tile that starts playing later (scrolled into view, a filter changed)
 starts at the wall's time. Dragging works as in the player, with stills on every tile on screen, paced

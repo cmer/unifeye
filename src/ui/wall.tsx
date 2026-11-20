@@ -70,8 +70,8 @@ export function Wall({ viewId }: { viewId?: string }) {
     return () => io.disconnect();
   }, [shown, cols]);
   const streaming = useMemo(() => new Set(shown.filter((c) => visible.includes(c.id)).slice(0, me.limits.maxStreams).map((c) => c.id)), [shown, visible, me.limits.maxStreams]);
-  // Rewinding: the tiles on screen play the same moment from the recording, up to the playback limit.
-  const playIds = useMemo(() => shown.filter((c) => visible.includes(c.id)).slice(0, me.limits.wallPlaybackStreams).map((c) => c.id), [shown, visible, me.limits.wallPlaybackStreams]);
+  // Rewinding: every tile on screen plays the same moment from the recording, in low resolution (`RecordedVideo`'s `low`).
+  const playIds = useMemo(() => shown.filter((c) => visible.includes(c.id)).map((c) => c.id), [shown, visible]);
   const shownIds = useMemo(() => shown.map((c) => c.id), [shown]);
   // Opening a camera from a rewound wall keeps the moment in the address (`at`), so coming back carries on from there.
   const [startAt] = useState(() => Number(loc.query.get("at")) || undefined);
@@ -120,7 +120,7 @@ export function Wall({ viewId }: { viewId?: string }) {
         <div key={c.id} data-cam={c.id} className="group relative aspect-video overflow-hidden bg-black text-white">
           <button onClick={() => open(c.id)} aria-label={`Open ${c.name}`} className="peer absolute inset-0 text-left outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-inset">
             {!past ? <LiveVideo cameraId={c.id} quality="wall" active={streaming.has(c.id) && !down} online={c.online && !down} sound={sound === c.id} onAudio={onAudio} onGone={() => { setTick((n) => n + 1); void reload(); }} />
-              : playRec ? <RecordedVideo key={st.key} cameraId={c.id} W={me.limits.windowSeconds * 1000} startMs={st.ms} playing={rw.playing && !rw.dragging} speed={rw.speed} fit="object-cover" sound={sound === c.id} onAudio={onAudio} {...rw.tile(c.id)} />
+              : playRec ? <RecordedVideo key={st.key} cameraId={c.id} W={me.limits.windowSeconds * 1000} startMs={st.ms} playing={rw.playing && !rw.dragging} speed={rw.speed} fit="object-cover" low sound={sound === c.id} onAudio={onAudio} {...rw.tile(c.id)} />
               : onScreen && !down && <ScrubStill cameraId={c.id} ms={Math.floor(rw.t / 5000) * 5000} close={4000} width={640} gap={1000} className="absolute inset-0 size-full object-cover" />}
             {playRec && rw.missing[c.id] && still === null && <span className="absolute inset-0 grid place-items-center bg-zinc-900 p-3 text-center text-sm text-zinc-300">No recording at this time</span>}
             {still !== null && (
