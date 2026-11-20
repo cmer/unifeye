@@ -170,12 +170,6 @@ const schema = z.object({
   /** Username Unifeye uses for the MediaMTX control API (checked by the same hook). */
   MEDIAMTX_API_SECRET: z.string().optional(),
   MAX_WALL_STREAMS: int(9, 1),
-  /**
-   * How many tiles on the wall play recorded video at once when someone rewinds it; the rest show a
-   * still every few seconds. Each one asks the recorder for an export every minute, so this is kept
-   * lower than the live limit.
-   */
-  WALL_PLAYBACK_STREAMS: int(4, 1),
   CLIP_MAX_SECONDS: int(7200, 5),
   /** A long clip is fetched from the recorder in 5-minute pieces, this many at a time. */
   CLIP_EXPORT_PARALLEL: int(3, 1),

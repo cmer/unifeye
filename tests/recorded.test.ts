@@ -182,6 +182,21 @@ describe("fetchRecorded", () => {
     expect(await fetchRecorded(busy.exporter, A, B, { files: files(), signal, ops: busy.ops, segments: busy.segments })).toMatchObject({ high: null, busy: true });
   });
 
+  it("exports only the low channel when asked for it alone, even where both have the stretch", async () => {
+    const low = channel("wall", LOW, 640), fl = files();
+    const f = recorder({ focus: channel("focus", HIGH, 1920), wall: low }, { focus: segsOf(HIGH), wall: segsOf(LOW) });
+    const r = await fetchRecorded(f.exporter, A, B, { files: fl, signal, ops: f.ops, segments: f.segments, lowOnly: true });
+    expect(f.asked).toEqual(["wall"]);
+    expect(r).toMatchObject({ base: fl.wall, high: null });
+    expect(r.entries.every((e) => e.kind === "base")).toBe(true);
+  });
+
+  it("falls back to channel 0 when asked for the low channel alone and it has nothing", async () => {
+    const f = recorder({ focus: channel("focus", [[A - 500, 61]], 1920) }), fl = files();
+    expect(await fetchRecorded(f.exporter, A, B, { files: fl, signal, ops: f.ops, lowOnly: true })).toMatchObject({ base: fl.focus, high: null });
+    expect(f.asked).toEqual(["wall", "focus"]);
+  });
+
   it("plays the high channel alone, as possibly missing time, when the low one keeps failing", async () => {
     const f = recorder({ focus: channel("focus", HIGH, 1920), wall: new RecorderBusyError(503) }, { focus: segsOf(HIGH), wall: segsOf(LOW) }), fl = files();
     expect(await fetchRecorded(f.exporter, A, B, { files: fl, signal, ops: f.ops, segments: f.segments })).toMatchObject({ base: fl.focus, high: null, busy: true });

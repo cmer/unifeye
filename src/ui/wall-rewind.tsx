@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { api, dayBounds, EVENT_COLOR, EVENT_LABEL, fmtShort, fmtTime, type ActivityEvent } from "./api";
 import { windowStart } from "./recorded-playback";
 import { WindowWarmer } from "./scrub-still";
+import { useWarmTiles, warmTiles, warmWindows } from "./wall-warm";
 import { DAY, DOT_REACH_PX, fmtAgo, MIN_SPAN, nearestEvent, nextZoomStop, tickTimes, UNZOOMED, wheelZoom, zoomedView, zoomTimeline, type Zoom } from "./timeline";
 
 type Range = [number, number];
@@ -59,9 +60,10 @@ export interface TileHandlers {
 /**
  * Playing the wall back in time. Every tile plays the same moment: one seek moves them all, and a tile
  * that falls out of step (a slow load, a stall) is moved back to where the others are. While someone drags
- * the timeline, tiles show stills and nothing seeks until they let go.
+ * the timeline, tiles show stills and nothing seeks until they let go. Tiles just off screen (`nearIds`)
+ * are got ready ahead, so scrolling to them starts them at once (`wall-warm.ts`).
  */
-export function useRewind({ playIds, shownIds, W, preloadMs, startAt }: { playIds: string[]; shownIds: string[]; W: number; preloadMs: number; startAt?: number }) {
+export function useRewind({ playIds, shownIds, nearIds, W, preloadMs, startAt }: { playIds: string[]; shownIds: string[]; nearIds: string[]; W: number; preloadMs: number; startAt?: number }) {
   /** `startAt`: coming back to a wall that was rewound (see the wall's `at` address parameter). Otherwise a view just switched from may hand its rewind over. */
   const [carried] = useState(() => (startAt ? { at: startAt, playing: true, speed: 1 } : fromHandover()));
   const [open, setOpen] = useState(!!carried);
@@ -156,7 +158,7 @@ export function useRewind({ playIds, shownIds, W, preloadMs, startAt }: { playId
   // ---- dragging: stills on every tile, one seek on letting go ----
   const warmRef = useRef<WindowWarmer | null>(null);
   /** Made on first use, in an event handler; it loads the window on every tile that would play it. */
-  const warmer = () => (warmRef.current ??= new WindowWarmer((at, signal) => Promise.all(ids.current.map((id) => api(`/cameras/${id}/playback/info?t=${at}`, { signal }).catch(() => null))), { rest: preloadMs }));
+  const warmer = () => (warmRef.current ??= new WindowWarmer((at, signal) => Promise.all([...ids.current, ...warmIdsRef.current].map((id) => api(`/cameras/${id}/playback/info?t=${at}&low=1`, { signal }).catch(() => null))), { rest: preloadMs }));
   useEffect(() => { const w = warmRef; return () => w.current?.stop(); }, []);
   const scrubTo = (ms: number) => { warmer().at(ms < now() - 10_000 ? windowStart(ms, W) : null); setScrub((p) => (p ? { ...p, ms } : p)); };
   const startScrub = (ms: number) => { setPlaying(false); setScrub((p) => ({ ms, held: false, n: (p?.n ?? 0) + 1 })); scrubTo(ms); };
@@ -170,6 +172,11 @@ export function useRewind({ playIds, shownIds, W, preloadMs, startAt }: { playId
   const allStarted = playIds.every((id) => started.has(id) || missing[id]);
   if (scrub?.held && allStarted) setScrub(null);
   const dragging = !!scrub && !scrub.held;
+  // Tiles just off screen get their windows ready once every tile on screen plays (never slowing those).
+  const warmIds = useMemo(() => warmTiles(shownIds, playIds, nearIds), [shownIds, playIds, nearIds]);
+  const warmIdsRef = useRef(warmIds);
+  useEffect(() => { warmIdsRef.current = warmIds; });
+  useWarmTiles(warmIds, warmWindows(t, W, clock), open && !live && !dragging && allStarted);
   /** A still is shown on a tile while dragging, and after letting go until that tile plays. */
   const stillAt = (id: string) => (scrub && (dragging || (!started.has(id) && !missing[id])) ? scrub.ms : null);
   const stillGap = Math.max(250, Math.round((1000 * Math.max(1, shownIds.length)) / WALL_STILLS_PER_SECOND));
