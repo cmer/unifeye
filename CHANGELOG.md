@@ -1,5 +1,21 @@
 # CHANGELOG
 
+## 1.4.0 - 2026-11-20
+
+### Added
+- Addresses at chosen email domains can be sent straight to your sign-in provider: set OIDC_EMAIL_DOMAINS, and people who type one on the sign-in page skip the password step.
+- Add ?stream=webrtc or ?stream=hls to a camera's address to choose how its live video is sent, which helps test a network.
+- Diagnostics now checks the browser. It warns when video can't start on its own, for example in Low Power Mode on iPhone, and when the browser is out of date.
+
+### Changed
+- Scrolling or pinching on a timeline now zooms smoothly instead of jumping between fixed levels, and can zoom in as close as one minute.
+- The sign-in pages have a roomier new design, in light or dark to match your device.
+- People stay signed in for 30 days instead of being signed out after 12 hours without use. Set `SESSION_DAYS` to change how long. `SESSION_ABSOLUTE_HOURS` is replaced by `SESSION_DAYS`, and the idle sign-out (`SESSION_IDLE_MINUTES`) is now off unless you set it.
+- Live video plays more evenly. It is now held for a second before it shows, which hides the short pauses many cameras make every couple of seconds. Set LIVE_BUFFER_MS to change how long (0 turns it off).
+
+### Fixed
+- Recorded video built during a brief recorder hiccup is fetched again later instead of being kept. It no longer plays out of order or flips between low and high quality every second or two. Where the recorder itself is missing footage in one quality, playback still switches quality there.
+
 ## 1.3.0 - 2026-11-19
 
 ### Added
