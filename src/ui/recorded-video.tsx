@@ -1,5 +1,6 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { WindowInfo as WinInfo } from "@/server/media/recordings";
 import { api, mediaUrl } from "./api";
 import { canHandOver, carryOnAt, handOver, positionAt, shouldArm, skipped, stepPlayback, windowHoles, windowStart, type Playback, type Shown } from "./recorded-playback";
@@ -7,6 +8,8 @@ import { applySound, play, watchAudio } from "./sound";
 
 /** Wall-clock time, for event handlers and animation frames only (never called while rendering). */
 const now = () => Date.now();
+/** `HTMLMediaElement.HAVE_CURRENT_DATA`: the frame at the current position is decoded. */
+const HAVE_CURRENT_DATA = 2;
 
 export interface RecordedVideoProps {
   cameraId: string;
@@ -35,8 +38,10 @@ export interface RecordedVideoProps {
   onAudio?: (has: boolean | null) => void;
   /** The element playing, for the level meter and full screen. */
   onMedia?: (el: HTMLVideoElement | null) => void;
-  /** The video started playing (after a seek, or after a stall). */
+  /** The video started playing (after a seek, or after a stall). The first time, once its first frame is on screen. */
   onPlaying?: () => void;
+  /** Shown behind a spinner until the first frame is on screen (a still of the moment), so the video never starts on black. */
+  cover?: ReactNode;
   /** Playing on skipped from `fromMs` to `toMs`, which were not recorded (see `skipped`). */
   onSkip?: (fromMs: number, toMs: number) => void;
   /** What was not recorded in the window starting at `windowMs`, once its description is final (see `windowHoles`). */
@@ -49,7 +54,7 @@ export interface RecordedVideoProps {
  * and takes over when this one ends. Shared by the player and the camera wall.
  */
 export function RecordedVideo(props: RecordedVideoProps) {
-  const { cameraId, W, startMs, playing, speed, sound = false, fit = "object-contain", low = false } = props;
+  const { cameraId, W, startMs, playing, speed, sound = false, fit = "object-contain", low = false, cover } = props;
   const lowQ = low ? "&low=1" : "";
   const cb = useRef(props);
   useEffect(() => { cb.current = props; });
@@ -68,6 +73,13 @@ export function RecordedVideo(props: RecordedVideoProps) {
   /** The last step that showed a time, to tell a skip over time not recorded (`skipped`). */
   const last = useRef<Shown | null>(null);
   const video = useRef<HTMLVideoElement>(null), hiVideo = useRef<HTMLVideoElement>(null), nextVideo = useRef<HTMLVideoElement>(null);
+
+  /**
+   * The picture at the starting moment is ready. Until then the video stays hidden behind `cover` and a
+   * spinner: a video element shows black from the moment it mounts until it has decoded something.
+   */
+  const [framed, setFramed] = useState(false);
+  const framedRef = useRef(false);
 
   const ws = windowStart(pos, W);
   const info = infos[ws], nextInfo = armed === ws + W ? infos[ws + W] : undefined;
@@ -133,6 +145,9 @@ export function RecordedVideo(props: RecordedVideoProps) {
     last.current = k.last;
     if (k.skip) cb.current.onSkip?.(...k.skip);
     if (h) h.style.visibility = r.step.showHigh ? "visible" : "hidden";
+    // The picture at the moment asked for is ready (not one from before the files were moved there): show it.
+    const on = r.step.showHigh ? h! : v;
+    if (!framedRef.current && r.step.wall != null && on.readyState >= HAVE_CURRENT_DATA && !on.seeking) { framedRef.current = true; setFramed(true); cb.current.onPlaying?.(); }
     if (r.step.wall != null) {
       shown.current = r.step.wall;
       if (Math.abs(r.step.wall - shownSet.current) >= 250) { shownSet.current = r.step.wall; cb.current.onTime?.(r.step.wall); }
@@ -148,16 +163,23 @@ export function RecordedVideo(props: RecordedVideoProps) {
   useEffect(() => { const v = video.current; if (v) applySound(v, sound && hasAudio === true); }, [sound, hasAudio, ws]);
   useEffect(() => () => cb.current.onMedia?.(null), []);
 
-  const cls = `absolute inset-0 size-full ${fit}`;
+  const cls = `absolute inset-0 size-full ${fit} ${framed ? "" : "opacity-0"}`;
   return <>
+    {!framed && cover}
     <video ref={video} key={ws} src={src} playsInline muted className={cls}
       onTimeUpdate={() => { if (armed !== ws + W && shouldArm(ws, W, now())) setArmed(ws + W); }}
-      onPlaying={() => cb.current.onPlaying?.()}
+      onPlaying={() => { if (framedRef.current) cb.current.onPlaying?.(); }}
       onError={() => setNoRec(true)} />
     {hiSrc && <video ref={hiVideo} key={`${ws}:hi`} src={hiSrc} preload="auto" playsInline muted aria-hidden style={{ visibility: "hidden" }} className={cls} />}
     {nextSrc && <video ref={nextVideo} key={ws + W} src={nextSrc} preload="auto" playsInline muted aria-hidden className={`invisible ${cls}`}
       onLoadedMetadata={(e) => { if (nextAt) e.currentTarget.currentTime = nextAt.base; }} />}
     {nextHiSrc && <video key={`${ws + W}:hi`} src={nextHiSrc} preload="auto" playsInline muted aria-hidden style={{ visibility: "hidden" }} className={cls}
       onLoadedMetadata={(e) => { if (nextAt?.high != null) e.currentTarget.currentTime = nextAt.high; }} />}
+    {!framed && !missing && <LoadingSpinner large={!low} />}
   </>;
+}
+
+/** Centred over a picture while video gets ready. */
+export function LoadingSpinner({ large = false }: { large?: boolean }) {
+  return <div className="pointer-events-none absolute inset-0 grid place-items-center" role="status" aria-label="Loading video"><Loader2 className={`${large ? "size-10" : "size-7"} animate-spin text-white drop-shadow-[0_1px_3px_rgb(0_0_0/0.6)]`} /></div>;
 }

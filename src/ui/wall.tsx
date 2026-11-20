@@ -9,7 +9,7 @@ import { api, ApiError, fmtTime, type Camera } from "./api";
 import { Empty, fail, RecMark, SidebarOpener, useApp, useRecording } from "./app";
 import { LiveVideo } from "./live";
 import { SoundButton, useSound } from "./sound";
-import { RecordedVideo } from "./recorded-video";
+import { LoadingSpinner, RecordedVideo } from "./recorded-video";
 import { ScrubStill } from "./scrub-still";
 import { RewindBar, useRewind } from "./wall-rewind";
 import { useSidebar } from "@/components/ui/sidebar";
@@ -139,13 +139,15 @@ export function Wall({ viewId }: { viewId?: string }) {
           onPointerEnter={() => { if (!(past ? playIds.includes(c.id) : streaming.has(c.id))) setHovered((h) => [...h.filter((x) => x !== c.id), c.id].slice(-2)); }}>
           <button onClick={() => open(c.id)} aria-label={`Open ${c.name}`} className="peer absolute inset-0 text-left outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-inset">
             {!past ? <LiveVideo cameraId={c.id} quality="wall" active={streaming.has(c.id) && !down} online={c.online && !down} sound={sound === c.id} onAudio={onAudio} onGone={() => { setTick((n) => n + 1); void reload(); }} />
-              : playRec ? <RecordedVideo key={st.key} cameraId={c.id} W={me.limits.windowSeconds * 1000} startMs={st.ms} playing={rw.playing && !rw.dragging} speed={rw.speed} fit="object-cover" low sound={sound === c.id} onAudio={onAudio} {...rw.tile(c.id)} />
+              : playRec ? <RecordedVideo key={st.key} cameraId={c.id} W={me.limits.windowSeconds * 1000} startMs={st.ms} playing={rw.playing && !rw.dragging} speed={rw.speed} fit="object-cover" low sound={sound === c.id} onAudio={onAudio} {...rw.tile(c.id)}
+                  cover={still === null && <ScrubStill cameraId={c.id} ms={st.ms} close={4000} width={640} className="absolute inset-0 size-full object-cover" />} />
               : onScreen && !down && <ScrubStill cameraId={c.id} ms={Math.floor(rw.t / 5000) * 5000} close={4000} width={640} gap={1000} className="absolute inset-0 size-full object-cover" />}
             {playRec && rw.missing[c.id] && still === null && <span className="absolute inset-0 grid place-items-center bg-zinc-900 p-3 text-center text-sm text-zinc-300">No recording at this time</span>}
             {still !== null && (
               <span className="absolute inset-0 bg-black/60">
                 {!rw.recorded(c.id, still) ? <span className="absolute inset-0 grid place-items-center bg-zinc-900 p-3 text-center text-sm text-zinc-300">No recording at {fmtTime(still, tz)}</span>
                   : still < rw.clock - 10_000 && <ScrubStill key={rw.scrub?.n} cameraId={c.id} ms={still} close={2000} width={640} gap={rw.stillGap} className="absolute inset-0 size-full object-cover" />}
+                {!rw.dragging && rw.recorded(c.id, still) && <LoadingSpinner />}
               </span>
             )}
             <span className="absolute top-2.5 left-2.5 flex max-w-[calc(100%-4.5rem)] items-center gap-1.5 truncate rounded-md bg-black/65 px-2 py-0.5 text-xs font-medium"><i className={`size-1.5 shrink-0 rounded-full ${past || rw.dragging ? "bg-zinc-400" : c.online ? "bg-green-500" : "bg-red-500"}`} />{c.name}</span>

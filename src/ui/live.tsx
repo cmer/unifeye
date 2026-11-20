@@ -4,6 +4,7 @@ import { api, ApiError, mediaUrl, previewToken } from "./api";
 import { useApp } from "./app";
 import { recordProblem, recordRequestFailure, registerTile, type TileHandle } from "./diagnostics";
 import { holdLive } from "./live-buffer";
+import { LoadingSpinner } from "./recorded-video";
 import { applySound, watchAudio } from "./sound";
 
 type State = "idle" | "connecting" | "playing" | "unavailable" | "error";
@@ -75,6 +76,11 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
   const [still, setStill] = useState(0);
   const [via, setVia] = useState<Transport>("webrtc");
   const [source, setSource] = useState<VideoSource | null>(null);
+  /**
+   * A frame of this connection is on screen. Connected is not enough: WebRTC connects before the
+   * first frame arrives (later still with the live buffer), and showing the video then is a black tile.
+   */
+  const [framed, setFramed] = useState(false);
   /** This tile in the diagnostics registry, while it is trying to play. */
   const diag = useRef<TileHandle | null>(null);
 
@@ -156,6 +162,12 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
     setState("connecting");
     setAudio(null);
     setSource(null);
+    setFramed(false);
+    // The first frame actually drawn, whichever transport ends up delivering it.
+    let frameCb: number | undefined;
+    const onFrame = () => { if (!closed) setFramed(true); };
+    if (typeof el.requestVideoFrameCallback === "function") frameCb = el.requestVideoFrameCallback(onFrame);
+    else el.addEventListener("loadeddata", onFrame, { once: true });
     el.muted = true; // every connection starts muted, so autoplay is always allowed; the sound effect below unmutes once playing
     diag.current?.update({ attempts: attempt, pc: null, hls: null, nativeHls: false });
     if (force === "hls" || (!force && webrtcSkipped())) { void viaHls(); return cleanup; }
@@ -226,6 +238,8 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
       closed = true;
       removeEventListener("pagehide", onHide);
       unwatch?.();
+      if (frameCb !== undefined) el.cancelVideoFrameCallback(frameCb);
+      el.removeEventListener("loadeddata", onFrame);
       clearTimeout(timer); clearTimeout(timer2);
       pc?.close();
       hls?.destroy();
@@ -249,12 +263,16 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
   useEffect(() => () => onAudio?.(null), []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (video.current) applySound(video.current, sound && hasAudio === true); }, [sound, hasAudio]);
   useEffect(() => { onMedia?.(video.current); return () => onMedia?.(null); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  /** Video replaces the placeholder only once it has a picture; until then the placeholder stays, with a spinner. */
+  const visible = state === "playing" && framed;
+  const loading = online && (state === "connecting" || (state === "playing" && !framed));
   const fit = quality === "focus" ? "object-contain" : "object-cover"; // enlarged view letterboxes so the whole frame is always visible
   return (
     <div className={`absolute inset-0 bg-black ${className}`}>
       {/* Placeholder until video plays; hidden after, or it shows through the video's letterbox bars when the two differ in shape. */}
-      {online && <img alt="" src={mediaUrl(`/api/cameras/${cameraId}/snapshot?w=${quality === "focus" ? 1280 : 640}&n=${still}`)} className={`absolute inset-0 size-full ${fit} ${state === "playing" ? "opacity-0" : ""}`} onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} onLoad={(e) => { e.currentTarget.style.visibility = "visible"; }} />}
-      <video ref={video} autoPlay muted playsInline className={`absolute inset-0 size-full ${fit} transition-opacity ${state === "playing" ? "opacity-100" : "opacity-0"}`} />
+      {online && <img alt="" src={mediaUrl(`/api/cameras/${cameraId}/snapshot?w=${quality === "focus" ? 1280 : 640}&n=${still}`)} className={`absolute inset-0 size-full ${fit} ${visible ? "opacity-0" : ""}`} onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} onLoad={(e) => { e.currentTarget.style.visibility = "visible"; }} />}
+      <video ref={video} autoPlay muted playsInline className={`absolute inset-0 size-full ${fit} ${visible ? "opacity-100" : "opacity-0"}`} />
+      {loading && <LoadingSpinner large={quality === "focus"} />}
       {(!online || state === "unavailable" || state === "error") && (
         <div className="absolute inset-0 grid place-items-center bg-zinc-900 p-4 text-center text-sm text-zinc-400">
           <div><div className="font-medium text-zinc-50">{!online ? "Camera offline" : state === "unavailable" ? "No live video" : "Can't connect"}</div>{state === "error" && online && "Check your connection."}</div>

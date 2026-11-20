@@ -9,7 +9,7 @@ import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitl
 import { api, dateInput, dayBounds, EVENT_COLOR, EVENT_LABEL, fmtDay, fmtShort, fmtTime, mediaUrl, timeInput, zonedParts, zonedToUtc, type ActivityEvent, type Camera } from "./api";
 import { Empty, fail, RecMark, Select, useApp, useRecording } from "./app";
 import { LiveVideo, type LiveInfo, type Transport, type VideoSource } from "./live";
-import { RecordedVideo } from "./recorded-video";
+import { LoadingSpinner, RecordedVideo } from "./recorded-video";
 import { windowStart } from "./recorded-playback";
 import { dragTrim, nearestEnd, panTrim, startTrim as newTrim, TRIM_SPAN, typeTrim as typedTrim, zoomedSpan, zoomTrim as zoomedTrim, type End, type Trim } from "./trim";
 import { claimSound, setSound, SoundButton, useSound } from "./sound";
@@ -306,11 +306,13 @@ export function Player({ cameraId }: { cameraId: string }) {
     <div ref={box} className="relative min-h-0 flex-1 overflow-hidden bg-black text-white">
       {live ? <LiveVideo cameraId={cameraId} quality="focus" active={!down} online={cam.online && !down} onTransport={setVia} force={force} sound={soundOn} onAudio={setLiveAudio} onMedia={setLiveEl} />
         : <RecordedVideo key={target.n} cameraId={cameraId} W={W} startMs={target.ms} playing={playing} speed={speed} sound={soundOn} onTime={setT} onEnd={seek}
-            onMissing={onMissing} onSkip={skipped} onHoles={addHoles} onAudio={setRecAudio} onMedia={setRecEl} onPlaying={() => setScrub((p) => (p?.held ? null : p))} />}
+            onMissing={onMissing} onSkip={skipped} onHoles={addHoles} onAudio={setRecAudio} onMedia={setRecEl} onPlaying={() => setScrub((p) => (p?.held ? null : p))}
+            cover={!scrub && noStills !== cameraId && target.ms < clock - 10_000 && <ScrubStill cameraId={cameraId} ms={target.ms} close={0} onResult={stillResult} className="absolute inset-0 size-full object-contain" />} />}
       {scrub && !down && !toLive && !(scrub.held && (missing || live)) && (
         <div className="pointer-events-none absolute inset-0 bg-black/60">
           {!recorded(scrub.ms) ? <div className="absolute inset-0 grid place-items-center bg-zinc-900 text-sm font-medium text-zinc-50">No recording at {fmtTime(scrub.ms, tz)}</div>
             : noStills !== cameraId && scrub.ms < clock - 10_000 && <ScrubStill key={scrub.n} cameraId={cameraId} ms={scrub.ms} close={(b - a) / 600} onResult={stillResult} className="absolute inset-0 size-full object-contain" />}
+          {scrub.held && recorded(scrub.ms) && <LoadingSpinner large />}
         </div>
       )}
       {(missing || (live && !cam.online) || gap) && !down && (
