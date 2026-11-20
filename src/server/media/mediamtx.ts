@@ -66,6 +66,20 @@ function retimeCommand(name: string) {
 }
 
 /**
+ * Leaves only the default sound track in MediaMTX's top HLS playlist. A retimed stream carries its
+ * sound twice (`retimeCommand`: AAC, then Opus for WebRTC), and MediaMTX lists both as choices in one
+ * group, with "opus" added to the video's codecs. Apple's player (Safari, iPhone) refuses that
+ * playlist outright ("Cannot Open", CoreMedia -15517). HLS players only play the default track, the
+ * first one, anyway. `opus` is dropped from the codecs only when another track was dropped with it.
+ */
+export function onlyDefaultAudio(playlist: string) {
+  const lines = playlist.split("\n");
+  const kept = lines.filter((l) => !(l.startsWith("#EXT-X-MEDIA:") && l.includes("TYPE=AUDIO") && !l.includes("DEFAULT=YES")));
+  if (kept.length === lines.length) return playlist;
+  return kept.map((l) => (l.startsWith("#EXT-X-STREAM-INF:") ? l.replace(/CODECS="([^"]*)"/, (_, c: string) => `CODECS="${c.split(",").filter((x) => x !== "opus").join(",")}"`) : l)).join("\n");
+}
+
+/**
  * The MediaMTX relay: its control API (v3), its WHEP listener and its HLS listener. This file is
  * the only place that knows MediaMTX's URL shapes, the Bearer-ticket convention, the WHEP
  * `location` format, the HLS cookie and redirect mechanics, and its auth hook (`authorizeHook`). MediaMTX is never reachable from
@@ -155,6 +169,7 @@ export class MediaMtxRelay implements Relay {
           if (r.status >= 300 && r.status < 400 && r.headers.get("location")) { url = new URL(r.headers.get("location")!, url).toString(); continue; }
           if (r.status === 404) { if (file.endsWith(".m3u8")) this.known.delete(stream); return { outcome: "not_found" }; }
           if (!r.ok) return { outcome: "failed" };
+          if (file === "index.m3u8") return { outcome: "ok", body: new Response(onlyDefaultAudio(await r.text())).body, contentType: r.headers.get("content-type") };
           return { outcome: "ok", body: r.body, contentType: r.headers.get("content-type") };
         }
         return { outcome: "failed" };

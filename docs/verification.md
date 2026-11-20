@@ -548,6 +548,15 @@ Read from the running stack, its audit log and its logs. Nothing was changed.
   browser has no such setting, covered by `tests/live-buffer.test.ts` only), and whether a second
   of delay bothers anyone using sound.
 
+**Live HLS in Safari (2026-11-20, real UNVR through the local stack, macOS 27.2, Safari 27.2):**
+
+- A camera with a microphone never played over HLS in Safari: the tile loaded the playlists, failed and
+  ended on "Can't connect". MediaMTX 1.21.4's top playlist listed the AAC and Opus tracks in one audio
+  group with `CODECS="avc1.640033,mp4a.40.2,opus"`. AVPlayer (the same media engine) refused it with
+  "Cannot Open" (CoreMedia -15517); the same playlist without the Opus track played.
+- After `onlyDefaultAudio`, AVPlayer played Unifeye's own playlist for that camera with no error. Not yet
+  rechecked in the Safari window itself, or on an iPhone.
+
 **Diagnostics window (2026-11-18, mock mode, real MediaMTX 1.21.4 on macOS, Chromium in the T3 preview):**
 
 - Opened from the menu on the name with the keyboard (arrow down, Enter) and with the mouse, as the
@@ -585,7 +594,7 @@ autoplay is otherwise blocked.
 | Browser test suite | Not written | Screens were checked by hand in one desktop browser |
 | Phones and tablets | No device testing | Layout or touch problems; dragging the timeline with a finger (stills while dragging) is untested |
 | Rewinding the wall on a real UNVR | Mock mode only | How many tiles the recorder can export the low channel for at once (every tile on screen plays), how quickly they start after a seek, and how often tiles drift and get moved back in step |
-| HLS playback in a browser | Used in Chrome in production, where it turned up the HLS bugs above; the fixes are not yet checked there | Player-level issues |
+| HLS playback in a browser | Used in Chrome in production, where it turned up the HLS bugs above; the fixes are not yet checked there. Live HLS hung in Chromium (2026-11-20), most likely in Chrome's own HLS player, which the tile then used. Chromium now uses hls.js, and a stall watchdog jumps to live or reconnects; the watchdog's decisions are unit-tested (`tests/live-stall.test.ts`), but neither change has been seen against a real stall | Player-level issues; whether jumping to live clears a real stall or every stall ends in a reconnect; Safari's own player reporting no seekable range, so it always reconnects |
 | Sound from a real UNVR in Unifeye end to end | The retiming relay was checked outside Unifeye only (see Verified) | HLS sound, wall-quality streams, other camera models; recordings from Protect may lack audio |
 | Sound in Safari and Firefox | Only Chromium was used | "No audio" shown wrongly, or the speaker missing; no level meter in Safari for HLS and recordings |
 | Clip export in the browser | Checked by hand in Chromium with mock cameras: zooming and panning the clip timeline, and a 2-hour clip (prepared in about 2.5 minutes, 7200 s long). Long clips in pieces (mock mode, headless Chromium): a 21-minute clip showed the sweep, then 57% and 76% with a time left, then "Putting the pieces together", started its download by itself and came out 1260.0 s long | Not checked on a phone or with touch |
