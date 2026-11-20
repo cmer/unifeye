@@ -520,7 +520,8 @@ const SOURCE: Record<VideoSource, [string, string?]> = {
 function LiveLabel({ info, forced }: { info: LiveInfo | null; forced: boolean }) {
   const via = info?.via ?? null;
   const [title, plain] = VIA[via ?? "none"];
-  const text = forced && via ? FORCED[via] : plain;
+  const route = via === "webrtc" && info?.route ? ` (${info.route})` : "";
+  const text = forced && via ? FORCED[via] : route ? plain.replace(/\.$/, `${route}.`) : plain;
   const source = info?.source ? SOURCE[info.source] : null;
   return (
     <Popover>

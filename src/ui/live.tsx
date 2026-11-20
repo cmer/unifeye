@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, mediaUrl, previewToken } from "./api";
 import { useApp } from "./app";
-import { recordProblem, recordRequestFailure, registerTile, type TileHandle } from "./diagnostics";
+import { recordProblem, recordRequestFailure, registerTile, selectedPair, statList, viaRelay, type TileHandle } from "./diagnostics";
 import { rtcConfiguration } from "./ice";
 import { holdLive } from "./live-buffer";
 import { preferHlsJs, stallWatch } from "./live-stall";
@@ -54,7 +54,9 @@ export const resumeWebrtc = () => {
 export type Transport = "webrtc" | "hls";
 /** Where the video comes from: the camera itself, the recorder, or the recorder because the camera can't stream directly right now. */
 export type VideoSource = "camera" | "recorder" | "fallback";
-export interface LiveInfo { via: Transport; source: VideoSource | null }
+/** How WebRTC video reaches the browser: straight from the server, or through the TURN relay. */
+export type Route = "direct" | "relay";
+export interface LiveInfo { via: Transport; source: VideoSource | null; route: Route | null }
 const sourceOf = (h: Headers): VideoSource | null => { const v = h.get("x-video-source"); return v === "camera" || v === "recorder" || v === "fallback" ? v : null; };
 
 export function LiveVideo({ cameraId, quality, active, online, className = "", onGone, onTransport, sound = false, onAudio, onMedia, force }: {
@@ -78,6 +80,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
   const [still, setStill] = useState(0);
   const [via, setVia] = useState<Transport>("webrtc");
   const [source, setSource] = useState<VideoSource | null>(null);
+  const [route, setRoute] = useState<Route | null>(null);
   /**
    * A frame of this connection is on screen. Connected is not enough: WebRTC connects before the
    * first frame arrives (later still with the live buffer), and showing the video then is a black tile.
@@ -184,6 +187,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
     setState("connecting");
     setAudio(null);
     setSource(null);
+    setRoute(null);
     setFramed(false);
     // The first frame actually drawn, whichever transport ends up delivering it.
     let frameCb: number | undefined;
@@ -232,11 +236,18 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
         pc.ontrack = (e) => { holdLive(e.receiver, bufferMs); if (e.track.kind === "audio") audioTrack = e.track; if (!closed && el.srcObject !== e.streams[0]) el.srcObject = e.streams[0]; };
         pc.onconnectionstatechange = () => {
           if (closed || !pc) return;
-          if (pc.connectionState === "connected") { connected = true; clearTimeout(timer); setVia("webrtc"); decideAudio(); setState("playing"); }
+          if (pc.connectionState === "connected") { connected = true; clearTimeout(timer); setVia("webrtc"); decideAudio(); setState("playing"); readRoute(pc); }
           else if (pc.connectionState === "failed" && !connected) unreachable();
           // Also fires when the server ends the stream because access was removed; the retry then gets a clean "not available".
           else if (pc.connectionState === "failed" || pc.connectionState === "disconnected" || pc.connectionState === "closed") retry();
         };
+        // Which way the media goes. The selected pair can lag "connected" by a moment, so look twice.
+        const readRoute = (p: RTCPeerConnection, again = true) => void p.getStats().then((st) => {
+          if (closed || p !== pc) return;
+          const pair = selectedPair(statList(st));
+          if (pair) setRoute(viaRelay(pair) ? "relay" : "direct");
+          else if (again) setTimeout(() => readRoute(p, false), 1000);
+        }, () => {});
         await pc.setLocalDescription(await pc.createOffer());
         await new Promise<void>((done) => {
           if (pc!.iceGatheringState === "complete") return done();
@@ -282,7 +293,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
     if (state === "error") recordProblem({ kind: "tile", cameraId, title: `Gave up after ${attempt + 1} tries` });
   }, [state]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { diag.current?.update({ transport: shown, source }); }, [shown, source]);
-  useEffect(() => { onTransport?.(shown && { via: shown, source }); }, [shown, source]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { onTransport?.(shown && { via: shown, source, route: shown === "webrtc" ? route : null }); }, [shown, source, route]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => onTransport?.(null), []); // eslint-disable-line react-hooks/exhaustive-deps
   const hasAudio = state === "playing" ? audio : null;
   useEffect(() => { onAudio?.(hasAudio); }, [hasAudio]); // eslint-disable-line react-hooks/exhaustive-deps
