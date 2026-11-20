@@ -52,12 +52,16 @@ export type VideoSource = "camera" | "recorder" | "fallback";
 export interface LiveInfo { via: Transport; source: VideoSource | null }
 const sourceOf = (h: Headers): VideoSource | null => { const v = h.get("x-video-source"); return v === "camera" || v === "recorder" || v === "fallback" ? v : null; };
 
-export function LiveVideo({ cameraId, quality, active, online, className = "", onGone, onTransport, sound = false, onAudio, onMedia }: {
+export function LiveVideo({ cameraId, quality, active, online, className = "", onGone, onTransport, sound = false, onAudio, onMedia, force }: {
   cameraId: string; quality: "wall" | "focus"; active: boolean; online: boolean; className?: string; onGone?: () => void;
   /** Reports the transport and source while video is playing, null otherwise. */ onTransport?: (t: LiveInfo | null) => void;
   /** Play this camera's sound. Off by default; see `sound.tsx`. */ sound?: boolean;
   /** Reports whether the playing stream carries sound, null while unknown or not playing. */ onAudio?: (has: boolean | null) => void;
   /** The video element, for the level meter. */ onMedia?: (el: HTMLVideoElement | null) => void;
+  /**
+   * Use only this transport, for testing a network (`?stream=` on the camera page). HLS never tries
+   * WebRTC; WebRTC never falls back to HLS, keeps retrying instead, and does not start the tab's WebRTC pause.
+   */ force?: Transport;
 }) {
   const video = useRef<HTMLVideoElement>(null);
   const [audio, setAudio] = useState<boolean | null>(null);
@@ -150,19 +154,21 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
     setSource(null);
     el.muted = true; // every connection starts muted, so autoplay is always allowed; the sound effect below unmutes once playing
     diag.current?.update({ attempts: attempt, pc: null, hls: null, nativeHls: false });
-    if (webrtcSkipped()) { void viaHls(); return cleanup; }
+    if (force === "hls" || (!force && webrtcSkipped())) { void viaHls(); return cleanup; }
     // Media never arrived: this network cannot reach the WebRTC port. Switch transport and remember it.
     const unreachable = () => {
       if (closed || !pc) return;
-      recordProblem({ kind: "webrtc", cameraId, title: pc.connectionState === "failed" ? "WebRTC couldn't connect, switched to HLS" : "WebRTC timed out, switched to HLS", detail: `ICE state: ${pc.iceConnectionState} · connection: ${pc.connectionState}${answeredAt ? ` after ${((performance.now() - answeredAt) / 1000).toFixed(1)} s` : ""}` });
+      recordProblem({ kind: "webrtc", cameraId, title: `${pc.connectionState === "failed" ? "WebRTC couldn't connect" : "WebRTC timed out"}, ${force === "webrtc" ? "retrying (WebRTC forced)" : "switched to HLS"}`, detail: `ICE state: ${pc.iceConnectionState} · connection: ${pc.connectionState}${answeredAt ? ` after ${((performance.now() - answeredAt) / 1000).toFixed(1)} s` : ""}` });
       diag.current?.update({ pc: null, lastError: `WebRTC ${pc.iceConnectionState}` });
       clearTimeout(timer); pc.close(); pc = undefined;
       el.srcObject = null; // a media stream outranks `src`: left attached, it would hide the HLS video
-      skipWebrtc();
+      // WebRTC forced: try again rather than switch, and leave other tiles' choice alone.
+      const next = force === "webrtc" ? retry : () => void viaHls();
+      if (force !== "webrtc") skipWebrtc();
       // Release the WebRTC session first: until then it still counts against this session's stream limit.
       const r = resource; resource = null;
-      if (r) void api(r.replace(/^\/api/, ""), { method: "DELETE" }).catch(() => {}).finally(() => void viaHls());
-      else void viaHls();
+      if (r) void api(r.replace(/^\/api/, ""), { method: "DELETE" }).catch(() => {}).finally(next);
+      else next();
     };
     let connected = false, answeredAt = 0;
     (async () => {
@@ -208,6 +214,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
         if (e instanceof ApiError && e.status === 404) onGone?.(); // access was removed: let the page refresh what it shows
         if (e instanceof ApiError && [404, 409, 401, 403].includes(e.status)) setState("unavailable");
         else if (e instanceof ApiError && e.status === 429) busy();
+        else if (force === "webrtc") retry();
         else void viaHls();
       }
     })();
@@ -222,7 +229,7 @@ export function LiveVideo({ cameraId, quality, active, online, className = "", o
       el.onplaying = null; el.onerror = null; el.srcObject = null; el.removeAttribute("src"); el.load();
     }
     return cleanup;
-  }, [cameraId, quality, active, online, attempt, wake]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [cameraId, quality, active, online, attempt, wake, force]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const state: State = active && online ? raw : "idle";
   const shown = state === "playing" ? via : null;
