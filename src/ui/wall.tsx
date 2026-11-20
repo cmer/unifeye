@@ -86,9 +86,10 @@ export function Wall({ viewId }: { viewId?: string }) {
     return () => { io.disconnect(); nearIo.disconnect(); };
   }, [shown, cols]);
   const extra = useMemo(() => hovered.filter((id) => shown.some((c) => c.id === id)), [hovered, shown]);
-  const streaming = useMemo(() => new Set([...shown.filter((c) => visible.includes(c.id)).slice(0, me.limits.maxStreams).map((c) => c.id), ...extra]), [shown, visible, extra, me.limits.maxStreams]);
-  // Rewinding: every tile on screen plays the same moment from the recording, in low resolution (`RecordedVideo`'s `low`).
-  const playIds = useMemo(() => shown.filter((c) => visible.includes(c.id) || extra.includes(c.id)).map((c) => c.id), [shown, visible, extra]);
+  // Live and rewound alike: the first MAX_WALL_STREAMS tiles on screen play, plus any started by pointing
+  // at them. Rewound tiles play the recording in low resolution (`RecordedVideo`'s `low`).
+  const playIds = useMemo(() => { const first = shown.filter((c) => visible.includes(c.id)).slice(0, me.limits.maxStreams).map((c) => c.id); return shown.map((c) => c.id).filter((id) => first.includes(id) || extra.includes(id)); }, [shown, visible, extra, me.limits.maxStreams]);
+  const streaming = useMemo(() => new Set(playIds), [playIds]);
   const shownIds = useMemo(() => shown.map((c) => c.id), [shown]);
   // Opening a camera from a rewound wall keeps the moment in the address (`at`), so coming back carries on from there.
   const [startAt] = useState(() => Number(loc.query.get("at")) || undefined);

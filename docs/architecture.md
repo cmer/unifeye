@@ -685,7 +685,8 @@ a minute or more away is offered as "Skip to". The wall leaves both callbacks ou
 
 The wall's Rewind button opens a timeline in place of its dock (`src/ui/wall-rewind.tsx`). It shows
 when any camera on screen recorded (their ranges joined) and their events. Every tile plays the same
-moment: one seek remounts every tile's `RecordedVideo` at that moment. Every tile on screen plays,
+moment: one seek remounts every tile's `RecordedVideo` at that moment. As live, the first
+`MAX_WALL_STREAMS` tiles on screen play (the rest show a still until someone points at them),
 from the low-resolution recording alone (`low=1` on both playback routes, `lowOnly` in
 `fetchRecorded`): an adaptive camera's window is then one low-channel export with its stamps, with no
 high-resolution export, placement or second video to keep in step, and is cached apart from the full
@@ -696,7 +697,7 @@ nearest that do not play have their window's low-resolution description asked fo
 window's, within 20 seconds of its end), which has the server export and cache it without the browser
 downloading anything, so scrolling to them starts them from the cache. A tile that moves away has its
 request cancelled. The timeline's drag preload warms them too. On the live wall and when rewinding, pointing
-at a tile that is not playing (one past `MAX_WALL_STREAMS` live, or one the visibility check missed)
+at a tile that is not playing (one past `MAX_WALL_STREAMS`, or one the visibility check missed)
 starts it; the two most recent stay started until no part of them is on screen, within the two
 streams per tab the session limit leaves beside the wall. The wall's time is
 the median of the playing tiles' times, and a tile more than three seconds off is moved back to it, at

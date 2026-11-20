@@ -266,7 +266,7 @@ relay, last backup). Neither exposes configuration or secrets.
 | `OIDC_RECHECK_SECONDS` | 300 | How quickly a user disabled at the provider is noticed |
 | `OIDC_MAX_STALE_SECONDS` | 1800 | How long a session survives without a successful re-check |
 | `REVOCATION_SWEEP_SECONDS` | 10 | Worst-case delay before revoked media stops (max 30) |
-| `MAX_WALL_STREAMS` | 24 | Live tiles on screen that play at once (tiles off screen never play); the rest show stills until someone points at them (up to two more at a time) |
+| `MAX_WALL_STREAMS` | 24 | Tiles on screen that play at once, live or rewound (tiles off screen never play); the rest show stills until someone points at them (up to two more at a time) |
 | `PLAYBACK_WINDOW_SECONDS` | 60 | Size of each recorded-video window |
 | `SCRUB_PRELOAD_MS` | 500 | While someone drags a camera's timeline, how long the playhead must rest before that moment's video starts loading, so letting go there plays sooner. Lower is snappier but asks the recorder for more video that may go unwatched; 0 turns it off |
 | `LIVE_BUFFER_MS` | 1000 | How long a browser holds live video before showing it. Cameras and recorders send in bursts, with a pause around each keyframe; without something in hand the picture freezes and jumps every couple of seconds. Live video runs this far behind real time. Raise it (up to 4000) if video still stutters, lower it for less delay, 0 to turn it off. Takes effect when people reload the page |
