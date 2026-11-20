@@ -166,6 +166,40 @@ gateway) is pinned separately in
   "10 seconds not recorded"), the zoomed-in timeline showed the breaks of the minutes played, and
   playing into a gap of over a minute stopped on "Nothing recorded until ..." with its skip button.
   Not checked on any other Protect version, on a phone, or on the wall.
+- Stretches that lost their stamps in production (2026-11-20, same recorder, read-only). A report
+  of playback switching between low and high resolution every second or two came from three
+  windows the app had placed the old way, by pictures alone: their logs show no stamps and no
+  "do not fit" warning, which only happens when a segment list is missing, and the window before
+  them was saved without its high file. Both point to the recorder or the connection failing for a
+  moment; the logs did not say which, and the same requests made afterwards (segment lists, stamps,
+  exports, 15 at once) all answered within 11 s. Those windows stayed in the cache as if complete.
+  A capture of the same five minutes (`d14`) showed a second cause: the recorder stamped one high
+  GOP half a second before the one ahead of it, which made every window reaching it drop its
+  stamps. With out-of-order high stamps accepted, `windows.mts` on `d14` went from 41 s of 129 s
+  shown out of order (time shown 7.7 s off the clock at the median) to 8 s (0.2 s off); `d0` to
+  `d13` are unchanged (65 s out of order, 8 s twice, 86 s never). The 8 s left are two high runs
+  that overlap the low channel's last seconds before a hole and are played just after them. In
+  `d14` both channels have holes every 10 to 20 s in different places, so even placed perfectly
+  this stretch changes resolution about eight times in three minutes. Now a missing segment list
+  (on a recorder that gave them before) is placed by the stamps, a step back of up to 5 s in the
+  high stamps is accepted, and a window built with something missing is cached for two minutes
+  only (`tests/recorded.test.ts`, `tests/playback.test.ts`). An independent review found that an
+  empty high-stamp answer is the truth where channel 0 holds only the low pictures (two such
+  windows in the prod log); those are no longer counted as failures. Not yet checked in a browser
+  or in production.
+- Why the recorder has the holes (2026-11-20, same UNVR G2 Pro, Protect 7.3.74, read-only over
+  SSH). Its disks were 10 to 20% busy and wrote about 7 MB/s. Its network card's receive buffer
+  overflowed about 770 times a second during the day (`ethtool -S eth0`: `mmc_rx_fifo_overflow`,
+  126 million since boot), dropping roughly one camera packet in ten; that card's interrupt is
+  served by one core, which spent all its time in interrupts. The cameras send over TCP, so a lost
+  packet slows the stream instead of disappearing, which fits the high channel's stamps running
+  further and further late and the recorder giving up at about 32 s. Across 40 cameras, the low
+  channel (which should have no holes on cameras recording all the time) lost 3 to 23% of the time
+  in spells of a few hours during the day, never at night, with some daytime hours clean. The four
+  third-party intercoms, which send 1080p, had no holes. 13
+  of the recorder's 124 camera connections held up to 1.7 MB of video it was not reading. Unifeye
+  had 1 to 3 direct connections open to each room camera; the hours with and without holes had
+  about the same number of live streams open.
 - Placing adaptive recordings on real exports (read-only exports of eight five-minute windows from six
   adaptive-recording cameras on the production UNVR, 2026-11-18; 330 high GOPs beside about 19 minutes
   of low-resolution video). The cameras' burned-in clocks, read by OCR, were used to check results

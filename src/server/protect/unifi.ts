@@ -292,12 +292,14 @@ export class UnifiProtectAdapter implements ProtectAdapter {
   async recordedSegments(id: string, fromMs: number, toMs: number, quality: "wall" | "focus", signal?: AbortSignal): Promise<[number, number][] | null> {
     try {
       const r = await this.get(`/cameras/${encodeURIComponent(id)}/playback-history?start=${Math.floor(fromMs - 30 * 60_000)}&end=${Math.ceil(toMs)}&resolution=${quality === "focus" ? 0 : 2}`, { signal, timeout: 10_000 });
-      if (r.statusCode !== 200) return null;
+      // Logged with the reason, so that a stretch placed without its lists can be explained later.
+      if (r.statusCode !== 200) { log("warn", "the recorder gave no segment list", { id, quality, status: r.statusCode }); return null; }
       const rows = r.json<{ start?: unknown; end?: unknown }[]>();
-      if (!Array.isArray(rows)) return null;
+      if (!Array.isArray(rows)) { log("warn", "the recorder gave no segment list", { id, quality, answer: typeof rows }); return null; }
       return rows.filter((x) => typeof x?.start === "number" && typeof x.end === "number" && x.end >= x.start).map((x) => [x.start as number, x.end as number]);
     } catch (e) {
       if (signal?.aborted) throw e;
+      log("warn", "the recorder gave no segment list", { id, quality, error: e });
       return null;
     }
   }

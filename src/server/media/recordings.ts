@@ -27,6 +27,15 @@ import { startAfter, type Seams } from "./timeline";
 export interface WindowInfo { startMs: number; endMs: number; entries: Entry[]; high: boolean; seams: Recorded["seams"]; pending?: true }
 export interface PlaybackWindow { info: WindowInfo; base: string; high: string | null }
 
+/**
+ * A window built while the recorder was failing part of the way (`Recorded.degraded`) is kept only
+ * this long, so a passing hiccup is not baked into the cache: the player that asked can still load
+ * its files, and anyone coming back later gets it fetched again.
+ */
+const DEGRADED_KEEP_MS = 2 * 60_000;
+/** What is saved beside a window's files: its description, and when a degraded one is to be fetched again. */
+type SavedWindow = WindowInfo & { refetchAfter?: number };
+
 /** Clips longer than this are fetched from the recorder in pieces of this length (see `exportPieces`). */
 const PIECE = 5 * 60_000;
 /** A saved clip this much shorter than asked (or 1% of it, if more) is reported as missing time. */
@@ -64,6 +73,8 @@ export async function fileResponse(path: string, req: Request, type: string, ext
  * An obsolete seek cancels its export when nobody else is waiting for that window.
  */
 export class Recordings {
+  /** What the recorder has given since start-up (`Recorded.got`), so a later absence counts as a hiccup. */
+  private known: { segments?: boolean; stamps?: boolean } = {};
   private inflight = new Map<string, { early: Promise<PlaybackWindow>; full: Promise<PlaybackWindow>; ac: AbortController; waiters: number }>();
   private jobs = new Map<string, AbortController>();
   /** Estimated time left for running clip jobs, as of `at`. */
@@ -84,17 +95,19 @@ export class Recordings {
    * The playback window containing `tMs`, fetched and cached if needed: a base file, for adaptive
    * recordings a high-resolution file, and the order to play them in (see `fetchRecorded`). With
    * `early`, an adaptive window answers as soon as its base is ready (`WindowInfo.pending`), so
-   * playback can start while the high-resolution file is still on its way.
+   * playback can start while the high-resolution file is still on its way. With `files` (a player
+   * loading the files of a window it already has the description of), a degraded window past its
+   * time is served as it is rather than fetched again, so the files keep matching that description.
    */
-  async window(a: Actor, cameraId: string, tMs: number, signal?: AbortSignal, early = false): Promise<PlaybackWindow> {
+  async window(a: Actor, cameraId: string, tMs: number, signal?: AbortSignal, early = false, files = false): Promise<PlaybackWindow> {
     const cam = this.policy.camera(subjectOf(a), cameraId);
     const W = config().PLAYBACK_WINDOW_SECONDS * 1000, now = Date.now();
     if (!Number.isFinite(tMs) || tMs > now - 3000 || tMs < now - 400 * 864e5) throw new HttpError(404, "no_recording", "Nothing recorded at this time");
     const startMs = Math.floor(tMs / W) * W, endMs = Math.min(startMs + W, now - 2000);
     const complete = endMs === startMs + W;
-    const key = `${cameraId}_${startMs}_${complete ? "full" : Math.floor(endMs / 10_000)}`, stem = join(this.dir("playback"), `${key}.v3`);
+    const key = `${cameraId}_${startMs}_${complete ? "full" : Math.floor(endMs / 10_000)}`, stem = join(this.dir("playback"), `${key}.v4`);
     const cached = await this.cached(stem);
-    if (cached) return cached;
+    if (cached && (!cached.stale || files)) return cached.w;
     let f = this.inflight.get(key);
     if (!f) {
       const ac = new AbortController();
@@ -104,6 +117,7 @@ export class Recordings {
       // Without an early stage (one channel, or the base and high file ready together), both are the full window.
       full.then(base, () => {});
       f = { early: Promise.race([first, full]), full, ac, waiters: 0 };
+      f.early.catch(() => {}); // awaited only by early requests, which may be none
       this.inflight.set(key, f);
       full.catch(() => {}).finally(() => this.inflight.delete(key));
     }
@@ -118,8 +132,10 @@ export class Recordings {
     try {
       return await (early ? entry.early : entry.full);
     } catch (e) {
-      if (isNoRecording(e)) throw new HttpError(404, "no_recording", "Nothing recorded at this time");
       if (signal?.aborted) throw new HttpError(499, "cancelled");
+      // Fetching a degraded window again failed: what it had is better than nothing.
+      if (cached) return cached.w;
+      if (isNoRecording(e)) throw new HttpError(404, "no_recording", "Nothing recorded at this time");
       log("warn", "playback window failed", { error: e });
       throw new HttpError(503, "nvr_unavailable");
     } finally {
@@ -128,14 +144,19 @@ export class Recordings {
     }
   }
 
-  /** A complete cached window, or null. Housekeeping evicts files one by one, so every part is checked. */
-  private async cached(stem: string): Promise<PlaybackWindow | null> {
+  /**
+   * A complete cached window, or null; `stale` when it was degraded and is due to be fetched again.
+   * Housekeeping evicts files one by one, so every part is checked.
+   */
+  private async cached(stem: string): Promise<{ w: PlaybackWindow; stale: boolean } | null> {
     try {
-      const info = JSON.parse(await readFile(`${stem}.json`, "utf8")) as WindowInfo, high = info.high ? `${stem}.hi.mp4` : null;
+      const { refetchAfter, ...info } = JSON.parse(await readFile(`${stem}.json`, "utf8")) as SavedWindow, high = info.high ? `${stem}.hi.mp4` : null;
       await Promise.all([stat(`${stem}.mp4`), high && stat(high)]);
+      const stale = refetchAfter != null && Date.now() >= refetchAfter;
+      // A stale window is not kept alive by being read: housekeeping may take it.
       const t = new Date();
-      for (const p of [`${stem}.json`, `${stem}.mp4`, high]) if (p) void utimes(p, t, t).catch(() => {});
-      return { info, base: `${stem}.mp4`, high };
+      if (!stale) for (const p of [`${stem}.json`, `${stem}.mp4`, high]) if (p) void utimes(p, t, t).catch(() => {});
+      return { w: { info, base: `${stem}.mp4`, high }, stale };
     } catch { return null; }
   }
 
@@ -183,14 +204,16 @@ export class Recordings {
     let moved: Promise<void> | null = null;
     try {
       const r = await fetchRecorded(this.exporter(protectId, startMs, endMs, false), startMs, endMs, {
-        files, signal, segments: this.segments(protectId, startMs, endMs), stamps: this.stamps(protectId, startMs, endMs), context: { protectId },
+        files, signal, segments: this.segments(protectId, startMs, endMs), stamps: this.stamps(protectId, startMs, endMs), context: { protectId }, known: { ...this.known },
         // The base file is final once handed over: it takes its place now, so the player can start on it.
         onBase: (e) => { moved = rename(e.base, base).then(() => onBase({ info: window(e, { pending: true }), base, high: null })); moved.catch(() => {}); },
       });
+      for (const k of ["segments", "stamps"] as const) if (r.got[k]) this.known[k] = true;
       if (moved) await moved; else await rename(r.base, base);
       const info = window(r);
       if (r.high) await rename(r.high, `${stem}.hi.mp4`);
-      await writeFile(`${tmp}.json.part`, JSON.stringify(info), { mode: 0o600 });
+      const saved: SavedWindow = r.degraded ? { ...info, refetchAfter: Date.now() + DEGRADED_KEEP_MS } : info;
+      await writeFile(`${tmp}.json.part`, JSON.stringify(saved), { mode: 0o600 });
       await rename(`${tmp}.json.part`, `${stem}.json`);
       return { info, base, high: r.high && `${stem}.hi.mp4` };
     } finally {
@@ -202,7 +225,7 @@ export class Recordings {
   private async exportPiece(protectId: string, startMs: number, endMs: number, path: string, signal: AbortSignal, join: PieceOptions) {
     const files = { focus: `${path}.f`, wall: `${path}.w`, context: `${path}.c` };
     try {
-      return await fetchRecordedFile(this.exporter(protectId, startMs, endMs, true), startMs, endMs, path, { files, signal, ...join, segments: this.segments(protectId, startMs, endMs), stamps: this.stamps(protectId, startMs, endMs), context: { protectId } });
+      return await fetchRecordedFile(this.exporter(protectId, startMs, endMs, true), startMs, endMs, path, { files, signal, ...join, segments: this.segments(protectId, startMs, endMs), stamps: this.stamps(protectId, startMs, endMs), context: { protectId }, known: { ...this.known } });
     } finally {
       await Promise.all([files.focus, files.wall, files.context].map((p) => rm(p, { force: true })));
     }

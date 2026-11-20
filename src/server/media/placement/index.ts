@@ -23,7 +23,7 @@ import { frameDiffs, likeness, matchGops, pairByTime, type MatchOptions, type Th
 import { baseSpans, highTimes, mediaAt, orderByTime, usable, type LagSettings } from "./stamped";
 
 export type { Thumbs } from "./pictures";
-/** True when `stamps` can serve as the times of `gops`: one each, in order. */
+/** True when `stamps` can serve as the times of `gops`: one each, in order (within `backMs`, for the high channel). */
 export { usable as stampsFit } from "./stamped";
 
 /** Every setting of the placement, in one place so a tuning run can change any of them. */
@@ -48,7 +48,7 @@ export const PLACEMENT: PlacementSettings = {
   jumpRatio: 5,
   clock: { overflow: 20, emptySegment: 5, offJump: 1, gapSec: 8, anchorWeight: 2, anchorSlackSec: 3 },
   holes: { open: 1, close: 0.5, split: 0.2, weak: 0.5, scaleMs: 30_000 },
-  lag: { minSec: -1, maxSec: 36, stepSec: 0.2, absent: 0.7, breakCost: 0.3, stallSec: 5, grow: 0.27, drift: 0.01, shrink: 0.01, resetFromSec: 27, pauseSec: 20, resetToSec: 3, reset: 0.1, join: 0.6 },
+  lag: { minSec: -1, maxSec: 36, stepSec: 0.2, absent: 0.7, breakCost: 0.3, stallSec: 5, grow: 0.27, drift: 0.01, shrink: 0.01, resetFromSec: 27, pauseSec: 20, resetToSec: 3, reset: 0.1, join: 0.6, stepBackSec: 5 },
 };
 
 /**
@@ -126,7 +126,7 @@ export function placeStretch(window: Window, base: BaseFile, high?: HighFile, se
     highGops: nulls(keyOf),
     highKeys: high ? high.keys.t.length - new Set(keyOf.filter((k) => k != null)).size : 0,
   };
-  if (usable(base.gops, base.stamps) && (!high || (usable(high.gops, high.stamps) && base.frames))) {
+  if (usable(base.gops, base.stamps) && (!high || (usable(high.gops, high.stamps, settings.lag.stepBackSec * 1000) && base.frames))) {
     const spans = baseSpans(base.gops, base.stamps, settings.lag.join);
     const trace = { jumps: [], baseTimes: base.stamps, baseFrames, unpaired };
     if (!high || !base.frames) return { entries: orderByTime(startMs, endMs, spans), trace };

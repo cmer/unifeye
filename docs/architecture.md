@@ -603,7 +603,12 @@ asks for the window's description (`GET /api/cameras/:id/playback/info`), then l
 (`GET /api/cameras/:id/playback`, and `?layer=high` for an adaptive window's high-resolution file). While a window plays, the player buffers the next one in hidden
 video elements and swaps it in, so playback continues without a black gap (the next window is
 buffered only once it is fully recorded; near live, the old load-on-end path still applies). Windows
-are cached on disk within a size and age limit. A seek that is abandoned cancels its export if nobody
+are cached on disk within a size and age limit. A window built while the recorder failed part of the
+way (an export failing, or a segment list or the stamps missing although this recorder has given
+them since start-up: `Recorded.degraded`) is kept for two minutes only, then fetched again by the
+next request for its description; until that succeeds the old one is served. Requests for a window's
+files never fetch it again, so a player's files match the description it has (a second viewer
+asking for the description after the two minutes can still replace the files under the first). A seek that is abandoned cancels its export if nobody
 else is waiting for it. Clicking an event starts `EVENT_PREROLL_SECONDS` (default 5) before it.
 Playing a window (fetching descriptions, buffering the next one, stepping through entries, handing
 over) lives in `RecordedVideo` (`src/ui/recorded-video.tsx`), which the player and the wall share;
@@ -702,6 +707,11 @@ threshold it uses is in one settings object, `PLACEMENT`. Its other files (`pict
     zero, after leaving out about half a minute (measured with `scripts/adaptive-eval`; see
     `docs/verification.md`). Protect's own player lays the high channel over the low one by these
     stamps, so it shows high-resolution pictures from up to half a minute earlier.
+  - The high channel's stamps are not always in order: the recorder now and then stamps a GOP a
+    little before the one ahead of it. A step back of up to `PLACEMENT.lag.stepBackSec` is used
+    anyway (a break in the search below); only the low channel's must be in order. Where channel 0
+    has no GOPs of its own (its export is the low pictures), the stream sends no stamps for it, and
+    that is no failure.
   - Placement with stamps (`placement/stamped.ts`) therefore finds one thing: how late each high
     GOP's stamp runs. A search over the GOPs in order treats a run of GOPs that follow on as one rigid
     piece, allows breaks, stalls and the recorder starting again as measured, and scores each GOP's
@@ -728,9 +738,11 @@ threshold it uses is in one settings object, `PLACEMENT`. Its other files (`pict
   needed (`channelsFor`): channel 0 alone when the low channel lists nothing in the window, the low
   channel alone when the high one lists nothing within a minute of it, and both otherwise. The rule
   leans towards both because the high lists are off by many seconds: trusting them to say the high
-  channel covers the window lost low-only seconds at the edges of motion. Without segment lists,
-  channel 0 is exported first and the low channel added only when channel 0 comes back more than a
-  second short and the low one is longer and smaller.
+  channel covers the window lost low-only seconds at the edges of motion. When a segment list is
+  missing from a recorder that has given lists and stamps since start-up (a list failing for a
+  moment), both channels are exported and placed by the stamps. Without segment lists or stamps, channel 0 is exported first and the low
+  channel added only when channel 0 comes back more than a second short and the low one is longer
+  and smaller.
 - **Times, without stamps.** The base's keyframes get wall-clock times by fitting its GOPs into the low channel's
   segments: a small search over which GOPs belong to which segment, with time hidden inside a
   segment placed where the picture jumps, or spread evenly when nothing says where.

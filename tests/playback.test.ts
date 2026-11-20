@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { loadConfig, setConfigForTests } from "@/server/config";
 import { highReachMs } from "@/server/media/placement";
 import { skipLead, wallAt } from "@/server/media/timeline";
@@ -125,6 +125,36 @@ describe.skipIf(!hasFfmpeg)("adaptive playback windows", () => {
       setConfigForTests(loadConfig({ ...TEST_ENV, MEDIA_CACHE_DIR: dir } as NodeJS.ProcessEnv));
       rmSync(dir15, { recursive: true, force: true });
     }
+  }, 30_000);
+
+  it("places a window by the stamps when the recorder gives no segment list, and fetches it again later", async () => {
+    // Earlier windows had their lists and stamps, so a missing list is a hiccup.
+    const t = ws + 241_000, start = ws + 240_000, saved = join(dir, "playback", `${cam}_${start}_full.v4.json`);
+    const lists = vi.spyOn(f.adapter, "recordedSegments").mockResolvedValue(null);
+    let hiccup;
+    try { hiccup = await window(cam, t); } finally { lists.mockRestore(); }
+    // Both channels, by their stamps: every moment once, in order, at its time.
+    expect(hiccup.high).not.toBeNull();
+    await expectShownOnce(start);
+    // Kept for the player that asked, but only for a while.
+    const refetchAfter = JSON.parse(readFileSync(saved, "utf8")).refetchAfter;
+    expect(refetchAfter).toBeGreaterThan(Date.now());
+    expect(await window(cam, t)).toEqual(hiccup);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(refetchAfter);
+    try {
+      // A player loading the files it has the description of gets them as they are ...
+      const exports = vi.spyOn(f.adapter, "exportClip");
+      expect(await f.s.recordings.window(f.actor(f.u.admin), cam, t, undefined, false, true)).toEqual(hiccup);
+      expect(exports).not.toHaveBeenCalled();
+      // ... and a new request still gets it while the recorder fails to give it again.
+      exports.mockRejectedValue(new Error("recorder down"));
+      expect(await window(cam, t)).toEqual(hiccup);
+      exports.mockRestore();
+      // Once the recorder answers, the window is fetched again and kept.
+      const again = await window(cam, t);
+      expect(again.info).toEqual(hiccup.info);
+    } finally { clock.mockRestore(); }
+    expect(JSON.parse(readFileSync(saved, "utf8")).refetchAfter).toBeUndefined();
   }, 30_000);
 
   it("keeps a single file for cameras without adaptive recording", async () => {
