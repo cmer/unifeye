@@ -1,5 +1,5 @@
 import { and, eq, isNull, lt, lte, or, type SQL } from "drizzle-orm";
-import { config } from "../config";
+import { config, sessionIdleMs, sessionLifetimeMs } from "../config";
 import { schema, type Db } from "../db";
 import type { Policy } from "../authz/policy";
 import { encrypt, hashToken, newId, randomToken } from "../util";
@@ -42,11 +42,12 @@ export class Sessions {
 
   create(userId: string, o: { providerSid?: string; idToken?: string; refreshToken?: string; userAgent?: string; ip?: string; replaces?: string }) {
     const c = config(), t = Date.now(), token = randomToken();
+    const absoluteExpiresAt = t + sessionLifetimeMs(c), idle = sessionIdleMs(c);
     const enc = (v?: string) => (v && c.TOKEN_ENC_KEY ? encrypt(v, c.TOKEN_ENC_KEY) : null);
     const row: SessionRow = {
       id: newId(), tokenHash: hashToken(token), userId, providerSid: o.providerSid ?? null,
       idTokenEnc: enc(o.idToken), refreshTokenEnc: enc(o.refreshToken), csrfSecret: randomToken(),
-      createdAt: t, lastSeenAt: t, idleExpiresAt: t + c.SESSION_IDLE_MINUTES * 6e4, absoluteExpiresAt: t + c.SESSION_ABSOLUTE_HOURS * 36e5,
+      createdAt: t, lastSeenAt: t, idleExpiresAt: idle ? Math.min(t + idle, absoluteExpiresAt) : absoluteExpiresAt, absoluteExpiresAt,
       lastValidatedAt: t, revokedAt: null, revokeReason: null, userAgent: o.userAgent?.slice(0, 300) ?? null, ip: o.ip ?? null,
     };
     const rotated = this.db.transaction((tx) => {
@@ -72,7 +73,8 @@ export class Sessions {
   /** Extends the idle limit after the session has been accepted for a request. */
   touch(s: SessionRow, t = Date.now()) {
     if (t - s.lastSeenAt <= 60_000) return;
-    const idle = Math.min(t + config().SESSION_IDLE_MINUTES * 6e4, s.absoluteExpiresAt);
+    const ms = sessionIdleMs();
+    const idle = ms ? Math.min(t + ms, s.absoluteExpiresAt) : s.absoluteExpiresAt;
     this.db.update(schema.sessions).set({ lastSeenAt: t, idleExpiresAt: idle }).where(eq(schema.sessions.id, s.id)).run();
   }
 
